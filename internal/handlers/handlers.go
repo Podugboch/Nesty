@@ -1051,20 +1051,28 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
-	var user model.User
+	var users []model.User
 	identifier := strings.TrimSpace(input.Email)
 
-	if err := h.DB.Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", identifier, identifier).First(&user).Error; err != nil {
+	if err := h.DB.Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", identifier, identifier).Find(&users).Error; err != nil || len(users) == 0 {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 		return
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
+	var authenticatedUser *model.User
+	for i := range users {
+		if err := bcrypt.CompareHashAndPassword([]byte(users[i].Password), []byte(input.Password)); err == nil {
+			authenticatedUser = &users[i]
+			break
+		}
+	}
+
+	if authenticatedUser == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "password mismatch"})
 		return
 	}
 
-	token, err := utils.GenerateToken(user.ID)
+	token, err := utils.GenerateToken(authenticatedUser.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 		return
@@ -1098,8 +1106,8 @@ func (h *Handler) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	var user model.User
-	if err := h.DB.Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", identifier, identifier).First(&user).Error; err != nil {
+	var users []model.User
+	if err := h.DB.Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", identifier, identifier).Find(&users).Error; err != nil || len(users) == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "No account found matching that email or username"})
 		return
 	}
@@ -1110,10 +1118,12 @@ func (h *Handler) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	user.Password = string(hash)
-	if err := h.DB.Save(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
-		return
+	for i := range users {
+		users[i].Password = string(hash)
+		if err := h.DB.Save(&users[i]).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

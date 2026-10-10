@@ -73,6 +73,8 @@ export default function App() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "register" | "forgot">("login");
   const [username, setUsername] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
 
   const [token, setToken] = useState<string | null>(
     localStorage.getItem("token")
@@ -667,11 +669,17 @@ export default function App() {
   // AUTH LOGIC
   // -----------------------------
   const login = async () => {
+    setAuthError(null);
+    setAuthSuccess(null);
+    if (!email.trim() || !password) {
+      setAuthError("Please enter your email or username and password.");
+      return;
+    }
     try {
       const res = await fetch("http://localhost:8080/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -679,52 +687,70 @@ export default function App() {
         setToken(data.token);
         fetchMe(data.token);
       } else {
-        alert(data.error || "Login failed");
+        const msg =
+          data.error === "user not found"
+            ? "No account found with this email or username. Don't have an account? Click 'Sign Up' below."
+            : data.error === "password mismatch"
+            ? "Incorrect password. If you forgot your password, click 'Forgot Password?' below to reset it."
+            : data.error || "Login failed";
+        setAuthError(msg);
       }
     } catch {
-      alert("Cannot connect to server at http://localhost:8080");
+      setAuthError("Cannot connect to server at http://localhost:8080. Please ensure the backend is running.");
     }
   };
 
   const handleRegister = async () => {
+    setAuthError(null);
+    setAuthSuccess(null);
+    if (!username.trim() || !email.trim() || !password) {
+      setAuthError("Please fill out all fields.");
+      return;
+    }
     try {
       const res = await fetch("http://localhost:8080/api/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, username }),
+        body: JSON.stringify({ email: email.trim(), password, username: username.trim() }),
       });
       const data = await res.json();
       if (res.ok) {
-        alert("Registration successful! Please log in.");
+        setAuthSuccess("Registration successful! You can now sign in.");
         setAuthMode("login");
       } else {
-        alert(data.error || "Registration failed");
+        setAuthError(data.error || "Registration failed");
       }
     } catch {
-      alert("Cannot connect to server at http://localhost:8080");
+      setAuthError("Cannot connect to server at http://localhost:8080");
     }
   };
 
   const handleForgotPassword = async () => {
+    setAuthError(null);
+    setAuthSuccess(null);
+    if (!email.trim() || !password) {
+      setAuthError("Please enter your email or username and your new password.");
+      return;
+    }
     if (password !== confirmPassword) {
-      alert("Passwords do not match");
+      setAuthError("Passwords do not match");
       return;
     }
     try {
       const res = await fetch("http://localhost:8080/api/forgot-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, new_password: password }),
+        body: JSON.stringify({ email: email.trim(), new_password: password }),
       });
       const data = await res.json();
       if (res.ok) {
-        alert("Password updated successfully! You can now log in.");
+        setAuthSuccess("Password updated successfully! You can now sign in with your new password.");
         setAuthMode("login");
       } else {
-        alert(data.error || "Reset failed");
+        setAuthError(data.error || "Reset failed");
       }
     } catch {
-      alert("Cannot connect to server at http://localhost:8080");
+      setAuthError("Cannot connect to server at http://localhost:8080");
     }
   };
 
@@ -775,6 +801,9 @@ export default function App() {
               ? "Create your developer profile"
               : "Reset your account password"}
           </p>
+
+          {authError && <div className="auth-alert auth-alert-error">{authError}</div>}
+          {authSuccess && <div className="auth-alert auth-alert-success">{authSuccess}</div>}
 
           {authMode === "register" && (
             <input
@@ -853,18 +882,39 @@ export default function App() {
             {authMode === "login" ? (
               <>
                 <span>Don't have an account?</span>
-                <button className="auth-link-btn" onClick={() => setAuthMode("register")}>
+                <button
+                  className="auth-link-btn"
+                  onClick={() => {
+                    setAuthError(null);
+                    setAuthSuccess(null);
+                    setAuthMode("register");
+                  }}
+                >
                   Sign Up
                 </button>
                 <span>·</span>
-                <button className="auth-link-btn" onClick={() => setAuthMode("forgot")}>
+                <button
+                  className="auth-link-btn"
+                  onClick={() => {
+                    setAuthError(null);
+                    setAuthSuccess(null);
+                    setAuthMode("forgot");
+                  }}
+                >
                   Forgot Password?
                 </button>
               </>
             ) : (
               <>
                 <span>Already have an account?</span>
-                <button className="auth-link-btn" onClick={() => setAuthMode("login")}>
+                <button
+                  className="auth-link-btn"
+                  onClick={() => {
+                    setAuthError(null);
+                    setAuthSuccess(null);
+                    setAuthMode("login");
+                  }}
+                >
                   Sign In
                 </button>
               </>
