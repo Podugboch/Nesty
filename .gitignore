@@ -4,3 +4,7 @@
 .env*.local
 .env]
 .env].save
+
+# SQLite databases & local logs
+*.db
+

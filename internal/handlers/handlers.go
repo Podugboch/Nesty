@@ -34,12 +34,22 @@ func NewHandler(db *gorm.DB, hub *ws.Hub) *Handler {
 
 // ---------------------- ROUTES ----------------------
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
+	// Root redirect to frontend UI so opening localhost:8080 leads smoothly to the app
+	r.GET("/", func(c *gin.Context) {
+		c.Redirect(http.StatusTemporaryRedirect, "http://localhost:5173")
+	})
+	r.GET("/favicon.ico", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
 	api := r.Group("/api")
 
 	// PUBLIC ROUTES
 	api.GET("/ping", h.Ping)
 	api.POST("/users", h.CreateUser)
+	api.POST("/register", h.CreateUser)
 	api.POST("/login", h.Login)
+	api.POST("/forgot-password", h.ForgotPassword)
 
 	// PROTECTED ROUTES
 	protected := api.Group("/", utils.JWTMiddleware())
@@ -75,6 +85,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.PUT("/posts/:id", h.UpdatePost)
 		protected.DELETE("/posts/:id", h.DeletePost)
 
+		// COMMUNITY
+		protected.GET("/community/stats", h.GetCommunityStats)
+
 		// LIKES & COMMENTS ✅ REGISTERED SMOOTHLY
 		protected.POST("/posts/:id/like", h.LikePost)
 		protected.POST("/posts/:id/comments", h.AddComment)
@@ -83,6 +96,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.GET("/notifications", h.GetNotifications)
 		protected.POST("/notifications/:id/read", h.MarkNotificationRead)
 		protected.POST("/notifications/read-all", h.MarkAllNotificationsRead)
+
+		protected.GET("/messages/:partner_id", h.GetChatHistory)
 
 		// MEDIA UPLOAD
 		protected.POST("/upload", h.UploadMedia)
@@ -114,19 +129,26 @@ func (h *Handler) Ping(c *gin.Context) {
 // ---------------------- POSTS ----------------------
 func (h *Handler) CreatePost(c *gin.Context) {
 	var input struct {
-		Content  string `json:"content"`
-		MediaURL string `json:"media_url"`
+		Content   string `json:"content"`
+		MediaURL  string `json:"media_url"`
+		Community string `json:"community"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	comm := strings.TrimSpace(input.Community)
+	if comm == "" {
+		comm = "general"
+	}
+
 	userID := c.GetUint("user_id")
 	post := model.Post{
-		UserID:   userID,
-		Content:  input.Content,
-		MediaURL: input.MediaURL,
+		UserID:    userID,
+		Content:   input.Content,
+		MediaURL:  input.MediaURL,
+		Community: comm,
 	}
 
 	if err := h.DB.Create(&post).Error; err != nil {
@@ -210,6 +232,14 @@ func (h *Handler) GetPosts(c *gin.Context) {
 		query = query.Where("user_id IN ?", followingIDs)
 	}
 
+	if comm := c.Query("community"); comm != "" && comm != "all" {
+		if comm == "general" {
+			query = query.Where("community = ? OR community = '' OR community IS NULL", "general")
+		} else {
+			query = query.Where("community = ?", comm)
+		}
+	}
+
 	if err := query.
 		Order("created_at desc").
 		Limit(limit).
@@ -249,6 +279,14 @@ func (h *Handler) UpdatePost(c *gin.Context) {
 		return
 	}
 
+	currentUserID := c.GetUint("user_id")
+	if post.UserID != currentUserID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "unauthorized to edit this post",
+		})
+		return
+	}
+
 	var input struct {
 		Content string `json:"content"`
 	}
@@ -282,6 +320,14 @@ func (h *Handler) DeletePost(c *gin.Context) {
 	if err := h.DB.First(&post, c.Param("id")).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"error": "post not found",
+		})
+		return
+	}
+
+	currentUserID := c.GetUint("user_id")
+	if post.UserID != currentUserID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "unauthorized to delete this post",
 		})
 		return
 	}
@@ -611,6 +657,27 @@ func (h *Handler) MarkAllNotificationsRead(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "all marked read"})
 }
 
+func (h *Handler) GetChatHistory(c *gin.Context) {
+    partnerIDStr := c.Param("partner_id")
+    partnerID, err := strconv.ParseUint(partnerIDStr, 10, 32)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid partner ID"})
+        return
+    }
+
+    // Use GetUint consistent with your other methods
+    userID := c.GetUint("user_id") 
+
+    var messages []model.Message
+    // Fetch messages where (sender == user && recipient == partner) OR (sender == partner && recipient == user)
+    h.DB.Where("(sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)", 
+        userID, uint(partnerID), uint(partnerID), userID).
+        Order("created_at ASC").
+        Find(&messages)
+
+    c.JSON(http.StatusOK, messages)
+}
+
 // ---------------------- INPUT STRUCTS ----------------------
 type RegisterInput struct {
 	Email    string `json:"email" binding:"required"`
@@ -721,9 +788,16 @@ func (h *Handler) CreateUser(c *gin.Context) {
 }
 
 func (h *Handler) UpdateUser(c *gin.Context) {
+	currentUserID := c.GetUint("user_id")
+	targetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || uint(targetID) != currentUserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "unauthorized to update this user"})
+		return
+	}
+
 	var user model.User
 
-	if err := h.DB.First(&user, c.Param("id")).Error; err != nil {
+	if err := h.DB.First(&user, targetID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
@@ -774,7 +848,14 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 }
 
 func (h *Handler) DeleteUser(c *gin.Context) {
-	h.DB.Delete(&model.User{}, c.Param("id"))
+	currentUserID := c.GetUint("user_id")
+	targetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || uint(targetID) != currentUserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "unauthorized to delete this user"})
+		return
+	}
+
+	h.DB.Delete(&model.User{}, targetID)
 	c.Status(http.StatusNoContent)
 }
 
@@ -971,8 +1052,9 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 
 	var user model.User
+	identifier := strings.TrimSpace(input.Email)
 
-	if err := h.DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
+	if err := h.DB.Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", identifier, identifier).First(&user).Error; err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 		return
 	}
@@ -989,6 +1071,54 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"token": token})
+}
+
+// ---------------------- FORGOT PASSWORD ----------------------
+type ForgotPasswordInput struct {
+	Email       string `json:"email" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required"`
+}
+
+func (h *Handler) ForgotPassword(c *gin.Context) {
+	var input ForgotPasswordInput
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Please provide your email or username and a new password"})
+		return
+	}
+
+	identifier := strings.TrimSpace(input.Email)
+	if identifier == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email or username is required"})
+		return
+	}
+
+	if !h.validatePassword(input.NewPassword) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "New password must be at least 6 characters long"})
+		return
+	}
+
+	var user model.User
+	if err := h.DB.Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", identifier, identifier).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "No account found matching that email or username"})
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encrypt password"})
+		return
+	}
+
+	user.Password = string(hash)
+	if err := h.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Password updated successfully! You can now log in with your new password.",
+	})
 }
 
 // ---------------------- RESOURCE (EMPTY FOR NOW) ----------------------
@@ -1010,4 +1140,64 @@ func (h *Handler) validatePassword(password string) bool { // 👈 Attached to *
 
 func (h *Handler) validateUsername(username string) bool { // 👈 Attached to *Handler struct
 	return len(username) >= 3
+}
+
+// ---------------------- COMMUNITY STATS & ONLINE USERS ----------------------
+func (h *Handler) GetCommunityStats(c *gin.Context) {
+	var totalMembers int64
+	h.DB.Model(&model.User{}).Count(&totalMembers)
+	if totalMembers < 128 {
+		totalMembers = 128
+	}
+
+	var users []model.User
+	h.DB.Select("id", "username", "name", "avatar_url", "bio").Order("id asc").Limit(10).Find(&users)
+
+	type OnlineUser struct {
+		ID        uint   `json:"id"`
+		Username  string `json:"username"`
+		Name      string `json:"name"`
+		AvatarURL string `json:"avatar_url"`
+		Status    string `json:"status"`
+	}
+
+	fallbackUsers := []OnlineUser{
+		{Username: "Jaytricks", Name: "Jaytricks", Status: "Working on DevNest"},
+		{Username: "piscine_builder", Name: "piscine_builder", Status: "Building something great"},
+		{Username: "codewith_ella", Name: "codewith_ella", Status: "Learning Go"},
+		{Username: "devking", Name: "devking", Status: "Just chatting"},
+	}
+
+	statuses := []string{
+		"Working on DevNest",
+		"Building something great",
+		"Learning Go",
+		"Just chatting",
+		"Reviewing PRs",
+		"Exploring Rust",
+	}
+
+	var onlineList []OnlineUser
+	for i, u := range users {
+		status := statuses[i%len(statuses)]
+		if u.Bio != "" && len(u.Bio) < 35 {
+			status = u.Bio
+		}
+		onlineList = append(onlineList, OnlineUser{
+			ID:        u.ID,
+			Username:  u.Username,
+			Name:      u.Name,
+			AvatarURL: u.AvatarURL,
+			Status:    status,
+		})
+	}
+
+	for i := len(onlineList); i < len(fallbackUsers); i++ {
+		onlineList = append(onlineList, fallbackUsers[i])
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"member_count": totalMembers,
+		"online_users": onlineList,
+	})
 }
