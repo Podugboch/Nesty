@@ -39,7 +39,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// PUBLIC ROUTES
 	api.GET("/ping", h.Ping)
 	api.POST("/users", h.CreateUser)
+	api.POST("/register", h.CreateUser)
 	api.POST("/login", h.Login)
+	api.POST("/forgot-password", h.ForgotPassword)
+	api.GET("/community-stats", h.GetCommunityStats)
+	api.GET("/community/stats", h.GetCommunityStats)
 
 	// PROTECTED ROUTES
 	protected := api.Group("/", utils.JWTMiddleware())
@@ -86,6 +90,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// MEDIA UPLOAD
 		protected.POST("/upload", h.UploadMedia)
+
+		// MESSAGES & CHAT
+		protected.GET("/messages/:partner_id", h.GetChatHistory)
+		protected.POST("/messages", h.SendMessage)
+
+		// CALL & WEBRTC SIGNALING
+		protected.GET("/call/online/:id", h.CheckUserOnline)
+		protected.POST("/call/signal", h.SendCallSignal)
 	}
 
 	// WebSocket
@@ -114,19 +126,26 @@ func (h *Handler) Ping(c *gin.Context) {
 // ---------------------- POSTS ----------------------
 func (h *Handler) CreatePost(c *gin.Context) {
 	var input struct {
-		Content  string `json:"content"`
-		MediaURL string `json:"media_url"`
+		Content   string `json:"content"`
+		MediaURL  string `json:"media_url"`
+		Community string `json:"community"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	comm := strings.TrimSpace(input.Community)
+	if comm == "" {
+		comm = "general"
+	}
+
 	userID := c.GetUint("user_id")
 	post := model.Post{
-		UserID:   userID,
-		Content:  input.Content,
-		MediaURL: input.MediaURL,
+		UserID:    userID,
+		Content:   input.Content,
+		MediaURL:  input.MediaURL,
+		Community: comm,
 	}
 
 	if err := h.DB.Create(&post).Error; err != nil {
@@ -208,6 +227,15 @@ func (h *Handler) GetPosts(c *gin.Context) {
 		h.DB.Model(&model.Follow{}).Where("follower_id = ?", userID).Pluck("following_id", &followingIDs)
 		followingIDs = append(followingIDs, userID) // include your own posts too
 		query = query.Where("user_id IN ?", followingIDs)
+	}
+
+	community := strings.TrimSpace(c.Query("community"))
+	if community != "" && community != "all" {
+		if community == "general" {
+			query = query.Where("community = ? OR community IS NULL OR community = ''", "general")
+		} else {
+			query = query.Where("community = ?", community)
+		}
 	}
 
 	if err := query.
@@ -760,13 +788,27 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 		user.Password = string(hash)
 	}
 
-	user.Name = input.Name
-	user.Bio = input.Bio
-	user.Skills = input.Skills
-	user.Batch = input.Batch
-	user.Location = input.Location
-	user.AvatarURL = input.AvatarURL
-	user.BannerURL = input.BannerURL
+	if input.Name != "" {
+		user.Name = input.Name
+	}
+	if input.Bio != "" {
+		user.Bio = input.Bio
+	}
+	if input.Skills != "" {
+		user.Skills = input.Skills
+	}
+	if input.Batch != "" {
+		user.Batch = input.Batch
+	}
+	if input.Location != "" {
+		user.Location = input.Location
+	}
+	if input.AvatarURL != "" {
+		user.AvatarURL = input.AvatarURL
+	}
+	if input.BannerURL != "" {
+		user.BannerURL = input.BannerURL
+	}
 
 	h.DB.Save(&user)
 
@@ -970,25 +1012,84 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
-	var user model.User
+	identifier := strings.TrimSpace(input.Email)
+	var users []model.User
 
-	if err := h.DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
+	if err := h.DB.Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", identifier, identifier).Find(&users).Error; err != nil || len(users) == 0 {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 		return
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
+	var authenticatedUser *model.User
+	for i := range users {
+		if err := bcrypt.CompareHashAndPassword([]byte(users[i].Password), []byte(input.Password)); err == nil {
+			authenticatedUser = &users[i]
+			break
+		}
+	}
+
+	if authenticatedUser == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "password mismatch"})
 		return
 	}
 
-	token, err := utils.GenerateToken(user.ID)
+	token, err := utils.GenerateToken(authenticatedUser.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"token": token})
+}
+
+// ---------------------- FORGOT PASSWORD ----------------------
+type ForgotPasswordInput struct {
+	Email       string `json:"email" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required"`
+}
+
+func (h *Handler) ForgotPassword(c *gin.Context) {
+	var input ForgotPasswordInput
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Please provide your email or username and a new password"})
+		return
+	}
+
+	identifier := strings.TrimSpace(input.Email)
+	if identifier == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email or username is required"})
+		return
+	}
+
+	if !h.validatePassword(input.NewPassword) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "New password must be at least 6 characters long"})
+		return
+	}
+
+	var users []model.User
+	if err := h.DB.Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", identifier, identifier).Find(&users).Error; err != nil || len(users) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "No account found matching that email or username"})
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encrypt password"})
+		return
+	}
+
+	for i := range users {
+		users[i].Password = string(hash)
+		if err := h.DB.Save(&users[i]).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Password updated successfully! You can now log in with your new password.",
+	})
 }
 
 // ---------------------- RESOURCE (EMPTY FOR NOW) ----------------------
@@ -1010,4 +1111,172 @@ func (h *Handler) validatePassword(password string) bool { // 👈 Attached to *
 
 func (h *Handler) validateUsername(username string) bool { // 👈 Attached to *Handler struct
 	return len(username) >= 3
+}
+
+// ---------------------- COMMUNITY STATS & ONLINE USERS ----------------------
+func (h *Handler) GetCommunityStats(c *gin.Context) {
+	var totalUsers int64
+	h.DB.Model(&model.User{}).Count(&totalUsers)
+
+	var users []model.User
+	h.DB.Select("id", "username", "name", "avatar_url", "bio").Order("id asc").Limit(20).Find(&users)
+
+	type OnlineUser struct {
+		ID        uint   `json:"id"`
+		Username  string `json:"username"`
+		Name      string `json:"name"`
+		AvatarURL string `json:"avatar_url"`
+		Status    string `json:"status"`
+	}
+
+	statuses := []string{
+		"Working on DevNest",
+		"Building something great",
+		"Learning Go",
+		"Active now",
+		"Reviewing PRs",
+		"Exploring Rust",
+	}
+
+	var onlineList []OnlineUser
+	for i, u := range users {
+		status := statuses[i%len(statuses)]
+		if u.Bio != "" && len(u.Bio) < 35 {
+			status = u.Bio
+		}
+		onlineList = append(onlineList, OnlineUser{
+			ID:        u.ID,
+			Username:  u.Username,
+			Name:      u.Name,
+			AvatarURL: u.AvatarURL,
+			Status:    status,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user_count":   totalUsers,
+		"total_users":  totalUsers,
+		"member_count": totalUsers,
+		"online_users": onlineList,
+	})
+}
+
+// ---------------------- CHAT & DIRECT MESSAGING ----------------------
+func (h *Handler) GetChatHistory(c *gin.Context) {
+	partnerIDStr := c.Param("partner_id")
+	partnerID, err := strconv.ParseUint(partnerIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid partner ID"})
+		return
+	}
+
+	userID := c.GetUint("user_id")
+	var messages []model.Message
+	h.DB.Where("(sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)",
+		userID, uint(partnerID), uint(partnerID), userID).
+		Order("created_at ASC").
+		Find(&messages)
+
+	c.JSON(http.StatusOK, messages)
+}
+
+func (h *Handler) SendMessage(c *gin.Context) {
+	var input struct {
+		RecipientID uint   `json:"recipient_id" binding:"required"`
+		Content     string `json:"content" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	content := strings.TrimSpace(input.Content)
+	if content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "message cannot be empty"})
+		return
+	}
+
+	userID := c.GetUint("user_id")
+	msg := model.Message{
+		SenderID:    userID,
+		RecipientID: input.RecipientID,
+		Content:     content,
+	}
+
+	if err := h.DB.Create(&msg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save message"})
+		return
+	}
+
+	if userID != input.RecipientID {
+		notif := model.Notification{
+			UserID:  input.RecipientID,
+			ActorID: userID,
+			Type:    "message",
+			Read:    false,
+		}
+		_ = h.DB.Create(&notif)
+	}
+
+	c.JSON(http.StatusCreated, msg)
+}
+
+// ---------------------- CALL & WEBRTC SIGNALING ----------------------
+func (h *Handler) CheckUserOnline(c *gin.Context) {
+	partnerIDStr := c.Param("id")
+	targetID, err := strconv.ParseUint(partnerIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+		return
+	}
+
+	online := h.Hub.IsUserOnline(uint(targetID))
+	c.JSON(http.StatusOK, gin.H{
+		"online":  online,
+		"user_id": targetID,
+	})
+}
+
+type CallSignalInput struct {
+	ToUserID uint        `json:"to_user_id" binding:"required"`
+	Type     string      `json:"type" binding:"required"`
+	Data     interface{} `json:"data"`
+}
+
+func (h *Handler) SendCallSignal(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var input CallSignalInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Fetch caller profile so callee can display name/avatar
+	var caller model.User
+	h.DB.Select("id", "username", "name", "avatar_url").First(&caller, userID)
+
+	online := h.Hub.IsUserOnline(input.ToUserID)
+
+	payload, _ := json.Marshal(gin.H{
+		"event":        "call_signal",
+		"type":         input.Type,
+		"from_user_id": userID,
+		"to_user_id":   input.ToUserID,
+		"caller": gin.H{
+			"id":         caller.ID,
+			"username":   caller.Username,
+			"name":       caller.Name,
+			"avatar_url": caller.AvatarURL,
+		},
+		"data": input.Data,
+	})
+
+	sent := h.Hub.SendToUser(input.ToUserID, payload)
+
+	c.JSON(http.StatusOK, gin.H{
+		"sent":    sent,
+		"online":  online,
+		"type":    input.Type,
+		"to_user": input.ToUserID,
+	})
 }
