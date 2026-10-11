@@ -87,6 +87,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.GET("/notifications", h.GetNotifications)
 		protected.POST("/notifications/:id/read", h.MarkNotificationRead)
 		protected.POST("/notifications/read-all", h.MarkAllNotificationsRead)
+		protected.POST("/notifications/call", h.RecordCallNotification)
 
 		// MEDIA UPLOAD
 		protected.POST("/upload", h.UploadMedia)
@@ -637,6 +638,27 @@ func (h *Handler) MarkAllNotificationsRead(c *gin.Context) {
 		Update("read", true)
 
 	c.JSON(http.StatusOK, gin.H{"message": "all marked read"})
+}
+
+type CallNotificationInput struct {
+	ToUserID uint   `json:"to_user_id" binding:"required"`
+	Type     string `json:"type" binding:"required"`
+}
+
+func (h *Handler) RecordCallNotification(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var input CallNotificationInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if input.Type != "missed_call" && input.Type != "missed_video_call" {
+		input.Type = "missed_call"
+	}
+
+	h.createNotification(input.ToUserID, userID, input.Type, nil)
+	c.JSON(http.StatusOK, gin.H{"message": "recorded", "type": input.Type})
 }
 
 // ---------------------- INPUT STRUCTS ----------------------
@@ -1301,6 +1323,10 @@ func (h *Handler) SendCallSignal(c *gin.Context) {
 	})
 
 	sent := h.Hub.SendToUser(input.ToUserID, payload)
+
+	if input.Type == "missed_call" || input.Type == "missed_video_call" {
+		h.createNotification(input.ToUserID, userID, input.Type, nil)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"sent":    sent,

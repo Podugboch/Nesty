@@ -10,7 +10,7 @@ type Notification struct {
 	UserID    uint      `gorm:"index;not null" json:"user_id"`
 	ActorID   uint      `gorm:"not null" json:"actor_id"`
 	Actor     *User     `gorm:"foreignKey:ActorID" json:"actor"`
-	Type      string    `gorm:"not null" json:"type"` // "like" | "comment" | "follow"
+	Type      string    `gorm:"not null" json:"type"` // "like" | "comment" | "follow" | "repost" | "mention" | "message" | "missed_call" | "missed_video_call"
 	PostID    *uint     `json:"post_id,omitempty"`
 	Read      bool      `gorm:"default:false" json:"read"`
 	CreatedAt time.Time `json:"created_at"`

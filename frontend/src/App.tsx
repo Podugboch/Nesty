@@ -78,7 +78,7 @@ type Notification = {
   user_id: number;
   actor_id: number;
   actor?: User;
-  type: "like" | "comment" | "follow" | "mention" | "repost";
+  type: "like" | "comment" | "follow" | "mention" | "repost" | "missed_call" | "missed_video_call";
   post_id?: number;
   read: boolean;
   created_at: string;
@@ -224,6 +224,8 @@ export default function App() {
   const callDisconnectTimeoutRef = useRef<any>(null);
   const callRingTimeoutRef = useRef<any>(null);
   const iceQueueRef = useRef<any[]>([]);
+  const incomingCallNotifRef = useRef<any>(null);
+  const tokenRef = useRef<string | null>(null);
 
   // Hamburger drawer accordion state
   const [showOverview, setShowOverview] = useState(false);
@@ -510,6 +512,43 @@ export default function App() {
   useEffect(() => {
     userRef.current = user;
   }, [user]);
+
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
+
+  // Request phone screen takeover on mobile
+  const requestMobileScreenTakeover = () => {
+    if (typeof window !== "undefined" && window.innerWidth <= 768) {
+      try {
+        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        }
+      } catch {}
+    }
+  };
+
+  // Vibrate mobile device when an incoming call is received
+  useEffect(() => {
+    if (!incomingCall) return;
+    let vibTimer: any;
+    if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+      try {
+        navigator.vibrate([600, 300, 600, 300, 600, 300, 1000]);
+        vibTimer = setInterval(() => {
+          navigator.vibrate([600, 300, 600, 300, 600, 300, 1000]);
+        }, 3400);
+      } catch {}
+    }
+    return () => {
+      if (vibTimer) clearInterval(vibTimer);
+      if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+        try {
+          navigator.vibrate(0);
+        } catch {}
+      }
+    };
+  }, [incomingCall]);
 
   // Ringtone synthesizer functions using Web Audio API
   const startCallerRingtone = (): (() => void) => {
@@ -816,6 +855,25 @@ export default function App() {
     return { sent: wsDelivered };
   };
 
+  const sendMissedCallNotification = async (toUserId: number, isVideo: boolean = false) => {
+    const callType = isVideo ? "missed_video_call" : "missed_call";
+    try {
+      await fetch(`${API_URL}/api/notifications/call`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenRef.current || token}`,
+        },
+        body: JSON.stringify({
+          to_user_id: toUserId,
+          type: callType,
+        }),
+      });
+    } catch (err) {
+      console.warn("Failed to record missed call notification", err);
+    }
+  };
+
   const createPeerConnection = (targetUserId: number, isVideo: boolean = false): RTCPeerConnection => {
     if (peerConnectionRef.current) {
       try {
@@ -888,6 +946,7 @@ export default function App() {
 
   const startCallWithUser = async (targetUser: User, video: boolean = false) => {
     cleanupMediaAndCall();
+    requestMobileScreenTakeover();
 
     setActiveCall({
       partner: targetUser,
@@ -930,6 +989,7 @@ export default function App() {
           ringtoneCleanupRef.current = null;
         }
         playDisconnectTone();
+        sendMissedCallNotification(targetUser.id, video);
 
         setActiveCall((prev) =>
           prev
@@ -955,6 +1015,7 @@ export default function App() {
         }
         playDisconnectTone();
         sendCallSignal("call_timeout", targetUser.id);
+        sendMissedCallNotification(targetUser.id, video);
         setActiveCall((prev) =>
           prev
             ? {
@@ -974,6 +1035,9 @@ export default function App() {
 
   const endCall = () => {
     if (activeCall) {
+      if (activeCall.isCaller && (activeCall.status === "calling" || activeCall.status === "ringing")) {
+        sendMissedCallNotification(activeCall.partner.id, activeCall.isVideo);
+      }
       sendCallSignal("call_ended", activeCall.partner.id);
       playDisconnectTone();
       setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Call ended" } : null));
@@ -990,8 +1054,28 @@ export default function App() {
       ringtoneCleanupRef.current();
       ringtoneCleanupRef.current = null;
     }
+    if (incomingCallNotifRef.current) {
+      incomingCallNotifRef.current.close();
+      incomingCallNotifRef.current = null;
+    }
     sendCallSignal("call_declined", incomingCall.caller.id);
+
+    const caller = incomingCall.caller;
+    const isVid = incomingCall.isVideo;
     setIncomingCall(null);
+
+    // Record as missed call locally so user sees immediate history
+    const missedNotif: Notification = {
+      id: Date.now(),
+      user_id: user?.id || 0,
+      actor_id: caller.id,
+      actor: caller,
+      type: isVid ? "missed_video_call" : "missed_call",
+      read: false,
+      created_at: new Date().toISOString(),
+    };
+    setNotifications((prev) => [missedNotif, ...prev]);
+    setUnreadCount((prev) => prev + 1);
   };
 
   const acceptIncomingCall = async () => {
@@ -1000,6 +1084,11 @@ export default function App() {
       ringtoneCleanupRef.current();
       ringtoneCleanupRef.current = null;
     }
+    if (incomingCallNotifRef.current) {
+      incomingCallNotifRef.current.close();
+      incomingCallNotifRef.current = null;
+    }
+    requestMobileScreenTakeover();
 
     const partner = incomingCall.caller;
     const isVideo = incomingCall.isVideo;
@@ -1077,17 +1166,50 @@ export default function App() {
         username: `User_${fromUserId}`,
         email: "",
       };
+      const isVideo = !!signal.data?.isVideo;
       setIncomingCall({
         caller: callerUser,
-        isVideo: !!signal.data?.isVideo,
+        isVideo,
         callId: signal.data?.callId,
       });
       if (ringtoneCleanupRef.current) ringtoneCleanupRef.current();
       ringtoneCleanupRef.current = startIncomingRingtone();
+
+      // Show system notification when app is backgrounded
+      if (typeof window !== "undefined" && "Notification" in window) {
+        if (Notification.permission === "granted") {
+          try {
+            const notifTitle = isVideo
+              ? `📹 Incoming Video Call from ${callerUser.name || callerUser.username}`
+              : `📞 Incoming Voice Call from ${callerUser.name || callerUser.username}`;
+            const sysNotif = new Notification(notifTitle, {
+              body: "DevNest • Tap to answer immediately",
+              icon: callerUser.avatar_url || "/favicon.ico",
+              tag: "devnest-incoming-call",
+              requireInteraction: true,
+              vibrate: [600, 300, 600, 300, 600, 300, 1000],
+            } as any);
+            sysNotif.onclick = () => {
+              window.focus();
+              requestMobileScreenTakeover();
+              sysNotif.close();
+            };
+            incomingCallNotifRef.current = sysNotif;
+          } catch (e) {
+            console.warn("Could not show system call notification", e);
+          }
+        } else if (Notification.permission === "default") {
+          Notification.requestPermission().catch(() => {});
+        }
+      }
     } else if (signal.type === "call_accepted") {
       if (ringtoneCleanupRef.current) {
         ringtoneCleanupRef.current();
         ringtoneCleanupRef.current = null;
+      }
+      if (incomingCallNotifRef.current) {
+        incomingCallNotifRef.current.close();
+        incomingCallNotifRef.current = null;
       }
       clearTimeout(callDisconnectTimeoutRef.current);
 
@@ -1120,6 +1242,10 @@ export default function App() {
         ringtoneCleanupRef.current();
         ringtoneCleanupRef.current = null;
       }
+      if (incomingCallNotifRef.current) {
+        incomingCallNotifRef.current.close();
+        incomingCallNotifRef.current = null;
+      }
       clearTimeout(callDisconnectTimeoutRef.current);
       playDisconnectTone();
       setActiveCall((prev) =>
@@ -1139,6 +1265,10 @@ export default function App() {
       if (ringtoneCleanupRef.current) {
         ringtoneCleanupRef.current();
         ringtoneCleanupRef.current = null;
+      }
+      if (incomingCallNotifRef.current) {
+        incomingCallNotifRef.current.close();
+        incomingCallNotifRef.current = null;
       }
       clearTimeout(callDisconnectTimeoutRef.current);
       playDisconnectTone();
@@ -1160,7 +1290,36 @@ export default function App() {
         ringtoneCleanupRef.current();
         ringtoneCleanupRef.current = null;
       }
+      if (incomingCallNotifRef.current) {
+        incomingCallNotifRef.current.close();
+        incomingCallNotifRef.current = null;
+      }
       playDisconnectTone();
+      if (incomingCallRef.current) {
+        const caller = incomingCallRef.current.caller;
+        const isVid = incomingCallRef.current.isVideo;
+        const missedNotif: Notification = {
+          id: Date.now(),
+          user_id: userRef.current?.id || 0,
+          actor_id: caller.id,
+          actor: caller,
+          type: isVid ? "missed_video_call" : "missed_call",
+          read: false,
+          created_at: new Date().toISOString(),
+        };
+        setNotifications((prev) => [missedNotif, ...prev]);
+        setUnreadCount((prev) => prev + 1);
+
+        if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+          try {
+            new Notification(isVid ? "📹❌ Missed Video Call" : "📵 Missed Audio Call", {
+              body: `Missed call from ${caller.name || caller.username}. Tap to call back.`,
+              icon: caller.avatar_url || "/favicon.ico",
+              tag: `missed-call-${Date.now()}`,
+            });
+          } catch {}
+        }
+      }
       setIncomingCall(null);
     } else if (signal.type === "webrtc_offer") {
       const isVideo = !!signal.data?.isVideo || !!currentActiveCall?.isVideo;
@@ -1222,7 +1381,36 @@ export default function App() {
         ringtoneCleanupRef.current();
         ringtoneCleanupRef.current = null;
       }
+      if (incomingCallNotifRef.current) {
+        incomingCallNotifRef.current.close();
+        incomingCallNotifRef.current = null;
+      }
       playDisconnectTone();
+      if (incomingCallRef.current) {
+        const caller = incomingCallRef.current.caller;
+        const isVid = incomingCallRef.current.isVideo;
+        const missedNotif: Notification = {
+          id: Date.now(),
+          user_id: userRef.current?.id || 0,
+          actor_id: caller.id,
+          actor: caller,
+          type: isVid ? "missed_video_call" : "missed_call",
+          read: false,
+          created_at: new Date().toISOString(),
+        };
+        setNotifications((prev) => [missedNotif, ...prev]);
+        setUnreadCount((prev) => prev + 1);
+
+        if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+          try {
+            new Notification(isVid ? "📹❌ Missed Video Call" : "📵 Missed Audio Call", {
+              body: `Missed call from ${caller.name || caller.username}. Tap to call back.`,
+              icon: caller.avatar_url || "/favicon.ico",
+              tag: `missed-call-${Date.now()}`,
+            });
+          } catch {}
+        }
+      }
       setIncomingCall(null);
       setActiveCall((prev) =>
         prev
@@ -1326,6 +1514,20 @@ export default function App() {
             if (data.event === "notification" && data.notification) {
               setNotifications((prev) => [data.notification, ...prev]);
               setUnreadCount((prev) => prev + 1);
+
+              if (data.notification.type === "missed_call" || data.notification.type === "missed_video_call") {
+                if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+                  const isVid = data.notification.type === "missed_video_call";
+                  const callerName = data.notification.actor?.name || data.notification.actor?.username || "Someone";
+                  try {
+                    new Notification(isVid ? "📹❌ Missed Video Call" : "📵 Missed Audio Call", {
+                      body: `Missed call from ${callerName}. Tap to open DevNest.`,
+                      icon: data.notification.actor?.avatar_url || "/favicon.ico",
+                      tag: `missed-call-${data.notification.id || Date.now()}`,
+                    });
+                  } catch {}
+                }
+              }
             } else if (
               data.event === "call_signal" ||
               (data.type && (data.type.startsWith("call_") || data.type.startsWith("webrtc_") || data.type === "ice_candidate"))
@@ -1526,12 +1728,14 @@ export default function App() {
   };
 
   const notificationText = (n: Notification) => {
-    const name = n.actor?.username || "Someone";
+    const name = n.actor?.name || n.actor?.username || "Someone";
     if (n.type === "like") return `${name} liked your post`;
     if (n.type === "comment") return `${name} commented on your post`;
     if (n.type === "follow") return `${name} started following you`;
     if (n.type === "mention") return `${name} mentioned you in a post`;
     if (n.type === "repost") return `${name} reposted your post`;
+    if (n.type === "missed_call") return `Missed audio call from @${n.actor?.username || name}`;
+    if (n.type === "missed_video_call") return `Missed video call from @${n.actor?.username || name}`;
     return `${name} interacted with your post`;
   };
 
@@ -2687,64 +2891,103 @@ export default function App() {
         </div>
       </aside>
 
-      {/* NOTIFICATIONS FLYOUT */}
+      {/* NOTIFICATIONS FLYOUT WITH BACKGROUND BLUR */}
       {notifOpen && (
-        <div className="notifications-flyout">
-          <div className="notif-header">
-            <b>Notifications</b>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              {unreadCount > 0 && (
+        <>
+          <div
+            className="notifications-backdrop-blur"
+            onClick={() => setNotifOpen(false)}
+            aria-label="Close notifications"
+          />
+          <div className="notifications-flyout">
+            <div className="notif-header">
+              <b>Notifications</b>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                {unreadCount > 0 && (
+                  <button
+                    className="edit-profile-pill-btn"
+                    style={{ padding: "4px 10px", fontSize: "12px" }}
+                    onClick={markAllNotificationsRead}
+                  >
+                    Mark all read
+                  </button>
+                )}
                 <button
                   className="edit-profile-pill-btn"
-                  style={{ padding: "4px 10px", fontSize: "12px" }}
-                  onClick={markAllNotificationsRead}
+                  style={{ padding: "4px 8px", fontSize: "12px" }}
+                  onClick={() => setNotifOpen(false)}
+                  title="Close"
                 >
-                  Mark all read
+                  ✕
                 </button>
+              </div>
+            </div>
+            <div className="notif-list-container">
+              {notifications.length === 0 ? (
+                <div style={{ padding: "16px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
+                  No notifications yet.
+                </div>
+              ) : (
+                notifications.map((n) => {
+                  const isMissedAudio = n.type === "missed_call";
+                  const isMissedVideo = n.type === "missed_video_call";
+                  const isMissed = isMissedAudio || isMissedVideo;
+
+                  return (
+                    <div
+                      key={n.id}
+                      className={`notif-row-item ${n.read ? "" : "unread"} ${isMissed ? "missed-call-row" : ""}`}
+                      onClick={() => {
+                        markNotificationRead(n.id);
+                        if (n.actor_id) openProfile(n.actor_id);
+                      }}
+                    >
+                      <div className="search-avatar-mini" style={{ position: "relative" }}>
+                        {n.actor?.avatar_url ? (
+                          <img src={n.actor.avatar_url} alt="" />
+                        ) : (
+                          (n.actor?.username || "?").charAt(0).toUpperCase()
+                        )}
+                        {isMissed && (
+                          <span className={`missed-badge-icon ${isMissedVideo ? "video" : "audio"}`}>
+                            {isMissedVideo ? "📹" : "📞"}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ flex: 1, fontSize: "13px", minWidth: 0 }}>
+                        <div style={{ fontWeight: isMissed ? 600 : 400, color: isMissed ? "var(--text)" : "inherit" }}>
+                          {notificationText(n)}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span>{timeAgo(n.created_at)}</span>
+                          {isMissed && (
+                            <span className={`missed-pill-tag ${isMissedVideo ? "video" : "audio"}`}>
+                              {isMissedVideo ? "Missed Video Call" : "Missed Audio Call"}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {isMissed && n.actor && (
+                        <button
+                          className={`notif-call-back-btn ${isMissedVideo ? "video" : "audio"}`}
+                          title={isMissedVideo ? "Video call back" : "Audio call back"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            markNotificationRead(n.id);
+                            setNotifOpen(false);
+                            startCallWithUser(n.actor!, isMissedVideo);
+                          }}
+                        >
+                          {isMissedVideo ? "📹 Call back" : "📞 Call back"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
               )}
-              <button
-                className="edit-profile-pill-btn"
-                style={{ padding: "4px 8px", fontSize: "12px" }}
-                onClick={() => setNotifOpen(false)}
-                title="Close"
-              >
-                ✕
-              </button>
             </div>
           </div>
-          <div className="notif-list-container">
-            {notifications.length === 0 ? (
-              <div style={{ padding: "16px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
-                No notifications yet.
-              </div>
-            ) : (
-              notifications.map((n) => (
-                <div
-                  key={n.id}
-                  className={`notif-row-item ${n.read ? "" : "unread"}`}
-                  onClick={() => {
-                    markNotificationRead(n.id);
-                    if (n.actor_id) openProfile(n.actor_id);
-                  }}
-                >
-                  <div className="search-avatar-mini">
-                    {n.actor?.avatar_url ? (
-                      <img src={n.actor.avatar_url} alt="" />
-                    ) : (
-                      (n.actor?.username || "?").charAt(0).toUpperCase()
-                    )}
-                  </div>
-                  <div style={{ flex: 1, fontSize: "13px" }}>
-                    <div>{notificationText(n)}</div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
-                      {timeAgo(n.created_at)}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+        </>
       )}
 
       {/* =====================================================================
@@ -4098,8 +4341,8 @@ export default function App() {
           INCOMING CALL MODAL
           ===================================================================== */}
       {incomingCall && (
-        <div className="incoming-call-overlay">
-          <div className="incoming-call-card">
+        <div className="incoming-call-overlay" onClick={requestMobileScreenTakeover}>
+          <div className="incoming-call-card" onClick={(e) => { e.stopPropagation(); requestMobileScreenTakeover(); }}>
             <div
               className="call-avatar-wrapper"
               style={{ cursor: "pointer" }}
@@ -4173,7 +4416,13 @@ export default function App() {
           {/* Real Audio playback element */}
           <audio ref={remoteAudioRef} autoPlay playsInline />
 
-          <div className={`call-modal-card ${activeCall.isVideo && activeCall.status === "connected" ? "video-active" : ""}`} onClick={(e) => e.stopPropagation()}>
+          <div
+            className={`call-modal-card ${activeCall.isVideo && activeCall.status === "connected" ? "video-active" : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              requestMobileScreenTakeover();
+            }}
+          >
             {!(activeCall.isVideo && activeCall.status === "connected") ? (
               <>
                 <div
