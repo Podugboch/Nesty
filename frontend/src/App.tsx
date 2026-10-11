@@ -2645,6 +2645,20 @@ export default function App() {
           <div className="drawer-accordion-group">
             <div className="mobile-divider" style={{ margin: "12px 0 8px 0" }} />
 
+            {/* ANDROID APP DOWNLOAD */}
+            <a
+              href="/DevNest.apk"
+              download="DevNest.apk"
+              className="drawer-menu-item-btn"
+              style={{ textDecoration: "none", color: "inherit" }}
+            >
+              <div className="drawer-menu-item-left">
+                <span className="drawer-menu-icon">📱</span>
+                <span className="drawer-menu-title">Download Android App</span>
+              </div>
+              <span className="drawer-menu-chevron" style={{ fontSize: "14px" }}>↓</span>
+            </a>
+
             {/* 1. COMMUNITY OVERVIEW */}
             <button
               type="button"
@@ -3822,6 +3836,45 @@ export default function App() {
             <span>+</span>
             <span>Invite friends</span>
           </button>
+        </div>
+
+        {/* CARD: MOBILE APP BARCODE DOWNLOAD */}
+        <div className="apk-download-widget">
+          <div className="apk-widget-badge">
+            <span>📱</span>
+            <span>Android App</span>
+          </div>
+          <h4 className="apk-widget-title">Get DevNest on Mobile</h4>
+          <p className="apk-widget-desc">
+            Scan this barcode with your phone camera to download the APK directly:
+          </p>
+
+          <div className="apk-qr-container">
+            <div className="apk-qr-frame">
+              <img
+                src="/devnest-apk-qr.png"
+                alt="Scan barcode to download DevNest APK"
+                className="apk-qr-image"
+              />
+            </div>
+            <div className="apk-qr-label">
+              <span className="apk-qr-dot" />
+              <span>Point phone camera to scan • 6.5 MB</span>
+            </div>
+          </div>
+
+          <a
+            href="/DevNest.apk"
+            download="DevNest.apk"
+            className="apk-download-direct-btn"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span>Download APK Directly</span>
+          </a>
         </div>
 
         {/* CARD 2: FEATURED CHANNELS */}

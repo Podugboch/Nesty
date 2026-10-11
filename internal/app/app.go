@@ -74,6 +74,7 @@ func Run() error {
 		r.StaticFile("/favicon.svg", distPath+"/favicon.svg")
 		r.StaticFile("/nesty-logo.png", distPath+"/nesty-logo.png")
 		r.StaticFile("/DevNest.apk", distPath+"/DevNest.apk")
+		r.StaticFile("/devnest-apk-qr.png", distPath+"/devnest-apk-qr.png")
 
 		r.NoRoute(func(c *gin.Context) {
 			path := c.Request.URL.Path
