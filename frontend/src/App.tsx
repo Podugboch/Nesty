@@ -2,6 +2,17 @@ import { useState, useEffect, useRef } from "react";
 import { timeAgo } from "./utils/timeAgo";
 import "./App.css";
 
+const API_URL: string = (import.meta as any).env?.VITE_API_URL ||
+  (typeof window !== "undefined" && window.location.hostname === "localhost" && window.location.port === "5173"
+    ? "http://localhost:8080"
+    : (typeof window !== "undefined" ? window.location.origin : "http://localhost:8080"));
+
+const WS_BASE_URL: string = (import.meta as any).env?.VITE_WS_URL ||
+  (typeof window !== "undefined" && window.location.hostname === "localhost" && window.location.port === "5173"
+    ? `${typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:"}//${typeof window !== "undefined" ? window.location.hostname : "localhost"}:8080`
+    : (typeof window !== "undefined" ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}` : "ws://localhost:8080"));
+
+
 type User = {
   id: number;
   username: string;
@@ -282,7 +293,7 @@ export default function App() {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await fetch("http://localhost:8080/api/upload", {
+      const res = await fetch(`${API_URL}/api/upload`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
@@ -331,7 +342,7 @@ export default function App() {
     const url = await uploadImageFile(file);
     if (url) {
       try {
-        const res = await fetch(`http://localhost:8080/api/users/${user.id}`, {
+        const res = await fetch(`${API_URL}/api/users/${user.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ avatar_url: url }),
@@ -353,7 +364,7 @@ export default function App() {
     const url = await uploadImageFile(file);
     if (url) {
       try {
-        const res = await fetch(`http://localhost:8080/api/users/${user.id}`, {
+        const res = await fetch(`${API_URL}/api/users/${user.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ banner_url: url }),
@@ -382,7 +393,7 @@ export default function App() {
   
   const fetchCommunityStats = async () => {
     try {
-      const res = await fetch("http://localhost:8080/api/community-stats");
+      const res = await fetch(`${API_URL}/api/community-stats`);
       if (res.ok) {
         const data = await res.json();
         setCommunityStats(data);
@@ -404,7 +415,7 @@ export default function App() {
     setActiveChatPartner(targetUser);
     setIsChatLoading(true);
     try {
-      const res = await fetch(`http://localhost:8080/api/messages/${targetUser.id}`, {
+      const res = await fetch(`${API_URL}/api/messages/${targetUser.id}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
@@ -432,7 +443,7 @@ export default function App() {
     setChatMessages((prev) => [...prev, tempMsg]);
 
     try {
-      const res = await fetch("http://localhost:8080/api/messages", {
+      const res = await fetch(`${API_URL}/api/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -464,7 +475,7 @@ export default function App() {
     if (!activeChatPartner || !token) return;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`http://localhost:8080/api/messages/${activeChatPartner.id}`, {
+        const res = await fetch(`${API_URL}/api/messages/${activeChatPartner.id}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.ok) {
@@ -681,7 +692,7 @@ export default function App() {
       wsRef.current.send(JSON.stringify(payload));
     }
     try {
-      const res = await fetch("http://localhost:8080/api/call/signal", {
+      const res = await fetch(`${API_URL}/api/call/signal`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1078,7 +1089,7 @@ export default function App() {
   const fetchNotifications = async () => {
     if (!token) return;
     try {
-      const res = await fetch("http://localhost:8080/api/notifications", {
+      const res = await fetch(`${API_URL}/api/notifications`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
@@ -1103,9 +1114,7 @@ export default function App() {
   // -----------------------------
   useEffect(() => {
     if (!token || !user) return;
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsHost = window.location.hostname || "localhost";
-    const ws = new WebSocket(`${wsProtocol}//${wsHost}:8080/ws?token=${token}`);
+    const ws = new WebSocket(`${WS_BASE_URL}/ws?token=${token}`);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
@@ -1136,7 +1145,7 @@ export default function App() {
   // -----------------------------
   useEffect(() => {
     if (!token) return;
-    fetch("http://localhost:8080/api/community/stats", {
+    fetch(`${API_URL}/api/community/stats`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => (res.ok ? res.json() : null))
@@ -1153,7 +1162,7 @@ export default function App() {
   // -----------------------------
   const fetchMe = async (jwt: string) => {
     try {
-      const res = await fetch("http://localhost:8080/api/me", {
+      const res = await fetch(`${API_URL}/api/me`, {
         headers: { Authorization: `Bearer ${jwt}` },
       });
       if (res.ok) {
@@ -1183,7 +1192,7 @@ export default function App() {
     try {
       const commParam = comm && comm !== "all" ? `&community=${encodeURIComponent(comm)}` : "";
       const res = await fetch(
-        `http://localhost:8080/api/posts?page=${pageNum}&limit=15${commParam}`,
+        `${API_URL}/api/posts?page=${pageNum}&limit=15${commParam}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
@@ -1278,7 +1287,7 @@ export default function App() {
 
     const delayDebounce = setTimeout(async () => {
       try {
-        const res = await fetch(`http://localhost:8080/api/users/search?q=${encodeURIComponent(searchQuery)}`, {
+        const res = await fetch(`${API_URL}/api/users/search?q=${encodeURIComponent(searchQuery)}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (res.ok) {
@@ -1311,7 +1320,7 @@ export default function App() {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
     setUnreadCount((prev) => Math.max(0, prev - 1));
     try {
-      await fetch(`http://localhost:8080/api/notifications/${id}/read`, {
+      await fetch(`${API_URL}/api/notifications/${id}/read`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -1324,7 +1333,7 @@ export default function App() {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     setUnreadCount(0);
     try {
-      await fetch("http://localhost:8080/api/notifications/read-all", {
+      await fetch(`${API_URL}/api/notifications/read-all`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -1356,7 +1365,7 @@ export default function App() {
         const formData = new FormData();
         formData.append("file", selectedFile);
 
-        const uploadRes = await fetch("http://localhost:8080/api/upload", {
+        const uploadRes = await fetch(`${API_URL}/api/upload`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
           body: formData,
@@ -1368,7 +1377,7 @@ export default function App() {
         }
       }
 
-      const res = await fetch("http://localhost:8080/api/posts", {
+      const res = await fetch(`${API_URL}/api/posts`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1406,7 +1415,7 @@ export default function App() {
 
   const handleLike = async (postId: number) => {
     try {
-      const res = await fetch(`http://localhost:8080/api/posts/${postId}/like`, {
+      const res = await fetch(`${API_URL}/api/posts/${postId}/like`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -1424,7 +1433,7 @@ export default function App() {
   const deletePost = async (id: number) => {
     if (!confirm("Are you sure you want to delete this post?")) return;
     try {
-      const res = await fetch(`http://localhost:8080/api/posts/${id}`, {
+      const res = await fetch(`${API_URL}/api/posts/${id}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -1441,7 +1450,7 @@ export default function App() {
     if (!text || !text.trim()) return;
 
     try {
-      const res = await fetch(`http://localhost:8080/api/posts/${postId}/comments`, {
+      const res = await fetch(`${API_URL}/api/posts/${postId}/comments`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1480,10 +1489,10 @@ export default function App() {
   const fetchProfile = async (userId: number) => {
     try {
       const [profileRes, postsRes] = await Promise.all([
-        fetch(`http://localhost:8080/api/users/${userId}/profile`, {
+        fetch(`${API_URL}/api/users/${userId}/profile`, {
           headers: { Authorization: `Bearer ${token}` },
         }),
-        fetch(`http://localhost:8080/api/users/${userId}/posts?page=1&limit=30`, {
+        fetch(`${API_URL}/api/users/${userId}/posts?page=1&limit=30`, {
           headers: { Authorization: `Bearer ${token}` },
         }),
       ]);
@@ -1512,7 +1521,7 @@ export default function App() {
     setFollowBusy(true);
     const targetId = profileData.user.id;
     try {
-      const res = await fetch(`http://localhost:8080/api/users/${targetId}/follow`, {
+      const res = await fetch(`${API_URL}/api/users/${targetId}/follow`, {
         method: profileData.is_following ? "DELETE" : "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -1537,7 +1546,7 @@ export default function App() {
   useEffect(() => {
     if (!followListModal || !token) return;
     setFollowListLoading(true);
-    fetch(`http://localhost:8080/api/users/${followListModal.userId}/${followListModal.type}`, {
+    fetch(`${API_URL}/api/users/${followListModal.userId}/${followListModal.type}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => (r.ok ? r.json() : []))
@@ -1557,7 +1566,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch("http://localhost:8080/api/login", {
+      const res = await fetch(`${API_URL}/api/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.trim(), password }),
@@ -1577,7 +1586,7 @@ export default function App() {
         setAuthError(msg);
       }
     } catch {
-      setAuthError("Cannot connect to server at http://localhost:8080. Please ensure the backend is running.");
+      setAuthError("Cannot connect to server  Please ensure the backend is running.");
     }
   };
 
@@ -1589,7 +1598,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch("http://localhost:8080/api/register", {
+      const res = await fetch(`${API_URL}/api/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.trim(), password, username: username.trim() }),
@@ -1602,7 +1611,7 @@ export default function App() {
         setAuthError(data.error || "Registration failed");
       }
     } catch {
-      setAuthError("Cannot connect to server at http://localhost:8080");
+      setAuthError("Cannot connect to server ");
     }
   };
 
@@ -1618,7 +1627,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch("http://localhost:8080/api/forgot-password", {
+      const res = await fetch(`${API_URL}/api/forgot-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.trim(), new_password: password }),
@@ -1631,7 +1640,7 @@ export default function App() {
         setAuthError(data.error || "Reset failed");
       }
     } catch {
-      setAuthError("Cannot connect to server at http://localhost:8080");
+      setAuthError("Cannot connect to server ");
     }
   };
 
@@ -1649,7 +1658,7 @@ export default function App() {
             style={{ color: "#047857", fontWeight: 600, cursor: "pointer" }}
             onClick={(e) => {
               e.stopPropagation();
-              fetch(`http://localhost:8080/api/users/by-username/${cleanUsername}`, {
+              fetch(`${API_URL}/api/users/by-username/${cleanUsername}`, {
                 headers: { Authorization: `Bearer ${token}` },
               })
                 .then((r) => r.json())
@@ -3408,7 +3417,7 @@ export default function App() {
                 className="post-pill-submit"
                 onClick={async () => {
                   try {
-                    const res = await fetch(`http://localhost:8080/api/users/${user?.id}`, {
+                    const res = await fetch(`${API_URL}/api/users/${user?.id}`, {
                       method: "PUT",
                       headers: {
                         "Content-Type": "application/json",
@@ -3459,7 +3468,7 @@ export default function App() {
                 className="post-pill-submit"
                 onClick={async () => {
                   try {
-                    const res = await fetch(`http://localhost:8080/api/posts/${editingPost.id}`, {
+                    const res = await fetch(`${API_URL}/api/posts/${editingPost.id}`, {
                       method: "PUT",
                       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
                       body: JSON.stringify({ content: editText })

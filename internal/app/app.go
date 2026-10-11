@@ -2,7 +2,9 @@ package app
 
 import (
 	"fmt"
+	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -50,13 +52,11 @@ func Run() error {
 
 	r := gin.Default()
 
-	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
-		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
-	}))
+	corsConfig := cors.DefaultConfig()
+	corsConfig.AllowAllOrigins = true
+	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Authorization", "Accept"}
+	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+	r.Use(cors.New(corsConfig))
 
 	// WebSocket Hub
 	hub := ws.NewHub()
@@ -66,6 +66,23 @@ func Run() error {
 	h := handlers.NewHandler(db, hub)
 
 	h.RegisterRoutes(r)
+
+	// Serve static frontend if dist exists (e.g. production deployment on Render)
+	distPath := "./frontend/dist"
+	if _, err := os.Stat(distPath); err == nil {
+		r.Static("/assets", distPath+"/assets")
+		r.StaticFile("/favicon.svg", distPath+"/favicon.svg")
+		r.StaticFile("/nesty-logo.png", distPath+"/nesty-logo.png")
+
+		r.NoRoute(func(c *gin.Context) {
+			path := c.Request.URL.Path
+			if strings.HasPrefix(path, "/api") || strings.HasPrefix(path, "/ws") {
+				c.JSON(http.StatusNotFound, gin.H{"error": "route not found"})
+				return
+			}
+			c.File(distPath + "/index.html")
+		})
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
