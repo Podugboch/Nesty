@@ -205,6 +205,8 @@ export default function App() {
 
   const [activeCall, setActiveCall] = useState<CallState | null>(null);
   const [incomingCall, setIncomingCall] = useState<IncomingCallState | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
   // WebRTC & Calling Audio / Video Refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -220,6 +222,7 @@ export default function App() {
   const ringtoneCleanupRef = useRef<(() => void) | null>(null);
   const callDisconnectTimeoutRef = useRef<any>(null);
   const callRingTimeoutRef = useRef<any>(null);
+  const iceQueueRef = useRef<any[]>([]);
 
   // Hamburger drawer accordion state
   const [showOverview, setShowOverview] = useState(false);
@@ -508,6 +511,9 @@ export default function App() {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return () => {};
       const audioCtx = new AudioCtx();
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
       let isPlaying = true;
       let timer: any;
 
@@ -558,13 +564,16 @@ export default function App() {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return () => {};
       const audioCtx = new AudioCtx();
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
       let isPlaying = true;
       let timer: any;
 
       const chime = () => {
         if (!isPlaying || audioCtx.state === "closed") return;
         try {
-          const freqs = [523.25, 659.25, 783.99, 1046.50];
+          const freqs = [523.25, 659.25, 783.99, 1046.5];
           [0, 0.2, 0.4, 0.6].forEach((delay, idx) => {
             const osc = audioCtx.createOscillator();
             const gain = audioCtx.createGain();
@@ -601,6 +610,9 @@ export default function App() {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
       const audioCtx = new AudioCtx();
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.type = "sine";
@@ -632,7 +644,10 @@ export default function App() {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
+    setLocalStream(null);
     remoteStreamRef.current = null;
+    setRemoteStream(null);
+    iceQueueRef.current = [];
 
     if (peerConnectionRef.current) {
       try {
@@ -653,15 +668,32 @@ export default function App() {
       }
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
-        video: video ? { width: { ideal: 640 }, height: { ideal: 480 } } : false,
+        video: video
+          ? {
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+              facingMode: "user",
+            }
+          : false,
       });
       localStreamRef.current = stream;
+      setLocalStream(stream);
+
       if (localVideoRef.current && video) {
         localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
       }
       return stream;
     } catch (err) {
       console.warn("Could not acquire media stream directly (permission or headless)", err);
+      if (video) {
+        try {
+          const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          localStreamRef.current = audioStream;
+          setLocalStream(audioStream);
+          return audioStream;
+        } catch (e2) {}
+      }
       try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
@@ -674,6 +706,7 @@ export default function App() {
           gain.connect(dest);
           osc.start();
           localStreamRef.current = dest.stream;
+          setLocalStream(dest.stream);
           return dest.stream;
         }
       } catch {}
@@ -682,15 +715,51 @@ export default function App() {
   };
 
   const sendCallSignal = async (type: string, toUserId: number, data?: any) => {
+    // For call invites, send through POST so we get the immediate online status and caller info from backend
+    if (type === "call_invite") {
+      try {
+        const res = await fetch(`${API_URL}/api/call/signal`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            type,
+            to_user_id: toUserId,
+            data,
+          }),
+        });
+        if (res.ok) {
+          return await res.json();
+        }
+      } catch (err) {
+        console.error("Signal REST error", err);
+      }
+      return null;
+    }
+
+    // For other signaling messages, prefer WebSocket for real-time delivery with REST fallback
     const payload = {
       event: "call_signal",
       type,
       to_user_id: toUserId,
+      caller: user
+        ? {
+            id: user.id,
+            username: user.username,
+            name: user.name,
+            avatar_url: user.avatar_url,
+          }
+        : undefined,
       data,
     };
+
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(payload));
+      return { sent: true };
     }
+
     try {
       const res = await fetch(`${API_URL}/api/call/signal`, {
         method: "POST",
@@ -723,6 +792,7 @@ export default function App() {
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
       ],
     });
 
@@ -741,11 +811,14 @@ export default function App() {
     pc.ontrack = (event) => {
       const stream = event.streams[0] || new MediaStream([event.track]);
       remoteStreamRef.current = stream;
+      setRemoteStream(stream);
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = stream;
+        remoteVideoRef.current.play().catch(() => {});
       }
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = stream;
+        remoteAudioRef.current.play().catch(() => {});
       }
     };
 
@@ -769,6 +842,13 @@ export default function App() {
 
     // Start outgoing telephone ring tone
     ringtoneCleanupRef.current = startCallerRingtone();
+
+    // Automatically turn device camera on immediately if this is a video call
+    if (video) {
+      setupLocalMedia(true).catch((e) => console.warn("Camera init error", e));
+    } else {
+      setupLocalMedia(false).catch((e) => console.warn("Mic init error", e));
+    }
 
     callRingTimeoutRef.current = setTimeout(() => {
       setActiveCall((prev) => (prev ? { ...prev, status: "ringing", statusText: "🔔 Ringing..." } : null));
@@ -878,6 +958,7 @@ export default function App() {
       isCaller: false,
     });
 
+    // Automatically turn device camera on if it's a video call!
     await setupLocalMedia(isVideo);
     createPeerConnection(partner.id);
     sendCallSignal("call_accepted", partner.id, { isVideo });
@@ -891,12 +972,34 @@ export default function App() {
     setActiveCall((prev) => (prev ? { ...prev, isMuted: !prev.isMuted } : null));
   };
 
-  const toggleVideo = () => {
+  const toggleVideo = async () => {
     if (localStreamRef.current) {
       const videoTracks = localStreamRef.current.getVideoTracks();
-      videoTracks.forEach((t) => (t.enabled = !t.enabled));
+      if (videoTracks.length > 0) {
+        const nextEnabled = !videoTracks[0].enabled;
+        videoTracks.forEach((t) => (t.enabled = nextEnabled));
+        setActiveCall((prev) => (prev ? { ...prev, isVideo: nextEnabled } : null));
+        return;
+      }
     }
-    setActiveCall((prev) => (prev ? { ...prev, isVideo: !prev.isVideo } : null));
+    // If no video track yet, acquire camera
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+      const newTrack = stream.getVideoTracks()[0];
+      if (localStreamRef.current && newTrack) {
+        localStreamRef.current.addTrack(newTrack);
+        if (peerConnectionRef.current) {
+          peerConnectionRef.current.addTrack(newTrack, localStreamRef.current);
+        }
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = localStreamRef.current;
+          localVideoRef.current.play().catch(() => {});
+        }
+        setActiveCall((prev) => (prev ? { ...prev, isVideo: true } : null));
+      }
+    } catch (err) {
+      console.warn("Could not toggle video on", err);
+    }
   };
 
   const toggleSpeaker = () => {
@@ -915,7 +1018,7 @@ export default function App() {
     const fromUserId = signal.from_user_id;
 
     if (signal.type === "call_invite") {
-      if (currentActiveCall && currentActiveCall.status !== "ended") {
+      if ((currentActiveCall && currentActiveCall.status !== "ended") || incomingCallRef.current) {
         sendCallSignal("call_busy", fromUserId);
         return;
       }
@@ -951,7 +1054,9 @@ export default function App() {
 
       // Caller sets up media and creates WebRTC Offer
       const isVideo = !!signal.data?.isVideo || !!currentActiveCall?.isVideo;
-      await setupLocalMedia(isVideo);
+      if (!localStreamRef.current) {
+        await setupLocalMedia(isVideo);
+      }
       const pc = createPeerConnection(fromUserId);
       try {
         const offer = await pc.createOffer();
@@ -1000,6 +1105,13 @@ export default function App() {
         setActiveCall(null);
         cleanupMediaAndCall();
       }, 2500);
+    } else if (signal.type === "call_timeout") {
+      if (ringtoneCleanupRef.current) {
+        ringtoneCleanupRef.current();
+        ringtoneCleanupRef.current = null;
+      }
+      playDisconnectTone();
+      setIncomingCall(null);
     } else if (signal.type === "webrtc_offer") {
       let pc = peerConnectionRef.current;
       if (!pc && currentActiveCall) {
@@ -1008,6 +1120,13 @@ export default function App() {
       if (pc && signal.data?.sdp) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(signal.data.sdp));
+          // Drain queued ICE candidates
+          while (iceQueueRef.current.length > 0) {
+            const cand = iceQueueRef.current.shift();
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch {}
+          }
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           sendCallSignal("webrtc_answer", fromUserId, { sdp: answer });
@@ -1020,17 +1139,28 @@ export default function App() {
       if (pc && signal.data?.sdp) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(signal.data.sdp));
+          // Drain queued ICE candidates
+          while (iceQueueRef.current.length > 0) {
+            const cand = iceQueueRef.current.shift();
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch {}
+          }
         } catch (err) {
           console.error("Failed to set remote description answer", err);
         }
       }
     } else if (signal.type === "ice_candidate") {
       const pc = peerConnectionRef.current;
-      if (pc && signal.data?.candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.data.candidate));
-        } catch (err) {
-          console.error("Failed to add ice candidate", err);
+      if (signal.data?.candidate) {
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.data.candidate));
+          } catch (err) {
+            console.error("Failed to add ice candidate", err);
+          }
+        } else {
+          iceQueueRef.current.push(signal.data.candidate);
         }
       }
     } else if (signal.type === "call_ended") {
@@ -1039,6 +1169,7 @@ export default function App() {
         ringtoneCleanupRef.current = null;
       }
       playDisconnectTone();
+      setIncomingCall(null);
       setActiveCall((prev) =>
         prev
           ? {
@@ -1048,9 +1179,6 @@ export default function App() {
             }
           : null
       );
-      if (incomingCallRef.current) {
-        setIncomingCall(null);
-      }
       setTimeout(() => {
         setActiveCall(null);
         cleanupMediaAndCall();
@@ -1069,16 +1197,19 @@ export default function App() {
 
   // Bind video and audio elements on media state update
   useEffect(() => {
-    if (activeCall?.isVideo && localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
+    if (activeCall?.isVideo && localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.play().catch(() => {});
     }
-    if (activeCall?.isVideo && remoteVideoRef.current && remoteStreamRef.current) {
-      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    if (activeCall?.isVideo && remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch(() => {});
     }
-    if (remoteAudioRef.current && remoteStreamRef.current) {
-      remoteAudioRef.current.srcObject = remoteStreamRef.current;
+    if (remoteAudioRef.current && remoteStream) {
+      remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.play().catch(() => {});
     }
-  }, [activeCall?.status, activeCall?.isVideo]);
+  }, [activeCall?.status, activeCall?.isVideo, localStream, remoteStream]);
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -1114,29 +1245,72 @@ export default function App() {
   // -----------------------------
   useEffect(() => {
     if (!token || !user) return;
-    const ws = new WebSocket(`${WS_BASE_URL}/ws?token=${token}`);
-    wsRef.current = ws;
+    let isSubscribed = true;
+    let reconnectTimeout: any = null;
+    let pingInterval: any = null;
 
-    ws.onmessage = (event) => {
+    const connectWs = () => {
+      if (!isSubscribed) return;
       try {
-        const data = JSON.parse(event.data);
-        if (data.event === "notification" && data.notification) {
-          setNotifications((prev) => [data.notification, ...prev]);
-          setUnreadCount((prev) => prev + 1);
-        } else if (
-          data.event === "call_signal" ||
-          (data.type && (data.type.startsWith("call_") || data.type.startsWith("webrtc_") || data.type === "ice_candidate"))
-        ) {
-          handleIncomingCallSignal(data);
+        const ws = new WebSocket(`${WS_BASE_URL}/ws?token=${token}`);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          // Heartbeat keepalive every 20s
+          if (pingInterval) clearInterval(pingInterval);
+          pingInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "ping" }));
+            }
+          }, 20000);
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "pong") return;
+            if (data.event === "notification" && data.notification) {
+              setNotifications((prev) => [data.notification, ...prev]);
+              setUnreadCount((prev) => prev + 1);
+            } else if (
+              data.event === "call_signal" ||
+              (data.type && (data.type.startsWith("call_") || data.type.startsWith("webrtc_") || data.type === "ice_candidate"))
+            ) {
+              handleIncomingCallSignal(data);
+            }
+          } catch (err) {
+            console.error("Failed to parse WS message", err);
+          }
+        };
+
+        ws.onclose = () => {
+          clearInterval(pingInterval);
+          if (isSubscribed) {
+            reconnectTimeout = setTimeout(connectWs, 2000);
+          }
+        };
+
+        ws.onerror = (err) => {
+          console.warn("[WS] Error", err);
+          ws.close();
+        };
+      } catch (e) {
+        if (isSubscribed) {
+          reconnectTimeout = setTimeout(connectWs, 3000);
         }
-      } catch (err) {
-        console.error("Failed to parse WS message", err);
       }
     };
 
+    connectWs();
+
     return () => {
-      ws.close();
-      wsRef.current = null;
+      isSubscribed = false;
+      clearTimeout(reconnectTimeout);
+      clearInterval(pingInterval);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [token, user?.id]);
 
@@ -3627,9 +3801,9 @@ export default function App() {
                   title="Answer Call"
                   onClick={acceptIncomingCall}
                 >
-                  📞
+                  {incomingCall.isVideo ? "📹" : "📞"}
                 </button>
-                <span className="incoming-action-label">Accept</span>
+                <span className="incoming-action-label">{incomingCall.isVideo ? "Answer Video" : "Answer"}</span>
               </div>
             </div>
           </div>
@@ -3670,27 +3844,51 @@ export default function App() {
             {activeCall.isVideo ? (
               <div className="call-video-grid">
                 <video
-                  ref={remoteVideoRef}
+                  ref={(el) => {
+                    remoteVideoRef.current = el;
+                    if (el && remoteStreamRef.current) el.srcObject = remoteStreamRef.current;
+                  }}
                   autoPlay
                   playsInline
                   className="call-video-element"
                   style={{ display: activeCall.status === "connected" ? "block" : "none" }}
                 />
+
                 {activeCall.status !== "connected" && (
-                  <div style={{ color: "#94a3b8", fontSize: "14px", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
-                    <span>📹 {activeCall.status === "calling" ? "Calling..." : "🔔 Ringing..."}</span>
-                    <span style={{ fontSize: "12px", opacity: 0.8 }}>Connecting to @{activeCall.partner.username}</span>
+                  <div className="call-calling-preview-container">
+                    <video
+                      ref={(el) => {
+                        localVideoRef.current = el;
+                        if (el && localStreamRef.current) el.srcObject = localStreamRef.current;
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="call-calling-preview-video"
+                    />
+                    <div className="call-calling-preview-overlay">
+                      <span className="call-calling-tag">
+                        📹 {activeCall.status === "calling" ? "Calling..." : "🔔 Ringing..."}
+                      </span>
+                      <span className="call-calling-sub">Connecting with @{activeCall.partner.username}</span>
+                    </div>
                   </div>
                 )}
-                <div className="call-video-pip">
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="call-video-pip-element"
-                  />
-                </div>
+
+                {activeCall.status === "connected" && (
+                  <div className="call-video-pip">
+                    <video
+                      ref={(el) => {
+                        localVideoRef.current = el;
+                        if (el && localStreamRef.current) el.srcObject = localStreamRef.current;
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="call-video-pip-element"
+                    />
+                  </div>
+                )}
               </div>
             ) : (
               /* If Voice Call: audio waveform visualizer */

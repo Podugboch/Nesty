@@ -2494,7 +2494,7 @@
   inset: 0;
   background: rgba(0, 0, 0, 0.88);
   backdrop-filter: blur(12px);
-  z-index: 200;
+  z-index: 99998;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2617,7 +2617,7 @@
 /* Video Mode Preview */
 .call-video-grid {
   width: 100%;
-  height: 200px;
+  height: 260px;
   background: #000;
   border-radius: 16px;
   overflow: hidden;
@@ -2629,16 +2629,70 @@
   justify-content: center;
 }
 
+.call-calling-preview-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.call-calling-preview-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 16px;
+  filter: brightness(0.92);
+}
+
+.call-calling-preview-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+}
+
+.call-calling-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  color: #38bdf8;
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+}
+
+.call-calling-sub {
+  font-size: 12px;
+  color: #cbd5e1;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+}
+
 .call-video-pip {
   position: absolute;
-  bottom: 8px;
-  right: 8px;
-  width: 80px;
-  height: 60px;
-  background: #1e293b;
-  border-radius: 8px;
-  border: 1px solid #475569;
-  object-fit: cover;
+  bottom: 10px;
+  right: 10px;
+  width: 96px;
+  height: 72px;
+  background: #0f172a;
+  border-radius: 10px;
+  border: 2px solid #38bdf8;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+  z-index: 10;
 }
 
 /* Call Control Buttons */
@@ -2693,7 +2747,7 @@
   inset: 0;
   background: rgba(0, 0, 0, 0.88);
   backdrop-filter: blur(14px);
-  z-index: 250;
+  z-index: 99999;
   display: flex;
   align-items: center;
   justify-content: center;
