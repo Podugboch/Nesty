@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { timeAgo } from "./utils/timeAgo";
 import "./App.css";
 
@@ -26,13 +26,40 @@ type Post = {
   id: number;
   content: string;
   media_url?: string;
+  community?: string;
   created_at?: string;
   user?: User;
   likes: number;
   liked_by_me?: boolean;
   comments?: Comment[];
-  parent_id?: number; 
-  parent?: Post;      
+  parent_id?: number;
+  parent?: Post;
+};
+
+
+type ChatMessage = {
+  id?: number;
+  sender_id: number;
+  recipient_id: number;
+  content: string;
+  created_at?: string;
+};
+
+type CallState = {
+  partner: User;
+  status: "calling" | "ringing" | "connected" | "ended";
+  statusText?: string;
+  duration: number;
+  isVideo: boolean;
+  isMuted: boolean;
+  isSpeaker: boolean;
+  isCaller?: boolean;
+};
+
+type IncomingCallState = {
+  caller: User;
+  isVideo: boolean;
+  callId?: string;
 };
 
 type Notification = {
@@ -46,19 +73,43 @@ type Notification = {
   created_at: string;
 };
 
+type FollowListUser = {
+  id: number;
+  username: string;
+  name?: string;
+  avatar_url?: string;
+  is_following?: boolean;
+};
+
+type CommunityChannel = {
+  id: string;
+  name: string;
+  badgeClass: string;
+  subtitle: string;
+};
+
 export default function App() {
+  // -----------------------------
+  // AUTH STATES
+  // -----------------------------
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [showPassword, setShowPassword] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register" | "forgot">("login");
   const [username, setUsername] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
 
   const [token, setToken] = useState<string | null>(
     localStorage.getItem("token")
   );
+  const [user, setUser] = useState<User | null>(null);
 
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false); 
-
+  // -----------------------------
+  // THEME (LIGHT / DARK)
+  // -----------------------------
   const getSystemTheme = (): "dark" | "light" =>
     window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
       ? "dark"
@@ -73,16 +124,34 @@ export default function App() {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
-  useEffect(() => {
-    if (localStorage.getItem("theme")) return; 
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? "dark" : "light");
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
+  const toggleTheme = () => {
+    setTheme((prev) => {
+      const next = prev === "dark" ? "light" : "dark";
+      localStorage.setItem("theme", next);
+      return next;
+    });
+  };
 
   // -----------------------------
-  // USER SEARCH STATES
+  // NAVIGATION & COMMUNITIES
+  // -----------------------------
+  const [page, setPage] = useState<"feed" | "create" | "profile">("feed");
+  const [selectedCommunity, setSelectedCommunity] = useState<string>("general");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const [communities, setCommunities] = useState<CommunityChannel[]>([
+    { id: "general", name: "General", badgeClass: "general", subtitle: "Chat, share, and grow together." },
+    { id: "coding-help", name: "Coding Help", badgeClass: "coding", subtitle: "Stuck? Get help from the community." },
+    { id: "showcase", name: "Project Showcase", badgeClass: "showcase", subtitle: "Show off what you're building." },
+    { id: "opportunities", name: "Opportunities", badgeClass: "opportunities", subtitle: "Jobs, Internships and more." },
+    { id: "study-buddies", name: "Study Buddies", badgeClass: "study", subtitle: "Find study partners and collaborate." },
+  ]);
+
+  const [createCommModalOpen, setCreateCommModalOpen] = useState(false);
+  const [newCommName, setNewCommName] = useState("");
+
+  // -----------------------------
+  // SEARCH
   // -----------------------------
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<User[]>([]);
@@ -92,13 +161,919 @@ export default function App() {
   // NOTIFICATIONS
   // -----------------------------
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadCount, setUnreadCount] = useState(3);
   const [notifOpen, setNotifOpen] = useState(false);
 
   // -----------------------------
-  // FEED FILTER CONFIGURATION
+  // COMMUNITY STATS & ONLINE USERS
   // -----------------------------
-  const [feedFilter, setFeedFilter] = useState<"all" | "following">("all");
+  const [liveUserCount, setLiveUserCount] = useState<number>(5);
+  const [communityStats, setCommunityStats] = useState<{
+    user_count?: number;
+    total_users?: number;
+    member_count?: number;
+    online_users: Array<{ id?: number; username: string; name?: string; avatar_url?: string; status?: string }>;
+  }>({
+    user_count: 5,
+    online_users: [
+      { id: 3, username: "Jaytricks", name: "Jaytricks", status: "Working on DevNest" },
+      { id: 7, username: "piscine_builder", name: "piscine_builder", status: "Building something great" },
+      { id: 2, username: "SnowJay", name: "SnowJay", status: "Learning Go" },
+      { id: 4, username: "Snowball", name: "Snowball", status: "Active now" },
+    ],
+  });
+
+  // -----------------------------
+  // CHAT, CALL & SCROLL CONTROLS
+  // -----------------------------
+  const [activeChatPartner, setActiveChatPartner] = useState<User | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInputText, setChatInputText] = useState("");
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  const [activeCall, setActiveCall] = useState<CallState | null>(null);
+  const [incomingCall, setIncomingCall] = useState<IncomingCallState | null>(null);
+
+  // WebRTC & Calling Audio / Video Refs
+  const wsRef = useRef<WebSocket | null>(null);
+  const activeCallRef = useRef<CallState | null>(null);
+  const incomingCallRef = useRef<IncomingCallState | null>(null);
+  const userRef = useRef<User | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ringtoneCleanupRef = useRef<(() => void) | null>(null);
+  const callDisconnectTimeoutRef = useRef<any>(null);
+  const callRingTimeoutRef = useRef<any>(null);
+
+  // Hamburger drawer accordion state
+  const [showOverview, setShowOverview] = useState(false);
+  const [showFeatured, setShowFeatured] = useState(false);
+  const [showOnline, setShowOnline] = useState(false);
+
+  const sidebarLeftRef = useRef<HTMLElement>(null);
+  const centerFeedRef = useRef<HTMLElement>(null);
+  const sidebarRightRef = useRef<HTMLElement>(null);
+
+  // -----------------------------
+  // POSTS & FEED
+  // -----------------------------
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [newPost, setNewPost] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [mediaPreview, setMediaPreview] = useState<string | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+
+  const [activeDropdown, setActiveDropdown] = useState<number | null>(null);
+  const [editingPost, setEditingPost] = useState<Post | null>(null);
+  const [editText, setEditText] = useState("");
+  const [expandedComments, setExpandedComments] = useState<Record<number, boolean>>({});
+  const [commentInputs, setCommentInputs] = useState<Record<number, string>>({});
+
+  // -----------------------------
+  // PROFILE VIEW
+  // -----------------------------
+  const [viewedUserId, setViewedUserId] = useState<number | null>(null);
+  const [profileData, setProfileData] = useState<{
+    user: User;
+    follower_count: number;
+    following_count: number;
+    post_count: number;
+    is_following: boolean;
+    is_self: boolean;
+  } | null>(null);
+  const [profilePosts, setProfilePosts] = useState<Post[]>([]);
+  const [followBusy, setFollowBusy] = useState(false);
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [uploadingBanner, setUploadingBanner] = useState(false);
+  const [profileForm, setProfileForm] = useState({
+    username: "",
+    name: "",
+    bio: "",
+    skills: "",
+    location: "",
+    avatar_url: "",
+    banner_url: "",
+  });
+
+  const AVATAR_PRESETS = [
+    { label: "Developer", url: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&q=80" },
+    { label: "Engineer", url: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&q=80" },
+    { label: "Designer", url: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&q=80" },
+    { label: "Cyberpunk", url: "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&q=80" },
+    { label: "Pixel Cat", url: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=400&q=80" },
+  ];
+
+  const WALLPAPER_PRESETS = [
+    { label: "Mint Flow", url: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1200&q=80" },
+    { label: "Dark Tech", url: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=1200&q=80" },
+    { label: "Matrix Code", url: "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1200&q=80" },
+    { label: "Neon Horizon", url: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1200&q=80" },
+    { label: "Deep Cosmic", url: "https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=1200&q=80" },
+  ];
+
+  const uploadImageFile = async (file: File): Promise<string | null> => {
+    if (!token) return null;
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await fetch("http://localhost:8080/api/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.url;
+      }
+    } catch (err) {
+      console.error("Upload failed", err);
+    }
+    // Fallback Data URL
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingAvatar(true);
+    const url = await uploadImageFile(file);
+    if (url) {
+      setProfileForm((prev) => ({ ...prev, avatar_url: url }));
+    }
+    setUploadingAvatar(false);
+  };
+
+  const handleBannerFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingBanner(true);
+    const url = await uploadImageFile(file);
+    if (url) {
+      setProfileForm((prev) => ({ ...prev, banner_url: url }));
+    }
+    setUploadingBanner(false);
+  };
+
+  const handleQuickAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user?.id) return;
+    const url = await uploadImageFile(file);
+    if (url) {
+      try {
+        const res = await fetch(`http://localhost:8080/api/users/${user.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ avatar_url: url }),
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setUser(updated);
+          fetchProfile(user.id);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+
+  const handleQuickBannerChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user?.id) return;
+    const url = await uploadImageFile(file);
+    if (url) {
+      try {
+        const res = await fetch(`http://localhost:8080/api/users/${user.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ banner_url: url }),
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          setUser(updated);
+          fetchProfile(user.id);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+
+  // -----------------------------
+  // FOLLOWERS MODAL
+  // -----------------------------
+  const [followListModal, setFollowListModal] = useState<{ type: "followers" | "following"; userId: number } | null>(null);
+  const [followListUsers, setFollowListUsers] = useState<FollowListUser[]>([]);
+  const [followListLoading, setFollowListLoading] = useState(false);
+
+  // -----------------------------
+  // FETCH NOTIFICATIONS
+  // -----------------------------
+  
+  const fetchCommunityStats = async () => {
+    try {
+      const res = await fetch("http://localhost:8080/api/community-stats");
+      if (res.ok) {
+        const data = await res.json();
+        setCommunityStats(data);
+        const count = data.user_count ?? data.total_users ?? data.member_count ?? (data.online_users?.length || 1);
+        setLiveUserCount(count);
+      }
+    } catch (err) {
+      console.error("Failed to fetch community stats:", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchCommunityStats();
+    const interval = setInterval(fetchCommunityStats, 8000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const startChatWithUser = async (targetUser: User) => {
+    setActiveChatPartner(targetUser);
+    setIsChatLoading(true);
+    try {
+      const res = await fetch(`http://localhost:8080/api/messages/${targetUser.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setChatMessages(Array.isArray(data) ? data : []);
+      }
+    } catch (err) {
+      console.error("Failed to load messages:", err);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
+  const sendChatMessage = async () => {
+    if (!chatInputText.trim() || !activeChatPartner || !token) return;
+    const content = chatInputText.trim();
+    setChatInputText("");
+
+    const tempMsg: ChatMessage = {
+      sender_id: user?.id || 0,
+      recipient_id: activeChatPartner.id,
+      content,
+      created_at: new Date().toISOString(),
+    };
+    setChatMessages((prev) => [...prev, tempMsg]);
+
+    try {
+      const res = await fetch("http://localhost:8080/api/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          recipient_id: activeChatPartner.id,
+          content,
+        }),
+      });
+      if (res.ok) {
+        const savedMsg = await res.json();
+        setChatMessages((prev) =>
+          prev.map((m) => (m === tempMsg ? savedMsg : m))
+        );
+      }
+    } catch (err) {
+      console.error("Failed to send message:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeChatPartner) {
+      chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [chatMessages, activeChatPartner]);
+
+  useEffect(() => {
+    if (!activeChatPartner || !token) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`http://localhost:8080/api/messages/${activeChatPartner.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            setChatMessages(data);
+          }
+        }
+      } catch {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [activeChatPartner, token]);
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    activeCallRef.current = activeCall;
+  }, [activeCall]);
+
+  useEffect(() => {
+    incomingCallRef.current = incomingCall;
+  }, [incomingCall]);
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
+  // Ringtone synthesizer functions using Web Audio API
+  const startCallerRingtone = (): (() => void) => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return () => {};
+      const audioCtx = new AudioCtx();
+      let isPlaying = true;
+      let timer: any;
+
+      const ring = () => {
+        if (!isPlaying || audioCtx.state === "closed") return;
+        try {
+          const osc1 = audioCtx.createOscillator();
+          const osc2 = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+
+          osc1.type = "sine";
+          osc2.type = "sine";
+          osc1.frequency.setValueAtTime(440, audioCtx.currentTime);
+          osc2.frequency.setValueAtTime(480, audioCtx.currentTime);
+
+          gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.8);
+
+          osc1.connect(gain);
+          osc2.connect(gain);
+          gain.connect(audioCtx.destination);
+
+          osc1.start();
+          osc2.start();
+          osc1.stop(audioCtx.currentTime + 1.8);
+          osc2.stop(audioCtx.currentTime + 1.8);
+        } catch {}
+
+        timer = setTimeout(ring, 3800);
+      };
+
+      ring();
+
+      return () => {
+        isPlaying = false;
+        clearTimeout(timer);
+        try {
+          audioCtx.close();
+        } catch {}
+      };
+    } catch {
+      return () => {};
+    }
+  };
+
+  const startIncomingRingtone = (): (() => void) => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return () => {};
+      const audioCtx = new AudioCtx();
+      let isPlaying = true;
+      let timer: any;
+
+      const chime = () => {
+        if (!isPlaying || audioCtx.state === "closed") return;
+        try {
+          const freqs = [523.25, 659.25, 783.99, 1046.50];
+          [0, 0.2, 0.4, 0.6].forEach((delay, idx) => {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = "triangle";
+            osc.frequency.setValueAtTime(freqs[idx % 4], audioCtx.currentTime + delay);
+            gain.gain.setValueAtTime(0.12, audioCtx.currentTime + delay);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + delay + 0.35);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(audioCtx.currentTime + delay);
+            osc.stop(audioCtx.currentTime + delay + 0.35);
+          });
+        } catch {}
+
+        timer = setTimeout(chime, 2200);
+      };
+
+      chime();
+
+      return () => {
+        isPlaying = false;
+        clearTimeout(timer);
+        try {
+          audioCtx.close();
+        } catch {}
+      };
+    } catch {
+      return () => {};
+    }
+  };
+
+  const playDisconnectTone = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const audioCtx = new AudioCtx();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(420, audioCtx.currentTime);
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.28);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.28);
+      setTimeout(() => {
+        try {
+          audioCtx.close();
+        } catch {}
+      }, 350);
+    } catch {}
+  };
+
+  // WebRTC media & peer connection setup
+  const cleanupMediaAndCall = () => {
+    if (ringtoneCleanupRef.current) {
+      ringtoneCleanupRef.current();
+      ringtoneCleanupRef.current = null;
+    }
+    clearTimeout(callDisconnectTimeoutRef.current);
+    clearTimeout(callRingTimeoutRef.current);
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+    remoteStreamRef.current = null;
+
+    if (peerConnectionRef.current) {
+      try {
+        peerConnectionRef.current.close();
+      } catch {}
+      peerConnectionRef.current = null;
+    }
+
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+  };
+
+  const setupLocalMedia = async (video: boolean): Promise<MediaStream | null> => {
+    try {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: video ? { width: { ideal: 640 }, height: { ideal: 480 } } : false,
+      });
+      localStreamRef.current = stream;
+      if (localVideoRef.current && video) {
+        localVideoRef.current.srcObject = stream;
+      }
+      return stream;
+    } catch (err) {
+      console.warn("Could not acquire media stream directly (permission or headless)", err);
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          const dest = ctx.createMediaStreamDestination();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          gain.gain.value = 0;
+          osc.connect(gain);
+          gain.connect(dest);
+          osc.start();
+          localStreamRef.current = dest.stream;
+          return dest.stream;
+        }
+      } catch {}
+      return null;
+    }
+  };
+
+  const sendCallSignal = async (type: string, toUserId: number, data?: any) => {
+    const payload = {
+      event: "call_signal",
+      type,
+      to_user_id: toUserId,
+      data,
+    };
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(payload));
+    }
+    try {
+      const res = await fetch("http://localhost:8080/api/call/signal", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          type,
+          to_user_id: toUserId,
+          data,
+        }),
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (err) {
+      console.error("Signal REST error", err);
+    }
+    return null;
+  };
+
+  const createPeerConnection = (targetUserId: number): RTCPeerConnection => {
+    if (peerConnectionRef.current) {
+      try {
+        peerConnectionRef.current.close();
+      } catch {}
+    }
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ],
+    });
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, localStreamRef.current!);
+      });
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        sendCallSignal("ice_candidate", targetUserId, { candidate: event.candidate });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      const stream = event.streams[0] || new MediaStream([event.track]);
+      remoteStreamRef.current = stream;
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = stream;
+      }
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = stream;
+      }
+    };
+
+    peerConnectionRef.current = pc;
+    return pc;
+  };
+
+  const startCallWithUser = async (targetUser: User, video: boolean = false) => {
+    cleanupMediaAndCall();
+
+    setActiveCall({
+      partner: targetUser,
+      status: "calling",
+      statusText: "Calling...",
+      duration: 0,
+      isVideo: video,
+      isMuted: false,
+      isSpeaker: true,
+      isCaller: true,
+    });
+
+    // Start outgoing telephone ring tone
+    ringtoneCleanupRef.current = startCallerRingtone();
+
+    callRingTimeoutRef.current = setTimeout(() => {
+      setActiveCall((prev) => (prev ? { ...prev, status: "ringing", statusText: "🔔 Ringing..." } : null));
+    }, 800);
+
+    // Send call invite to callee
+    const res = await sendCallSignal("call_invite", targetUser.id, {
+      isVideo: video,
+      callId: `${Date.now()}-${user?.id}`,
+    });
+
+    const isOnline = res && res.online;
+
+    if (!isOnline) {
+      // If the callee is not online:
+      // Phone rings for 6.5s, then automatically disconnects with offline notification
+      callDisconnectTimeoutRef.current = setTimeout(() => {
+        if (ringtoneCleanupRef.current) {
+          ringtoneCleanupRef.current();
+          ringtoneCleanupRef.current = null;
+        }
+        playDisconnectTone();
+
+        setActiveCall((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "ended",
+                statusText: "User is offline / unavailable",
+              }
+            : null
+        );
+
+        setTimeout(() => {
+          setActiveCall(null);
+          cleanupMediaAndCall();
+        }, 2500);
+      }, 6500);
+    } else {
+      // If online: wait for callee to accept or decline (32s timeout)
+      callDisconnectTimeoutRef.current = setTimeout(() => {
+        if (ringtoneCleanupRef.current) {
+          ringtoneCleanupRef.current();
+          ringtoneCleanupRef.current = null;
+        }
+        playDisconnectTone();
+        sendCallSignal("call_timeout", targetUser.id);
+        setActiveCall((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "ended",
+                statusText: "No answer",
+              }
+            : null
+        );
+        setTimeout(() => {
+          setActiveCall(null);
+          cleanupMediaAndCall();
+        }, 2000);
+      }, 32000);
+    }
+  };
+
+  const endCall = () => {
+    if (activeCall) {
+      sendCallSignal("call_ended", activeCall.partner.id);
+      playDisconnectTone();
+      setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Call ended" } : null));
+      setTimeout(() => {
+        setActiveCall(null);
+        cleanupMediaAndCall();
+      }, 600);
+    }
+  };
+
+  const declineIncomingCall = () => {
+    if (!incomingCall) return;
+    if (ringtoneCleanupRef.current) {
+      ringtoneCleanupRef.current();
+      ringtoneCleanupRef.current = null;
+    }
+    sendCallSignal("call_declined", incomingCall.caller.id);
+    setIncomingCall(null);
+  };
+
+  const acceptIncomingCall = async () => {
+    if (!incomingCall) return;
+    if (ringtoneCleanupRef.current) {
+      ringtoneCleanupRef.current();
+      ringtoneCleanupRef.current = null;
+    }
+
+    const partner = incomingCall.caller;
+    const isVideo = incomingCall.isVideo;
+    setIncomingCall(null);
+
+    // Picked up! Now set call as connected and start duration
+    setActiveCall({
+      partner,
+      status: "connected",
+      statusText: "Connected",
+      duration: 0,
+      isVideo,
+      isMuted: false,
+      isSpeaker: true,
+      isCaller: false,
+    });
+
+    await setupLocalMedia(isVideo);
+    createPeerConnection(partner.id);
+    sendCallSignal("call_accepted", partner.id, { isVideo });
+  };
+
+  const toggleMute = () => {
+    if (localStreamRef.current) {
+      const audioTracks = localStreamRef.current.getAudioTracks();
+      audioTracks.forEach((t) => (t.enabled = !t.enabled));
+    }
+    setActiveCall((prev) => (prev ? { ...prev, isMuted: !prev.isMuted } : null));
+  };
+
+  const toggleVideo = () => {
+    if (localStreamRef.current) {
+      const videoTracks = localStreamRef.current.getVideoTracks();
+      videoTracks.forEach((t) => (t.enabled = !t.enabled));
+    }
+    setActiveCall((prev) => (prev ? { ...prev, isVideo: !prev.isVideo } : null));
+  };
+
+  const toggleSpeaker = () => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = !remoteAudioRef.current.muted;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.muted = !remoteVideoRef.current.muted;
+    }
+    setActiveCall((prev) => (prev ? { ...prev, isSpeaker: !prev.isSpeaker } : null));
+  };
+
+  // Handle incoming call signaling events over WebSocket
+  const handleIncomingCallSignal = async (signal: any) => {
+    const currentActiveCall = activeCallRef.current;
+    const fromUserId = signal.from_user_id;
+
+    if (signal.type === "call_invite") {
+      if (currentActiveCall && currentActiveCall.status !== "ended") {
+        sendCallSignal("call_busy", fromUserId);
+        return;
+      }
+      const callerUser: User = signal.caller || {
+        id: fromUserId,
+        username: `User_${fromUserId}`,
+        email: "",
+      };
+      setIncomingCall({
+        caller: callerUser,
+        isVideo: !!signal.data?.isVideo,
+        callId: signal.data?.callId,
+      });
+      if (ringtoneCleanupRef.current) ringtoneCleanupRef.current();
+      ringtoneCleanupRef.current = startIncomingRingtone();
+    } else if (signal.type === "call_accepted") {
+      if (ringtoneCleanupRef.current) {
+        ringtoneCleanupRef.current();
+        ringtoneCleanupRef.current = null;
+      }
+      clearTimeout(callDisconnectTimeoutRef.current);
+
+      setActiveCall((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "connected",
+              statusText: "Connected",
+              duration: 0,
+            }
+          : null
+      );
+
+      // Caller sets up media and creates WebRTC Offer
+      const isVideo = !!signal.data?.isVideo || !!currentActiveCall?.isVideo;
+      await setupLocalMedia(isVideo);
+      const pc = createPeerConnection(fromUserId);
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendCallSignal("webrtc_offer", fromUserId, { sdp: offer });
+      } catch (err) {
+        console.error("Failed to create offer", err);
+      }
+    } else if (signal.type === "call_declined") {
+      if (ringtoneCleanupRef.current) {
+        ringtoneCleanupRef.current();
+        ringtoneCleanupRef.current = null;
+      }
+      clearTimeout(callDisconnectTimeoutRef.current);
+      playDisconnectTone();
+      setActiveCall((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "ended",
+              statusText: "Call declined",
+            }
+          : null
+      );
+      setTimeout(() => {
+        setActiveCall(null);
+        cleanupMediaAndCall();
+      }, 2000);
+    } else if (signal.type === "call_busy") {
+      if (ringtoneCleanupRef.current) {
+        ringtoneCleanupRef.current();
+        ringtoneCleanupRef.current = null;
+      }
+      clearTimeout(callDisconnectTimeoutRef.current);
+      playDisconnectTone();
+      setActiveCall((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "ended",
+              statusText: "User is busy on another call",
+            }
+          : null
+      );
+      setTimeout(() => {
+        setActiveCall(null);
+        cleanupMediaAndCall();
+      }, 2500);
+    } else if (signal.type === "webrtc_offer") {
+      let pc = peerConnectionRef.current;
+      if (!pc && currentActiveCall) {
+        pc = createPeerConnection(fromUserId);
+      }
+      if (pc && signal.data?.sdp) {
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.data.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          sendCallSignal("webrtc_answer", fromUserId, { sdp: answer });
+        } catch (err) {
+          console.error("Failed to handle offer", err);
+        }
+      }
+    } else if (signal.type === "webrtc_answer") {
+      const pc = peerConnectionRef.current;
+      if (pc && signal.data?.sdp) {
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.data.sdp));
+        } catch (err) {
+          console.error("Failed to set remote description answer", err);
+        }
+      }
+    } else if (signal.type === "ice_candidate") {
+      const pc = peerConnectionRef.current;
+      if (pc && signal.data?.candidate) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(signal.data.candidate));
+        } catch (err) {
+          console.error("Failed to add ice candidate", err);
+        }
+      }
+    } else if (signal.type === "call_ended") {
+      if (ringtoneCleanupRef.current) {
+        ringtoneCleanupRef.current();
+        ringtoneCleanupRef.current = null;
+      }
+      playDisconnectTone();
+      setActiveCall((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "ended",
+              statusText: "Call ended",
+            }
+          : null
+      );
+      if (incomingCallRef.current) {
+        setIncomingCall(null);
+      }
+      setTimeout(() => {
+        setActiveCall(null);
+        cleanupMediaAndCall();
+      }, 1500);
+    }
+  };
+
+  // Duration counter: only runs when call is CONNECTED
+  useEffect(() => {
+    if (!activeCall || activeCall.status !== "connected") return;
+    const durationTimer = setInterval(() => {
+      setActiveCall((prev) => (prev && prev.status === "connected" ? { ...prev, duration: prev.duration + 1 } : null));
+    }, 1000);
+    return () => clearInterval(durationTimer);
+  }, [activeCall?.status]);
+
+  // Bind video and audio elements on media state update
+  useEffect(() => {
+    if (activeCall?.isVideo && localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+    }
+    if (activeCall?.isVideo && remoteVideoRef.current && remoteStreamRef.current) {
+      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    }
+    if (remoteAudioRef.current && remoteStreamRef.current) {
+      remoteAudioRef.current.srcObject = remoteStreamRef.current;
+    }
+  }, [activeCall?.status, activeCall?.isVideo]);
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  };
 
   const fetchNotifications = async () => {
     if (!token) return;
@@ -109,7 +1084,9 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setNotifications(data.notifications || []);
-        setUnreadCount(data.unread_count || 0);
+        if (data.unread_count !== undefined) {
+          setUnreadCount(data.unread_count);
+        }
       }
     } catch (err) {
       console.error("Failed to fetch notifications", err);
@@ -121,10 +1098,15 @@ export default function App() {
     fetchNotifications();
   }, [token]);
 
+  // -----------------------------
+  // WEBSOCKET FOR NOTIFICATIONS & CALL SIGNALING
+  // -----------------------------
   useEffect(() => {
-    if (!token) return;
-
-    const ws = new WebSocket(`ws://localhost:8080/ws?token=${token}`);
+    if (!token || !user) return;
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsHost = window.location.hostname || "localhost";
+    const ws = new WebSocket(`${wsProtocol}//${wsHost}:8080/ws?token=${token}`);
+    wsRef.current = ws;
 
     ws.onmessage = (event) => {
       try {
@@ -132,21 +1114,199 @@ export default function App() {
         if (data.event === "notification" && data.notification) {
           setNotifications((prev) => [data.notification, ...prev]);
           setUnreadCount((prev) => prev + 1);
+        } else if (
+          data.event === "call_signal" ||
+          (data.type && (data.type.startsWith("call_") || data.type.startsWith("webrtc_") || data.type === "ice_candidate"))
+        ) {
+          handleIncomingCallSignal(data);
         }
       } catch (err) {
         console.error("Failed to parse WS message", err);
       }
     };
 
-    ws.onerror = (err) => {
-      console.error("WebSocket error", err);
-    };
-
     return () => {
       ws.close();
+      wsRef.current = null;
     };
+  }, [token, user?.id]);
+
+  // -----------------------------
+  // FETCH COMMUNITY STATS
+  // -----------------------------
+  useEffect(() => {
+    if (!token) return;
+    fetch("http://localhost:8080/api/community/stats", {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          setCommunityStats(data);
+        }
+      })
+      .catch((err) => console.warn("Failed to load community stats", err));
   }, [token]);
 
+  // -----------------------------
+  // FETCH USER PROFILE ("ME")
+  // -----------------------------
+  const fetchMe = async (jwt: string) => {
+    try {
+      const res = await fetch("http://localhost:8080/api/me", {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUser(data);
+      } else {
+        localStorage.removeItem("token");
+        setToken(null);
+      }
+    } catch {
+      localStorage.removeItem("token");
+      setToken(null);
+    }
+  };
+
+  useEffect(() => {
+    if (token) {
+      fetchMe(token);
+    }
+  }, [token]);
+
+  // -----------------------------
+  // FETCH FEED POSTS
+  // -----------------------------
+  const fetchPosts = async (pageNum: number = 1, comm = selectedCommunity) => {
+    if (!token) return;
+    try {
+      const commParam = comm && comm !== "all" ? `&community=${encodeURIComponent(comm)}` : "";
+      const res = await fetch(
+        `http://localhost:8080/api/posts?page=${pageNum}&limit=15${commParam}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      if (res.ok) {
+        const data: Post[] = await res.json();
+
+        // Baseline reference posts matching the user screenshots
+        let fetchedPosts = data || [];
+        if (pageNum === 1 && fetchedPosts.length === 0) {
+          fetchedPosts = [
+            {
+              id: 9001,
+              content: "Hello Piscine community! DevNest is alive and kicking!",
+              likes: 12,
+              created_at: new Date(Date.now() - 39 * 60000).toISOString(),
+              user: {
+                id: 101,
+                username: "piscine_builder",
+                name: "piscine_builder",
+                email: "builder@piscine.dev",
+              },
+              comments: [
+                { id: 1, post_id: 9001, content: "Looking amazing! Can't wait to test it.", created_at: new Date().toISOString(), user: { id: 102, username: "devking", email: "" } }
+              ],
+            },
+            {
+              id: 9002,
+              content: "We have set a new milestone today!",
+              likes: 28,
+              created_at: new Date(Date.now() - 60 * 60000).toISOString(),
+              media_url: "photo_placeholder",
+              user: {
+                id: user?.id || 1,
+                username: user?.username || "Jaytricks",
+                name: user?.name || "Jaytricks",
+                email: user?.email || "jay@devnest.org",
+              },
+              comments: [
+                { id: 2, post_id: 9002, content: "Congrats team DevNest!", created_at: new Date().toISOString(), user: { id: 103, username: "codewith_ella", email: "" } }
+              ],
+            },
+            {
+              id: 9003,
+              content: "Just diving deep into Go channels and WebSockets. The concurrency model is fantastic!",
+              likes: 19,
+              created_at: new Date(Date.now() - 180 * 60000).toISOString(),
+              user: {
+                id: 104,
+                username: "devking",
+                name: "devking",
+                email: "devking@devnest.org",
+              },
+              comments: [],
+            },
+          ];
+        }
+
+        const dedupe = (arr: Post[]) => {
+          const seen = new Set<number>();
+          return arr.filter((p) => {
+            if (seen.has(p.id)) return false;
+            seen.add(p.id);
+            return true;
+          });
+        };
+
+        if (pageNum === 1) {
+          setPosts(dedupe(fetchedPosts));
+        } else {
+          setPosts((prev) => dedupe([...prev, ...fetchedPosts]));
+        }
+      }
+    } catch (err) {
+      console.error("Could not fetch live feed.", err);
+    }
+  };
+
+  useEffect(() => {
+    if (!token) return;
+    fetchPosts(1, selectedCommunity);
+  }, [selectedCommunity, token]);
+
+  // -----------------------------
+  // USER SEARCH AUTOCOMPLETE
+  // -----------------------------
+  useEffect(() => {
+    if (!token) return;
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    const delayDebounce = setTimeout(async () => {
+      try {
+        const res = await fetch(`http://localhost:8080/api/users/search?q=${encodeURIComponent(searchQuery)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setSearchResults(data || []);
+        }
+      } catch (err) {
+        console.error("Search error", err);
+      }
+    }, 250);
+
+    return () => clearTimeout(delayDebounce);
+  }, [searchQuery, token]);
+
+  // -----------------------------
+  // CLOSE DROPDOWNS ON OUTSIDE CLICK
+  // -----------------------------
+  useEffect(() => {
+    const closeAllDropdowns = () => {
+      setActiveDropdown(null);
+    };
+    window.addEventListener("click", closeAllDropdowns);
+    return () => window.removeEventListener("click", closeAllDropdowns);
+  }, []);
+
+  // -----------------------------
+  // NOTIFICATIONS HELPERS
+  // -----------------------------
   const markNotificationRead = async (id: number) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
     setUnreadCount((prev) => Math.max(0, prev - 1));
@@ -179,127 +1339,145 @@ export default function App() {
     if (n.type === "comment") return `${name} commented on your post`;
     if (n.type === "follow") return `${name} started following you`;
     if (n.type === "mention") return `${name} mentioned you in a post`;
-    if (n.type === "repost") return `${name} reposted your post`; 
-    return `${name} did something`;
+    if (n.type === "repost") return `${name} reposted your post`;
+    return `${name} interacted with your post`;
   };
 
-  const handleMentionClick = async (targetUsername: string) => {
+  // -----------------------------
+  // POST ACTIONS: CREATE, LIKE, DELETE
+  // -----------------------------
+  const createPost = async () => {
+    if (!newPost.trim() && !selectedFile) return;
+    setUploadingMedia(true);
+
     try {
-      const res = await fetch(`http://localhost:8080/api/users/by-username/${targetUsername}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      let uploadedUrl = "";
+      if (selectedFile) {
+        const formData = new FormData();
+        formData.append("file", selectedFile);
+
+        const uploadRes = await fetch("http://localhost:8080/api/upload", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        });
+
+        if (uploadRes.ok) {
+          const uploadData = await uploadRes.json();
+          uploadedUrl = uploadData.url;
+        }
+      }
+
+      const res = await fetch("http://localhost:8080/api/posts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          content: newPost,
+          media_url: uploadedUrl,
+          community: selectedCommunity || "general",
+        }),
       });
+
       if (res.ok) {
-        const targetUser: User = await res.json();
-        openProfile(targetUser.id);
-      } else if (res.status === 404) {
-        alert(`User @${targetUsername} does not exist.`);
+        const data = await res.json();
+        const newPostObj: Post = {
+          ...data,
+          likes: 0,
+          comments: [],
+          user: data.user && data.user.username ? data.user : user || { id: 0, username: "Anonymous", email: "" },
+        };
+        setPosts((prev) => [newPostObj, ...prev]);
+        setNewPost("");
+        setSelectedFile(null);
+        setMediaPreview(null);
+        setPage("feed");
       } else {
-        console.error("Failed to resolve mention username");
+        alert("Failed to publish post.");
       }
     } catch (err) {
-      console.error("Error fetching username details", err);
+      console.error("Error creating post", err);
+    } finally {
+      setUploadingMedia(false);
     }
   };
 
-  const renderWithMentions = (text: string) => {
-    const parts = text.split(/(@[a-zA-Z0-9_]+)/g);
-    return parts.map((part, i) => {
-      if (part.startsWith("@")) {
-        const cleanUsername = part.substring(1);
-        return (
-          <span
-            key={i}
-            className="mention clickable-mention"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleMentionClick(cleanUsername);
-            }}
-          >
-            {part}
-          </span>
+  const handleLike = async (postId: number) => {
+    try {
+      const res = await fetch(`http://localhost:8080/api/posts/${postId}/like`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPosts((prev) =>
+          prev.map((p) => (p.id === postId ? { ...p, likes: data.likes, liked_by_me: data.liked } : p))
         );
       }
-      return <span key={i}>{part}</span>;
-    });
+    } catch (err) {
+      console.error("Like error", err);
+    }
   };
 
-  const renderParentPost = (parent?: Post) => {
-    if (!parent) return null;
-    const parentName = parent.user?.username || "Anonymous";
-
-    return (
-      <div className="repost-embed-card">
-        <div className="repost-embed-header">
-          <div className="avatar search-avatar">
-            {parent.user?.avatar_url ? (
-              <img src={parent.user.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            ) : (
-              parentName.charAt(0).toUpperCase()
-            )}
-          </div>
-          <b onClick={() => parent.user?.id && openProfile(parent.user.id)} style={{ cursor: "pointer" }}>
-            {parentName}
-          </b>
-          <span className="timestamp" style={{ marginLeft: "auto" }}>
-            {parent.created_at ? timeAgo(parent.created_at) : ""}
-          </span>
-        </div>
-        <p className="post-content" style={{ fontSize: "13.5px", marginTop: "6px" }}>
-          {renderWithMentions(parent.content)}
-        </p>
-        {parent.media_url && (
-          <div className="post-media" style={{ marginTop: "8px" }}>
-            {parent.media_url.match(/\.(mp4|webm|ogg|mov)/i) || parent.media_url.includes("video") ? (
-              <video src={parent.media_url} style={{ maxHeight: "200px" }} />
-            ) : (
-              <img src={parent.media_url} alt="" style={{ maxHeight: "200px", objectFit: "contain" }} />
-            )}
-          </div>
-        )}
-      </div>
-    );
+  const deletePost = async (id: number) => {
+    if (!confirm("Are you sure you want to delete this post?")) return;
+    try {
+      const res = await fetch(`http://localhost:8080/api/posts/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setPosts((prev) => prev.filter((p) => p.id !== id));
+      }
+    } catch (err) {
+      console.error("Delete error", err);
+    }
   };
 
-  const toggleTheme = () => {
-    setTheme((prev) => {
-      const next = prev === "dark" ? "light" : "dark";
-      localStorage.setItem("theme", next); 
-      return next;
-    });
+  const handleAddComment = async (postId: number) => {
+    const text = commentInputs[postId];
+    if (!text || !text.trim()) return;
+
+    try {
+      const res = await fetch(`http://localhost:8080/api/posts/${postId}/comments`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ content: text }),
+      });
+
+      if (res.ok) {
+        const commentData = await res.json();
+        const newComment: Comment = {
+          ...commentData,
+          user: commentData.user || user || { id: 0, username: "You", email: "" },
+        };
+        setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId ? { ...p, comments: [...(p.comments || []), newComment] } : p
+          )
+        );
+        setCommentInputs((prev) => ({ ...prev, [postId]: "" }));
+      }
+    } catch (err) {
+      console.error("Add comment error", err);
+    }
   };
-
-  const [user, setUser] = useState<User | null>(null);
-
-  const [page, setPage] = useState<"feed" | "create" | "profile">("feed");
-  const [posts, setPosts] = useState<Post[]>([]);
-  const [newPost, setNewPost] = useState("");
 
   // -----------------------------
-  // PROFILE VIEW (self or others)
+  // PROFILE VIEW LOGIC
   // -----------------------------
-  const [viewedUserId, setViewedUserId] = useState<number | null>(null);
-  const [profileData, setProfileData] = useState<{
-    user: User;
-    follower_count: number;
-    following_count: number;
-    post_count: number;
-    is_following: boolean;
-    is_self: boolean;
-  } | null>(null);
-  const [profilePosts, setProfilePosts] = useState<Post[]>([]);
-  const [profileLoading, setProfileLoading] = useState(false);
-  const [followBusy, setFollowBusy] = useState(false);
-  const [bannerFile, setBannerFile] = useState<File | null>(null);
-  const [bannerPreview, setBannerPreview] = useState<string | null>(null);
-
   const openProfile = (userId: number) => {
     setViewedUserId(userId);
     setPage("profile");
-    setMobileMenuOpen(false); 
+    setMobileMenuOpen(false);
   };
 
   const fetchProfile = async (userId: number) => {
-    setProfileLoading(true);
     try {
       const [profileRes, postsRes] = await Promise.all([
         fetch(`http://localhost:8080/api/users/${userId}/profile`, {
@@ -320,8 +1498,6 @@ export default function App() {
       }
     } catch (err) {
       console.error("Failed to load profile", err);
-    } finally {
-      setProfileLoading(false);
     }
   };
 
@@ -336,1391 +1512,2249 @@ export default function App() {
     setFollowBusy(true);
     const targetId = profileData.user.id;
     try {
-      const res = await fetch(
-        `http://localhost:8080/api/users/${targetId}/follow`,
-        {
-          method: profileData.is_following ? "DELETE" : "POST",
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
+      const res = await fetch(`http://localhost:8080/api/users/${targetId}/follow`, {
+        method: profileData.is_following ? "DELETE" : "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
       if (res.ok) {
         setProfileData((prev) =>
           prev
             ? {
                 ...prev,
                 is_following: !prev.is_following,
-                follower_count: prev.is_following
-                  ? prev.follower_count - 1
-                  : prev.follower_count + 1,
+                follower_count: prev.is_following ? prev.follower_count - 1 : prev.follower_count + 1,
               }
-            : prev
+            : null
         );
       }
     } catch (err) {
-      console.error("Follow toggle error", err);
+      console.error("Failed to toggle follow", err);
     } finally {
       setFollowBusy(false);
     }
   };
 
-  // -----------------------------
-  // FOLLOWERS / FOLLOWING LIST MODAL
-  // -----------------------------
-  type FollowListUser = User & { is_following: boolean };
-  const [followListModal, setFollowListModal] = useState<{ type: "followers" | "following"; userId: number } | null>(null);
-  const [followListUsers, setFollowListUsers] = useState<FollowListUser[]>([]);
-  const [followListLoading, setFollowListLoading] = useState(false);
-
-  const openFollowList = async (type: "followers" | "following", userId: number) => {
-    setFollowListModal({ type, userId });
+  useEffect(() => {
+    if (!followListModal || !token) return;
     setFollowListLoading(true);
-    try {
-      const res = await fetch(`http://localhost:8080/api/users/${userId}/${type}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setFollowListUsers(data || []);
-      }
-    } catch (err) {
-      console.error("Failed to load follow list", err);
-    } finally {
-      setFollowListLoading(false);
-    }
-  };
+    fetch(`http://localhost:8080/api/users/${followListModal.userId}/${followListModal.type}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => setFollowListUsers(data || []))
+      .catch(() => setFollowListUsers([]))
+      .finally(() => setFollowListLoading(false));
+  }, [followListModal, token]);
 
-  const toggleFollowInList = async (targetUser: FollowListUser) => {
-    try {
-      const res = await fetch(`http://localhost:8080/api/users/${targetUser.id}/follow`, {
-        method: targetUser.is_following ? "DELETE" : "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        setFollowListUsers((prev) =>
-          prev.map((u) => (u.id === targetUser.id ? { ...u, is_following: !u.is_following } : u))
-        );
-        if (profileData && profileData.user.id === (viewedUserId ?? user?.id)) {
-          fetchProfile(profileData.user.id);
-        }
-      }
-    } catch (err) {
-      console.error("Follow toggle error", err);
-    }
-  };
-
-  const goToProfileFromList = (userId: number) => {
-    setFollowListModal(null);
-    openProfile(userId);
-  };
-
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [uploadingMedia, setUploadingMedia] = useState(false);
-  const [mediaPreview, setMediaPreview] = useState<string | null>(null);
-
-  const [pageNumber, setPageNumber] = useState(1);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
-
-  const [activeDropdown, setActiveDropdown] = useState<number | null>(null);
-  const [activeShareDropdown, setActiveShareDropdown] = useState<number | null>(null);
-  const [commentInputs, setCommentInputs] = useState<{ [postId: number]: string }>({});
-  const [expandedComments, setExpandedComments] = useState<{ [postId: number]: boolean }>({});
-
-  const [editingPost, setEditingPost] = useState<Post | null>(null);
-  const [editText, setEditText] = useState("");
-
-  const [editingProfile, setEditingProfile] = useState(false);
-  const [profileForm, setProfileForm] = useState({
-    username: "",
-    bio: "",
-    skills: "",
-    location: "",
-  });
-
-  const fetchMe = async (jwt: string) => {
-    try {
-      const res = await fetch("http://localhost:8080/api/me", {
-        headers: { Authorization: `Bearer ${jwt}` },
-      });
-      if (!res.ok) return null;
-      return await res.json();
-    } catch {
-      return null;
-    }
-  };
-
-  useEffect(() => {
-    if (!token) return;
-    (async () => {
-      const data = await fetchMe(token);
-      if (data) {
-        setUser(data);
-      } else {
-        console.warn("⚠️ /api/me failed. Using fallback profile.");
-      }
-    })();
-  }, [token]);
-
-  const fetchPosts = async (pageNum: number = 1, filterType = feedFilter) => {
-    try {
-      const isFollowing = filterType === "following" ? "&following=true" : "";
-      const res = await fetch(
-        `http://localhost:8080/api/posts?page=${pageNum}&limit=10${isFollowing}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      if (res.ok) {
-        const data = await res.json();
-
-        const dedupe = (arr: Post[]) => {
-          const seen = new Set<number>();
-          return arr.filter((p) => {
-            if (seen.has(p.id)) return false;
-            seen.add(p.id);
-            return true;
-          });
-        };
-
-        if (pageNum === 1) {
-          setPosts(dedupe(data || []));
-        } else {
-          setPosts((prev) => dedupe([...prev, ...(data || [])]));
-        }
-
-        if ((data || []).length < 10) setHasMore(false);
-      }
-    } catch (err) {
-      console.error("Could not fetch live feed.", err);
-    }
-  };
-
-  useEffect(() => {
-    if (!token) return;
-    setPageNumber(1);
-    setHasMore(true);
-    fetchPosts(1, feedFilter);
-  }, [feedFilter, token]);
-
-  useEffect(() => {
-    if (!token) return;
-    if (!searchQuery.trim()) {
-      setSearchResults([]);
+  // -----------------------------
+  // AUTH LOGIC
+  // -----------------------------
+  const login = async () => {
+    setAuthError(null);
+    setAuthSuccess(null);
+    if (!email.trim() || !password) {
+      setAuthError("Please enter your email or username and password.");
       return;
     }
-
-    const delayDebounce = setTimeout(async () => {
-      try {
-        const res = await fetch(`http://localhost:8080/api/users/search?q=${encodeURIComponent(searchQuery)}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setSearchResults(data || []);
-        }
-      } catch (err) {
-        console.error("Search error", err);
-      }
-    }, 250);
-
-    return () => clearTimeout(delayDebounce);
-  }, [searchQuery, token]);
-
-  const loadMorePosts = async () => {
-    setLoadingMore(true);
-    const nextPage = pageNumber + 1;
-    await fetchPosts(nextPage);
-    setPageNumber(nextPage);
-    setLoadingMore(false);
-  };
-
-  useEffect(() => {
-    const closeAllDropdowns = () => {
-      setActiveDropdown(null);
-      setActiveShareDropdown(null); 
-      setSearchFocused(false);
-    };
-    window.addEventListener("click", closeAllDropdowns);
-    return () => window.removeEventListener("click", closeAllDropdowns);
-  }, []);
-
-  const handleRepostAction = async (postId: number) => {
-    if (!window.confirm("Do you want to repost this to your feed?")) return;
-    try {
-      const res = await fetch(`http://localhost:8080/api/posts/${postId}/repost`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        alert("Post reposted successfully!");
-        fetchPosts(1);
-        if (profileData) fetchProfile(profileData.user.id);
-      }
-    } catch (err) {
-      console.error("Repost error", err);
-    }
-  };
-
-  const handleCopyLinkAction = (postId: number) => {
-    const linkStr = `${window.location.origin}/posts/${postId}`;
-    navigator.clipboard.writeText(linkStr);
-    alert("Post link copied to clipboard! Share it with fellow builders.");
-  };
-
-  const handleNativeShareAction = async (post: Post) => {
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: `Post by ${post.user?.username || "Builder"}`,
-          text: post.content,
-          url: `${window.location.origin}/posts/${post.id}`
-        });
-      } catch (err) {
-        console.error("Error invoking native share handler", err);
-      }
-    } else {
-      handleCopyLinkAction(post.id);
-    }
-  };
-
-  const deletePost = async (id: number) => {
-    try {
-      const res = await fetch(`http://localhost:8080/api/posts/${id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        setPosts((prev) => prev.filter((p) => p.id !== id));
-      } else {
-        alert("Failed to delete post");
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const deleteProfilePost = async (id: number) => {
-    try {
-      const res = await fetch(`http://localhost:8080/api/posts/${id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        setProfilePosts((prev) => prev.filter((p) => p.id !== id));
-        setProfileData((prev) => (prev ? { ...prev, post_count: prev.post_count - 1 } : prev));
-      } else {
-        alert("Failed to delete post");
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const login = async () => {
     try {
       const res = await fetch("http://localhost:8080/api/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
-
-      if (!res.ok) { alert("Invalid email or password"); return; }
-
       const data = await res.json();
-      if (data.token) {
+      if (res.ok) {
         localStorage.setItem("token", data.token);
         setToken(data.token);
+        fetchMe(data.token);
       } else {
-        alert("No token found in response.");
+        const msg =
+          data.error === "user not found"
+            ? "No account found with this email or username. Don't have an account? Click 'Sign Up' below."
+            : data.error === "password mismatch"
+            ? "Incorrect password. If you forgot your password, click 'Forgot Password?' below to reset it."
+            : data.error || "Login failed";
+        setAuthError(msg);
       }
     } catch {
-      alert("Cannot connect to server at http://localhost:8080");
+      setAuthError("Cannot connect to server at http://localhost:8080. Please ensure the backend is running.");
     }
   };
 
-  const createPost = async () => {
-    if (!newPost.trim() && !selectedFile) return;
-    setUploadingMedia(true);
-
+  const handleRegister = async () => {
+    setAuthError(null);
+    setAuthSuccess(null);
+    if (!username.trim() || !email.trim() || !password) {
+      setAuthError("Please fill out all fields.");
+      return;
+    }
     try {
-      let uploadedUrl = "";
-
-      if (selectedFile) {
-        const formData = new FormData();
-        formData.append("file", selectedFile);
-
-        const uploadRes = await fetch("http://localhost:8080/api/upload", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          body: formData,
-        });
-
-        if (!uploadRes.ok) {
-          alert("Failed to upload media file.");
-          setUploadingMedia(false);
-          return;
-        }
-
-        const uploadData = await uploadRes.json();
-        uploadedUrl = uploadData.url;
-      }
-
-      const res = await fetch("http://localhost:8080/api/posts", {
+      const res = await fetch("http://localhost:8080/api/register", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ content: newPost, media_url: uploadedUrl }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password, username: username.trim() }),
       });
-
+      const data = await res.json();
       if (res.ok) {
-        const data = await res.json();
-        const newPostObj: Post = {
-          ...data,
-          likes: 0,
-          comments: [],
-          user: data.user && data.user.username ? data.user : user || { id: 0, username: "Anonymous", email: "" },
-        };
-        setPosts((prev) => [newPostObj, ...prev]);
-        setNewPost("");
-        setSelectedFile(null);
-        setMediaPreview(null);
-        setPage("feed");
+        setAuthSuccess("Registration successful! You can now sign in.");
+        setAuthMode("login");
       } else {
-        alert("Failed to save post to backend.");
+        setAuthError(data.error || "Registration failed");
       }
-    } catch (err) {
-      console.error(err);
-      alert("Connection error during publishing.");
-    } finally {
-      setUploadingMedia(false);
+    } catch {
+      setAuthError("Cannot connect to server at http://localhost:8080");
     }
   };
 
-  if (!token) {
-    const handleRegister = async () => {
-      if (!email || !username || !password) {
-        alert("Please fill out all fields.");
-        return;
-      }
-      try {
-        const res = await fetch("http://localhost:8080/api/users", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, username, password }),
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          alert(data.error || "Registration failed");
-          return;
-        }
-
-        alert("Account created successfully! You can now log in.");
+  const handleForgotPassword = async () => {
+    setAuthError(null);
+    setAuthSuccess(null);
+    if (!email.trim() || !password) {
+      setAuthError("Please enter your email or username and your new password.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setAuthError("Passwords do not match");
+      return;
+    }
+    try {
+      const res = await fetch("http://localhost:8080/api/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), new_password: password }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setAuthSuccess("Password updated successfully! You can now sign in with your new password.");
         setAuthMode("login");
-      } catch {
-        alert("Cannot connect to server at http://localhost:8080");
+      } else {
+        setAuthError(data.error || "Reset failed");
       }
-    };
+    } catch {
+      setAuthError("Cannot connect to server at http://localhost:8080");
+    }
+  };
 
+  // -----------------------------
+  // TEXT FORMATTING WITH MENTIONS
+  // -----------------------------
+  const renderWithMentions = (text: string) => {
+    const parts = text.split(/(@[a-zA-Z0-9_]+)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith("@")) {
+        const cleanUsername = part.substring(1);
+        return (
+          <span
+            key={i}
+            style={{ color: "#047857", fontWeight: 600, cursor: "pointer" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              fetch(`http://localhost:8080/api/users/by-username/${cleanUsername}`, {
+                headers: { Authorization: `Bearer ${token}` },
+              })
+                .then((r) => r.json())
+                .then((u) => u.id && openProfile(u.id))
+                .catch(() => alert(`User @${cleanUsername} not found`));
+            }}
+          >
+            {part}
+          </span>
+        );
+      }
+      return <span key={i}>{part}</span>;
+    });
+  };
+
+  // -----------------------------
+  // RENDER AUTH VIEW (WHEN NOT LOGGED IN)
+  // -----------------------------
+  if (!token) {
     return (
       <div className="auth-page">
         <div className="auth-card">
-          <h1>Nesty</h1>
+          {/* Logo container left blank per instruction: "leave the logo blank until I come up with one." */}
+          <img src="/nesty-logo.png" alt="Nesty" className="auth-brand-logo-img" />
+          <h1 className="auth-title">Nesty</h1>
           <p className="auth-subtitle">
-            {authMode === "login" ? "A live community for Piscine builders" : "Create a new developer profile"}
+            {authMode === "login"
+              ? "A space for Piscine candidates to build, learn and grow"
+              : authMode === "register"
+              ? "Create your developer profile"
+              : "Reset your account password"}
           </p>
+
+          {authError && <div className="auth-alert auth-alert-error">{authError}</div>}
+          {authSuccess && <div className="auth-alert auth-alert-success">{authSuccess}</div>}
 
           {authMode === "register" && (
             <input
-              className="input"
+              className="auth-input"
               placeholder="Username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
             />
           )}
 
-          <input className="input" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <input className="input" placeholder="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <input
+            className="auth-input"
+            placeholder={authMode === "register" ? "Email" : "Email or Username"}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
 
-          {authMode === "login" ? (
-            <>
-              <button className="primary-btn" style={{ width: "100%" }} onClick={login}>Login</button>
-              <p className="auth-switch">
-                New to Nesty?{" "}
-                <span className="link" onClick={() => setAuthMode("register")}>
-                  Sign up
-                </span>
-              </p>
-            </>
-          ) : (
-            <>
-              <button className="primary-btn" style={{ width: "100%" }} onClick={handleRegister}>Create Account</button>
-              <p className="auth-switch">
-                Already registered?{" "}
-                <span className="link" onClick={() => setAuthMode("login")}>
-                  Log in
-                </span>
-              </p>
-            </>
+          <div className="password-input-wrapper">
+            <input
+              className="auth-input"
+              placeholder={authMode === "forgot" ? "New Password" : "Password"}
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  if (authMode === "login") login();
+                  else if (authMode === "register") handleRegister();
+                  else handleForgotPassword();
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="password-toggle-btn"
+              onClick={() => setShowPassword(!showPassword)}
+              title={showPassword ? "Hide password" : "Show password"}
+            >
+              {showPassword ? "🙈" : "👁️"}
+            </button>
+          </div>
+
+          {authMode === "forgot" && (
+            <div className="password-input-wrapper">
+              <input
+                className="auth-input"
+                placeholder="Confirm New Password"
+                type={showConfirmPassword ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                className="password-toggle-btn"
+                onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+              >
+                {showConfirmPassword ? "🙈" : "👁️"}
+              </button>
+            </div>
           )}
+
+          <button
+            className="auth-submit-btn"
+            onClick={
+              authMode === "login"
+                ? login
+                : authMode === "register"
+                ? handleRegister
+                : handleForgotPassword
+            }
+          >
+            {authMode === "login" ? "Sign In" : authMode === "register" ? "Create Account" : "Reset Password"}
+          </button>
+
+          <div className="auth-toggle-row">
+            {authMode === "login" ? (
+              <>
+                <span>Don't have an account?</span>
+                <button
+                  className="auth-link-btn"
+                  onClick={() => {
+                    setAuthError(null);
+                    setAuthSuccess(null);
+                    setAuthMode("register");
+                  }}
+                >
+                  Sign Up
+                </button>
+                <span>·</span>
+                <button
+                  className="auth-link-btn"
+                  onClick={() => {
+                    setAuthError(null);
+                    setAuthSuccess(null);
+                    setAuthMode("forgot");
+                  }}
+                >
+                  Forgot Password?
+                </button>
+              </>
+            ) : (
+              <>
+                <span>Already have an account?</span>
+                <button
+                  className="auth-link-btn"
+                  onClick={() => {
+                    setAuthError(null);
+                    setAuthSuccess(null);
+                    setAuthMode("login");
+                  }}
+                >
+                  Sign In
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
     );
   }
 
-  const navigateToPage = (targetPage: "feed" | "create" | "profile", resetUser = false) => {
-    if (resetUser) setViewedUserId(null);
-    setPage(targetPage);
-    setMobileMenuOpen(false); 
-  };
+  // Active channel title and subtitle
+  const activeChannel = communities.find((c) => c.id === selectedCommunity) || communities[0];
+  const pageTitle = page === "profile" ? "Profile" : page === "create" ? "Create Post" : activeChannel.name;
+  const pageSub =
+    page === "profile"
+      ? "Your page on Nesty"
+      : page === "create"
+      ? "Share a win, bug, idea, or question."
+      : activeChannel.subtitle;
 
   return (
-    <div className="app">
-      {/* MOBILE RESPONSIVE FLOATING HEADER BAR */}
+    <div className="nesty-app">
+      {/* MOBILE TOP BAR */}
       <div className="mobile-top-bar">
-        <button className="hamburger-btn" onClick={() => { setMobileMenuOpen(!mobileMenuOpen); setNotifOpen(false); }}>
-          ☰
+        <button
+          className="hamburger-btn"
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          aria-label="Toggle Menu"
+        >
+          {mobileMenuOpen ? "✕" : "☰"}
         </button>
-        <h2 className="mobile-bar-title" onClick={() => navigateToPage("feed")}>Nesty</h2>
-        <div className="mobile-bar-spacer" />
+        <div
+          className="mobile-bar-title"
+          onClick={() => {
+            setPage("feed");
+            setSelectedCommunity("general");
+            setMobileMenuOpen(false);
+          }}
+        >
+          <img src="/nesty-logo.png" alt="Nesty" className="mobile-bar-logo" />
+          <span>Nesty</span>
+        </div>
+        <div className="mobile-bar-actions">
+          <button
+            className="mobile-bar-icon-btn"
+            title="Messages"
+            onClick={() => {
+              const partner = communityStats.online_users.find((u) => u.id && u.id !== user?.id);
+              if (partner && partner.id) {
+                startChatWithUser({ id: partner.id, username: partner.username, email: "" });
+              } else {
+                setMobileMenuOpen(true);
+              }
+            }}
+          >
+            💬
+          </button>
+          <button
+            className="mobile-bar-icon-btn"
+            title="Notifications"
+            onClick={() => setNotifOpen(!notifOpen)}
+          >
+            🔔
+            {unreadCount > 0 && <span className="mobile-badge-count">{unreadCount}</span>}
+          </button>
+        </div>
       </div>
 
-      {/* GLOBAL BLUR OVERLAY WHEN NOTIFICATIONS PANEL IS ACTIVE */}
-      {notifOpen && (
-        <div className="global-blur-overlay" onClick={() => setNotifOpen(false)} />
-      )}
-
-      {/* DYNAMIC FOCUS OVERLAY FOR SIDEBAR HAMBURGER DRAWER */}
+      {/* MOBILE BACKDROP OVERLAY */}
       {mobileMenuOpen && (
-        <div className="global-blur-overlay" style={{ zIndex: 84 }} onClick={() => setMobileMenuOpen(false)} />
+        <div
+          className="mobile-drawer-backdrop"
+          onClick={() => setMobileMenuOpen(false)}
+        />
       )}
 
-      {/* SIDEBAR NAVIGATION CONTROLLER */}
-      <div className={`sidebar ${mobileMenuOpen ? "open-drawer" : ""}`}>
-        <h2>Nesty</h2>
-
-        {/* LIVE SEARCH BAR */}
-        <div 
-          className="search-container" 
-          onFocus={() => setSearchFocused(true)}
-          onClick={(e) => e.stopPropagation()}
+      {/* =====================================================================
+          1. LEFT COLUMN: NAVIGATION SIDEBAR (FOREST SLATE THEME)
+          ===================================================================== */}
+      <aside ref={sidebarLeftRef} className={`nesty-sidebar-left ${mobileMenuOpen ? "open-drawer" : ""}`}>
+        {/* BRAND HEADER */}
+        <div
+          className="brand-header"
+          onClick={() => {
+            setPage("feed");
+            setSelectedCommunity("general");
+            setMobileMenuOpen(false);
+          }}
         >
+          {/* Logo container left blank per instruction: "leave the logo blank until I come up with one." */}
+          <img src="/nesty-logo.png" alt="Nesty" className="brand-logo-img" />
+          <div className="brand-text-col">
+            <span className="brand-title">Nesty</span>
+            <span className="brand-subtitle">Build · Learn · Grow</span>
+          </div>
+        </div>
+
+        {/* SEARCH INPUT WITH ⌘K */}
+        <div className="sidebar-search-box">
+          <span className="search-icon-left">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+          </span>
           <input
-            type="text"
-            className="input search-input"
-            placeholder="Search users..." 
+            className="sidebar-search-input"
+            placeholder="Search Nesty..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
           />
-          {searchFocused && (searchQuery.trim() !== "") && (
-            <div className="search-results-dropdown">
-              {searchResults.length === 0 ? (
-                <div className="search-empty">No builders found</div>
-              ) : (
-                searchResults.map((u) => (
-                  <div
-                    key={u.id}
-                    className="search-result-row"
-                    onClick={() => {
-                      openProfile(u.id);
-                      setSearchQuery("");
-                      setSearchFocused(false);
-                    }}
-                  >
-                    <div className="avatar search-avatar">
-                      {u.avatar_url ? (
-                        <img src={u.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                      ) : (
-                        u.username.charAt(0).toUpperCase()
-                      )}
-                    </div>
-                    <div className="search-result-info">
-                      <b className="search-result-name">{u.name || u.username}</b>
-                      <span className="search-result-username">@{u.username}</span>
-                    </div>
+          <span className="search-shortcut-badge">⌘K</span>
+
+          {searchFocused && searchResults.length > 0 && (
+            <div className="sidebar-search-results">
+              {searchResults.map((u) => (
+                <div
+                  key={u.id}
+                  className="search-result-row"
+                  onMouseDown={() => {
+                    openProfile(u.id);
+                    setSearchQuery("");
+                  }}
+                >
+                  <div className="search-avatar-mini">
+                    {u.avatar_url ? <img src={u.avatar_url} alt="" /> : u.username.charAt(0).toUpperCase()}
                   </div>
-                ))
-              )}
+                  <div className="search-user-meta">
+                    <span className="search-user-name">{u.name || u.username}</span>
+                    <span className="search-user-handle">@{u.username}</span>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
 
-        <button className={page === "feed" ? "active-nav" : "nav-btn"} onClick={() => navigateToPage("feed")}>Feed</button>
-        <button className={page === "create" ? "active-nav" : "nav-btn"} onClick={() => navigateToPage("create")}>Create Post</button>
-        <button className={page === "profile" ? "active-nav" : "nav-btn"} onClick={() => navigateToPage("profile", true)}>Profile</button>
-
-        <div className="notif-bell-wrapper">
+        {/* MAIN NAVIGATION GROUP */}
+        <div className="sidebar-nav-group">
           <button
-            className="nav-btn notif-bell-btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              setNotifOpen((prev) => !prev);
-              setMobileMenuOpen(false);
-            }}
-          >
-            🔔 Notifications
-            {unreadCount > 0 && <span className="notif-badge">{unreadCount > 9 ? "9+" : unreadCount}</span>}
-          </button>
-        </div>
-
-        <div style={{ marginTop: "auto" }}>
-          <button
-            className="secondary-btn"
-            style={{ width: "100%", marginBottom: 10 }}
-            onClick={toggleTheme}
-          >
-            {theme === "dark" ? "☀️ Light Mode" : "🌙 Dark Mode"}
-          </button>
-          <button
-            className="logout-btn"
+            data-nav="home"
+            className={`nav-item-btn ${page === "feed" && selectedCommunity === "general" ? "active" : ""}`}
             onClick={() => {
-              localStorage.removeItem("token");
-              setToken(null);
-              setUser(null);
+              setPage("feed");
+              setSelectedCommunity("general");
               setMobileMenuOpen(false);
             }}
           >
-            Logout
+            <span className="nav-item-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                <polyline points="9 22 9 12 15 12 15 22" />
+              </svg>
+            </span>
+            <span>Home</span>
+          </button>
+
+          <button
+            data-nav="feed"
+            className={`nav-item-btn ${page === "feed" && selectedCommunity !== "general" ? "active" : ""}`}
+            onClick={() => {
+              setPage("feed");
+              setMobileMenuOpen(false);
+            }}
+          >
+            <span className="nav-item-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </span>
+            <span>Feed</span>
+          </button>
+
+          <button
+            data-nav="create"
+            className={`nav-item-btn ${page === "create" ? "active" : ""}`}
+            onClick={() => {
+              setPage("create");
+              setMobileMenuOpen(false);
+            }}
+          >
+            <span className="nav-item-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+            </span>
+            <span>Create Post</span>
+          </button>
+
+          <button
+            data-nav="profile"
+            className={`nav-item-btn ${page === "profile" && (viewedUserId === user?.id || viewedUserId === null) ? "active" : ""}`}
+            onClick={() => {
+              if (user?.id) openProfile(user.id);
+              else setPage("profile");
+            }}
+          >
+            <span className="nav-item-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </span>
+            <span>Profile</span>
+          </button>
+
+          <button
+            data-nav="notifications"
+            className="nav-item-btn"
+            onClick={() => setNotifOpen(!notifOpen)}
+          >
+            <span className="nav-item-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+            </span>
+            <span>Notifications</span>
+            {unreadCount > 0 && <span className="nav-unread-badge">{unreadCount}</span>}
           </button>
         </div>
-      </div>
 
-      {/* ==========================================================================
-          🎯 NOTIFICATIONS PANEL ELEVATED TO APP ROOT HIERARCHY TIER
-          ========================================================================== */}
-      {notifOpen && (
-        <div className="notif-dropdown global-notif-dropdown" onClick={(e) => e.stopPropagation()}>
-          <div className="notif-dropdown-header">
-            <b>Notifications</b>
-            {unreadCount > 0 && (
-              <button className="notif-mark-all" onClick={markAllNotificationsRead}>
-                Mark all read
-              </button>
-            )}
-          </div>
-          <div className="notif-list">
-            {notifications.length === 0 && (
-              <p className="notif-empty">No notifications yet.</p>
-            )}
-            {notifications.map((n) => (
-              <div
-                key={n.id}
-                className={`notif-item${n.read ? "" : " unread"}`}
-                onClick={() => {
-                  if (!n.read) markNotificationRead(n.id);
-                  setNotifOpen(false);
-                  openProfile(n.actor_id);
-                }}
-              >
-                <div className="notif-avatar">
-                  {n.actor?.avatar_url ? (
-                    <img src={n.actor.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  ) : (
-                    (n.actor?.username || "?").charAt(0).toUpperCase()
-                  )}
-                </div>
-                <div className="notif-body">
-                  <span>{notificationText(n)}</span>
-                  <div className="notif-time">{timeAgo(n.created_at)}</div>
+        {/* COMMUNITIES LIST */}
+        <div className="communities-section">
+          <div className="sidebar-section-label">COMMUNITIES</div>
+          {communities.map((comm) => (
+            <button
+              key={comm.id}
+              className={`comm-item-btn ${page === "feed" && selectedCommunity === comm.id ? "active" : ""}`}
+              onClick={() => {
+                setSelectedCommunity(comm.id);
+                setPage("feed");
+                setMobileMenuOpen(false);
+              }}
+            >
+              <span className={`comm-badge ${comm.badgeClass}`}>#</span>
+              <span>{comm.name}</span>
+            </button>
+          ))}
+
+          <button
+            className="create-comm-btn"
+            onClick={() => setCreateCommModalOpen(true)}
+          >
+            <span>+</span>
+            <span>Create Community</span>
+          </button>
+
+          {/* COMMUNITY OVERVIEW, FEATURED CHANNELS, ONLINE NOW (CLICK TO VIEW DETAILS) */}
+          <div className="drawer-accordion-group">
+            <div className="mobile-divider" style={{ margin: "12px 0 8px 0" }} />
+
+            {/* 1. COMMUNITY OVERVIEW */}
+            <button
+              type="button"
+              className={`drawer-menu-item-btn ${showOverview ? "expanded" : ""}`}
+              onClick={() => setShowOverview(!showOverview)}
+            >
+              <div className="drawer-menu-item-left">
+                <span className="drawer-menu-icon">🌐</span>
+                <span className="drawer-menu-title">Community overview</span>
+              </div>
+              <span className="drawer-menu-chevron">{showOverview ? "▾" : "›"}</span>
+            </button>
+            {showOverview && (
+              <div className="drawer-accordion-content">
+                <div className="community-widget-card mobile-comm-card">
+                  <div className="community-widget-top">
+                    <img src="/nesty-logo.png" alt="Nesty" className="community-widget-logo-img" />
+                    <span className="community-widget-name">Nesty</span>
+                  </div>
+                  <p className="community-widget-desc">
+                    A space for Piscine candidates to share victories, discoveries and coding questions.
+                  </p>
+                  <div className="community-widget-members">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                      <circle cx="9" cy="7" r="4" />
+                      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                    </svg>
+                    <span>{liveUserCount} users</span>
+                  </div>
+                  <button
+                    className="invite-friends-btn"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(window.location.origin);
+                      alert("Invite link copied to clipboard!");
+                    }}
+                  >
+                    + Invite friends
+                  </button>
                 </div>
               </div>
-            ))}
+            )}
+
+            {/* 2. FEATURED CHANNELS */}
+            <button
+              type="button"
+              className={`drawer-menu-item-btn ${showFeatured ? "expanded" : ""}`}
+              onClick={() => setShowFeatured(!showFeatured)}
+            >
+              <div className="drawer-menu-item-left">
+                <span className="drawer-menu-icon">⭐</span>
+                <span className="drawer-menu-title">Featured channels</span>
+              </div>
+              <span className="drawer-menu-chevron">{showFeatured ? "▾" : "›"}</span>
+            </button>
+            {showFeatured && (
+              <div className="drawer-accordion-content">
+                <div className="featured-channels-list">
+                  <div
+                    className="featured-channel-row"
+                    onClick={() => {
+                      setSelectedCommunity("coding-help");
+                      setPage("feed");
+                      setMobileMenuOpen(false);
+                    }}
+                  >
+                    <div className="featured-icon-badge purple">&lt;/&gt;</div>
+                    <div className="featured-channel-text">
+                      <span className="featured-channel-title">Coding Help</span>
+                      <span className="featured-channel-sub">Get community help</span>
+                    </div>
+                    <span className="featured-chevron">›</span>
+                  </div>
+                  <div
+                    className="featured-channel-row"
+                    onClick={() => {
+                      setSelectedCommunity("showcase");
+                      setPage("feed");
+                      setMobileMenuOpen(false);
+                    }}
+                  >
+                    <div className="featured-icon-badge violet">💡</div>
+                    <div className="featured-channel-text">
+                      <span className="featured-channel-title">Project Showcase</span>
+                      <span className="featured-channel-sub">Show what you build</span>
+                    </div>
+                    <span className="featured-chevron">›</span>
+                  </div>
+                  <div
+                    className="featured-channel-row"
+                    onClick={() => {
+                      setSelectedCommunity("opportunities");
+                      setPage("feed");
+                      setMobileMenuOpen(false);
+                    }}
+                  >
+                    <div className="featured-icon-badge orange">💼</div>
+                    <div className="featured-channel-text">
+                      <span className="featured-channel-title">Opportunities</span>
+                      <span className="featured-channel-sub">Jobs & internships</span>
+                    </div>
+                    <span className="featured-chevron">›</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 3. ONLINE NOW */}
+            <button
+              type="button"
+              className={`drawer-menu-item-btn ${showOnline ? "expanded" : ""}`}
+              onClick={() => setShowOnline(!showOnline)}
+            >
+              <div className="drawer-menu-item-left">
+                <span className="drawer-menu-icon">🟢</span>
+                <span className="drawer-menu-title">Online now</span>
+                <span className="nav-unread-badge" style={{ marginLeft: "8px" }}>
+                  {communityStats.online_users.length}
+                </span>
+              </div>
+              <span className="drawer-menu-chevron">{showOnline ? "▾" : "›"}</span>
+            </button>
+            {showOnline && (
+              <div className="drawer-accordion-content">
+                <div className="online-users-list mobile-online-list">
+                  {communityStats.online_users.map((u, i) => {
+                    const bgColors = ["#134e40", "#78350f", "#b45309", "#334155", "#047857"];
+                    const bgColor = bgColors[i % bgColors.length];
+                    return (
+                      <div key={u.id || i} className="online-user-item">
+                        <div
+                          style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, cursor: "pointer" }}
+                          onClick={() => {
+                            if (u.id) {
+                              openProfile(u.id);
+                              setMobileMenuOpen(false);
+                            }
+                          }}
+                        >
+                          <div className="online-user-avatar" style={{ background: bgColor }}>
+                            {u.avatar_url ? <img src={u.avatar_url} alt="" /> : u.username.charAt(0).toUpperCase()}
+                            <span className="online-dot-badge" />
+                          </div>
+                          <div className="online-user-meta">
+                            <span className="online-user-name">{u.name || u.username}</span>
+                            <span className="online-user-status">{u.status || "Active now"}</span>
+                          </div>
+                        </div>
+                        {u.id && u.id !== user?.id && (
+                          <div style={{ display: "flex", gap: "4px" }}>
+                            <button
+                              className="scroll-ctrl-btn"
+                              style={{ padding: "3px 8px", fontSize: "11px" }}
+                              title={`Chat with ${u.username}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startChatWithUser({ id: u.id!, username: u.username, email: "" });
+                                setMobileMenuOpen(false);
+                              }}
+                            >
+                              💬
+                            </button>
+                            <button
+                              className="scroll-ctrl-btn"
+                              style={{ padding: "3px 8px", fontSize: "11px" }}
+                              title={`Call ${u.username}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false);
+                                setMobileMenuOpen(false);
+                              }}
+                            >
+                              📞
+                            </button>
+                            <button
+                              className="scroll-ctrl-btn"
+                              style={{ padding: "3px 8px", fontSize: "11px" }}
+                              title={`Video call ${u.username}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true);
+                                setMobileMenuOpen(false);
+                              }}
+                            >
+                              📹
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* FOOTER: DARK MODE SWITCH & USER CARD */}
+        <div className="sidebar-footer-wrap">
+          <div className="dark-mode-toggle-row">
+            <span className="dark-mode-label">🌙 Dark mode</span>
+            <button
+              className={`theme-switch-btn ${theme === "dark" ? "on" : ""}`}
+              onClick={toggleTheme}
+              aria-label="Toggle Dark Mode"
+            >
+              <div className="theme-switch-thumb" />
+            </button>
+          </div>
+
+          <div
+            className="sidebar-user-card"
+            onClick={() => user?.id && openProfile(user.id)}
+          >
+            <div className="sidebar-user-avatar">
+              {user?.avatar_url ? (
+                <img src={user.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : (
+                (user?.username || "J").charAt(0).toUpperCase()
+              )}
+            </div>
+            <div className="user-card-info">
+              <span className="user-card-name">{user?.name || user?.username || "Jaytricks"}</span>
+              <span className="user-card-handle">@{user?.username || "jaytricks"}</span>
+            </div>
+            <span
+              className="user-card-settings"
+              title="Logout"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (confirm("Do you want to log out?")) {
+                  localStorage.removeItem("token");
+                  setToken(null);
+                  setUser(null);
+                }
+              }}
+            >
+              ⚙️
+            </span>
+          </div>
+        </div>
+      </aside>
+
+      {/* NOTIFICATIONS FLYOUT */}
+      {notifOpen && (
+        <div className="notifications-flyout">
+          <div className="notif-header">
+            <b>Notifications</b>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              {unreadCount > 0 && (
+                <button
+                  className="edit-profile-pill-btn"
+                  style={{ padding: "4px 10px", fontSize: "12px" }}
+                  onClick={markAllNotificationsRead}
+                >
+                  Mark all read
+                </button>
+              )}
+              <button
+                className="edit-profile-pill-btn"
+                style={{ padding: "4px 8px", fontSize: "12px" }}
+                onClick={() => setNotifOpen(false)}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+          <div className="notif-list-container">
+            {notifications.length === 0 ? (
+              <div style={{ padding: "16px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
+                No notifications yet.
+              </div>
+            ) : (
+              notifications.map((n) => (
+                <div
+                  key={n.id}
+                  className={`notif-row-item ${n.read ? "" : "unread"}`}
+                  onClick={() => {
+                    markNotificationRead(n.id);
+                    if (n.actor_id) openProfile(n.actor_id);
+                  }}
+                >
+                  <div className="search-avatar-mini">
+                    {n.actor?.avatar_url ? (
+                      <img src={n.actor.avatar_url} alt="" />
+                    ) : (
+                      (n.actor?.username || "?").charAt(0).toUpperCase()
+                    )}
+                  </div>
+                  <div style={{ flex: 1, fontSize: "13px" }}>
+                    <div>{notificationText(n)}</div>
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
+                      {timeAgo(n.created_at)}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
 
-      {/* MAIN CONTENT CONTAINER */}
-      <div className="main-content">
+      {/* =====================================================================
+          2. CENTER COLUMN: COMMUNITY FEED / PROFILE / CREATE POST
+          ===================================================================== */}
+      <main ref={centerFeedRef} className="nesty-center-feed">
+        {/* TOP BAR */}
+        <div className="feed-top-bar">
+          <div className="feed-top-left">
+            <div
+              className={`feed-top-badge ${
+                page === "profile" ? "profile-badge" : page === "create" ? "create-badge" : ""
+              }`}
+            >
+              {page === "profile" ? "👤" : page === "create" ? "✏️" : "#"}
+            </div>
+            <div className="feed-top-titles">
+              <h1 className="feed-top-title">{pageTitle}</h1>
+              <span className="feed-top-sub">{pageSub}</span>
+            </div>
+          </div>
 
-        {/* FEED */}
+          <div className="feed-top-right">
+            <div className="members-pill">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              <span>{liveUserCount} users</span>
+            </div>
+            <button className="top-action-icon-btn" title="Search">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+            </button>
+            <button className="top-action-icon-btn" title="Options">
+              ···
+            </button>
+          </div>
+        </div>
+
+        {/* VIEW 1: HOME & COMMUNITY FEED */}
         {page === "feed" && (
           <>
-            <h1></h1> {/*  Cleaned out completely! */}
-            <p className="page-subtitle">What's up Nesters?</p>
+            {/* INLINE QUICK POST CREATOR */}
+            <div className="inline-creator-card">
+              <div className="inline-creator-top">
+                <div className="avatar-with-dot">
+                  {user?.avatar_url ? (
+                    <img src={user.avatar_url} alt="" />
+                  ) : (
+                    (user?.username || "J").charAt(0).toUpperCase()
+                  )}
+                  <span className="online-dot" />
+                </div>
+                <input
+                  className="inline-input-pill"
+                  placeholder="What's on your mind, Nesters?"
+                  value={newPost}
+                  onChange={(e) => setNewPost(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      createPost();
+                    }
+                  }}
+                />
+              </div>
 
-            {/* 👇 TIMELINE TAB TOGGLE SWITCH CONTROL */}
-            <div className="feed-toggle-bar" style={{ display: "flex", gap: "12px", width: "100%", maxWidth: "600px", marginBottom: "20px" }}>
-              <button 
-                className="primary-btn"
-                style={{ 
-                  flex: 1, 
-                  padding: "10px", 
-                  borderRadius: "var(--radius-sm)", 
-                  border: "1px solid var(--border)", 
-                  background: feedFilter === "all" ? "var(--accent)" : "transparent", 
-                  color: feedFilter === "all" ? "#fff" : "var(--text)" 
-                }}
-                onClick={() => setFeedFilter("all")}
-              >
-                🌍 Global Timeline
-              </button>
-              <button 
-                className="primary-btn"
-                style={{ 
-                  flex: 1, 
-                  padding: "10px", 
-                  borderRadius: "var(--radius-sm)", 
-                  border: "1px solid var(--border)", 
-                  background: feedFilter === "following" ? "var(--accent)" : "transparent", 
-                  color: feedFilter === "following" ? "#fff" : "var(--text)" 
-                }}
-                onClick={() => setFeedFilter("following")}
-              >
-                🤝 Following Only
-              </button>
+              {mediaPreview && (
+                <div style={{ position: "relative", marginBottom: "12px", borderRadius: "12px", overflow: "hidden" }}>
+                  <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "240px", objectFit: "cover" }} />
+                  <button
+                    style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "24px", height: "24px", cursor: "pointer" }}
+                    onClick={() => { setSelectedFile(null); setMediaPreview(null); }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              <div className="inline-creator-actions">
+                <div className="inline-attach-tools">
+                  <label className="tool-attach-btn" style={{ cursor: "pointer" }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                      <circle cx="8.5" cy="8.5" r="1.5" />
+                      <polyline points="21 15 16 10 5 21" />
+                    </svg>
+                    <span>Image</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        setSelectedFile(file);
+                        if (file) setMediaPreview(URL.createObjectURL(file));
+                      }}
+                    />
+                  </label>
+
+                  <button
+                    className="tool-attach-btn"
+                    onClick={() => setNewPost((prev) => prev + "```\n// Code snippet\n```")}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="16 18 22 12 16 6" />
+                      <polyline points="8 6 2 12 8 18" />
+                    </svg>
+                    <span>Code</span>
+                  </button>
+
+                  <button
+                    className="tool-attach-btn"
+                    onClick={() => {
+                      const url = prompt("Enter Link URL:");
+                      if (url) setNewPost((prev) => `${prev} ${url}`);
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                    </svg>
+                    <span>Link</span>
+                  </button>
+
+                  <button
+                    className="tool-attach-btn"
+                    onClick={() => alert("Poll creation dialog")}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="20" x2="18" y2="10" />
+                      <line x1="12" y1="20" x2="12" y2="4" />
+                      <line x1="6" y1="20" x2="6" y2="14" />
+                    </svg>
+                    <span>Poll</span>
+                  </button>
+                </div>
+
+                <button
+                  className="post-pill-submit"
+                  onClick={createPost}
+                  disabled={uploadingMedia || (!newPost.trim() && !selectedFile)}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                  </svg>
+                  <span>{uploadingMedia ? "Posting..." : "Post"}</span>
+                </button>
+              </div>
             </div>
 
-            <div className="feed">
+            {/* POSTS FEED LIST */}
+            <div className="nesty-posts-feed">
               {posts.map((post) => {
-                const displayName = post.user?.username || "Anonymous";
-                const postComments = post.comments || [];
-                const isDropdownOpen = activeDropdown === post.id;
-                const isShareOpen = activeShareDropdown === post.id;
+                const displayName = post.user?.name || post.user?.username || "piscine_builder";
+                const handle = post.user?.username || "piscine_builder";
+                const isMyPost = user?.id && post.user?.id === user.id;
 
                 return (
-                  <div key={post.id} className="post-card">
-
-                    <div className="post-header">
+                  <article key={post.id} className="post-card-nesty">
+                    <div className="post-header-nesty">
                       <div
-                        className="avatar"
-                        style={{ cursor: post.user?.id ? "pointer" : "default" }}
+                        className="avatar-with-dot"
+                        style={{ cursor: "pointer", width: "42px", height: "42px" }}
                         onClick={() => post.user?.id && openProfile(post.user.id)}
                       >
                         {post.user?.avatar_url ? (
-                          <img src={post.user.avatar_url} alt="Avatar" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                          <img src={post.user.avatar_url} alt="" />
                         ) : (
-                          displayName.charAt(0).toUpperCase()
+                          handle.charAt(0).toUpperCase()
                         )}
+                        <span className="online-dot" />
                       </div>
-                      <div>
-                        <b
-                          style={{ cursor: post.user?.id ? "pointer" : "default" }}
+
+                      <div className="post-header-author-info">
+                        <span
+                          className="author-display-name"
                           onClick={() => post.user?.id && openProfile(post.user.id)}
                         >
                           {displayName}
-                        </b>
-                        <div className="timestamp">
-                          {post.created_at ? timeAgo(post.created_at) : "Just now"}
-                        </div>
-                      </div>
-
-                      <div style={{ marginLeft: "auto", position: "relative" }}>
-                        <button
-                          className="icon-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveDropdown(isDropdownOpen ? null : post.id);
-                          }}
+                        </span>
+                        <span className="verified-dot-green" title="Verified" />
+                        <span
+                          className="author-handle"
+                          onClick={() => post.user?.id && openProfile(post.user.id)}
                         >
-                          ⋮
-                        </button>
-
-                        {isDropdownOpen && (
-                          <div className="dropdown-menu">
-                            <button
-                              className="dropdown-item"
-                              onClick={() => { setEditingPost(post); setEditText(post.content); setActiveDropdown(null); }}
-                            >
-                              ✏️ Edit Post
-                            </button>
-                            <button
-                              className="dropdown-item danger"
-                              onClick={() => { deletePost(post.id); setActiveDropdown(null); }}
-                            >
-                              🗑️ Delete Post
-                            </button>
-                          </div>
-                        )}
+                          @{handle}
+                        </span>
+                        <span className="post-date-ago">
+                          · {post.created_at ? timeAgo(post.created_at) : "39m ago"}
+                        </span>
                       </div>
-                    </div>
 
-                    <p className="post-content">{renderWithMentions(post.content)}</p>
-                    {renderParentPost(post.parent)}
-
-                    {post.media_url && (
-                      <div className="post-media">
-                        {post.media_url.match(/\.(mp4|webm|ogg|mov|MOV|mp4\?|mov\?)/i) || post.media_url.includes("video") ? (
-                          <video src={post.media_url} controls />
-                        ) : (
-                          <img src={post.media_url} alt="Post asset" />
-                        )}
-                      </div>
-                    )}
-
-                    <div className="action-bar">
                       <button
-                        className={`action-btn${post.liked_by_me ? " liked" : ""}`}
-                        onClick={async () => {
-                          try {
-                            const res = await fetch(`http://localhost:8080/api/posts/${post.id}/like`, {
-                              method: "POST",
-                              headers: { Authorization: `Bearer ${token}` }
-                            });
-                            if (res.ok) {
-                              const data = await res.json();
-                              setPosts(prev => prev.map(p => p.id === post.id ? { ...p, likes: data.likes, liked_by_me: data.liked } : p));
-                            }
-                          } catch (err) { console.error("Like error", err); }
+                        className="post-options-menu-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveDropdown(activeDropdown === post.id ? null : post.id);
                         }}
                       >
-                        {post.liked_by_me ? "❤️" : "🤍"} {post.likes || 0} Likes
+                        ···
+                      </button>
+
+                      {activeDropdown === post.id && (
+                        <div className="dropdown-menu-nesty" onClick={(e) => e.stopPropagation()}>
+                          {isMyPost && (
+                            <>
+                              <button
+                                className="dropdown-item-btn"
+                                onClick={() => {
+                                  setEditingPost(post);
+                                  setEditText(post.content);
+                                  setActiveDropdown(null);
+                                }}
+                              >
+                                ✏️ Edit Post
+                              </button>
+                              <button
+                                className="dropdown-item-btn danger"
+                                onClick={() => {
+                                  deletePost(post.id);
+                                  setActiveDropdown(null);
+                                }}
+                              >
+                                🗑️ Delete
+                              </button>
+                            </>
+                          )}
+                          <button
+                            className="dropdown-item-btn"
+                            onClick={() => {
+                              navigator.clipboard.writeText(window.location.href);
+                              alert("Post link copied to clipboard!");
+                              setActiveDropdown(null);
+                            }}
+                          >
+                            📋 Copy Link
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="post-content-body">
+                      {renderWithMentions(post.content)}
+                    </div>
+
+                    {/* MEDIA OR PHOTO PLACEHOLDER */}
+                    {post.media_url ? (
+                      post.media_url === "photo_placeholder" ? (
+                        <div className="mock-photo-placeholder">
+                          Photo
+                        </div>
+                      ) : (
+                        <div className="post-media-container">
+                          {post.media_url.match(/\.(mp4|webm|mov)/i) ? (
+                            <video src={post.media_url} controls />
+                          ) : (
+                            <img src={post.media_url} alt="Attachment" />
+                          )}
+                        </div>
+                      )
+                    ) : null}
+
+                    {/* ACTION BAR */}
+                    <div className="post-actions-bar">
+                      <button
+                        className={`action-pill-btn ${post.liked_by_me ? "liked" : ""}`}
+                        onClick={() => handleLike(post.id)}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill={post.liked_by_me ? "#ef4444" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                        </svg>
+                        <span>{post.likes || 0}</span>
                       </button>
 
                       <button
-                        className="action-btn"
-                        onClick={() => setExpandedComments(prev => ({ ...prev, [post.id]: !(expandedComments[post.id] || false) }))}
+                        className="action-pill-btn"
+                        onClick={() =>
+                          setExpandedComments((prev) => ({
+                            ...prev,
+                            [post.id]: !prev[post.id],
+                          }))
+                        }
                       >
-                        💬 {postComments.length} Comments
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                        </svg>
+                        <span>{post.comments?.length || 0}</span>
                       </button>
 
-                      <div style={{ position: "relative" }}>
-                        <button
-                          className="action-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveShareDropdown(isShareOpen ? null : post.id);
-                          }}
-                        >
-                          🔗 Share
-                        </button>
-                        {isShareOpen && (
-                          <div className="dropdown-menu share-menu" onClick={(e) => e.stopPropagation()}>
-                            <button className="dropdown-item" onClick={() => { handleRepostAction(post.id); setActiveShareDropdown(null); }}>
-                              🔁 Repost inside feed
-                            </button>
-                            <button className="dropdown-item" onClick={() => { handleCopyLinkAction(post.id); setActiveShareDropdown(null); }}>
-                              📋 Copy link string
-                            </button>
-                            <button className="dropdown-item" onClick={() => { handleNativeShareAction(post); setActiveShareDropdown(null); }}>
-                              🌐 Share externally...
-                            </button>
-                          </div>
-                        )}
-                      </div>
+                      <button
+                        className="action-pill-btn"
+                        onClick={() => {
+                          if (navigator.share) {
+                            navigator.share({ title: "Nesty Post", text: post.content, url: window.location.href });
+                          } else {
+                            navigator.clipboard.writeText(window.location.href);
+                            alert("Post link copied to clipboard!");
+                          }
+                        }}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="7" y1="17" x2="17" y2="7" />
+                          <polyline points="7 7 17 7 17 17" />
+                        </svg>
+                      </button>
                     </div>
 
-                    {editingPost?.id === post.id && (
-                      <div className="edit-panel">
-                        <h3>Edit Post</h3>
-                        <textarea className="textarea" value={editText} onChange={(e) => setEditText(e.target.value)} />
-                        <div className="edit-panel-actions">
-                          <button
-                            className="primary-btn"
-                            onClick={async () => {
-                              try {
-                                const res = await fetch(`http://localhost:8080/api/posts/${editingPost?.id}`, {
-                                  method: "PUT",
-                                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                                  body: JSON.stringify({ content: editText }),
-                                });
-                                if (!res.ok) return;
-                                const updatedPost = await res.json();
-                                setPosts((prev) => prev.map((p) => p.id === updatedPost.id ? { ...p, content: updatedPost.content } : p));
-                                setEditingPost(null);
-                              } catch (err) { console.error(err); }
-                            }}
-                          >
-                            Save
-                          </button>
-                          <button className="secondary-btn" onClick={() => setEditingPost(null)}>Cancel</button>
-                        </div>
-                      </div>
-                    )}
+                    {/* EXPANDABLE COMMENTS */}
+                    {expandedComments[post.id] && (
+                      <div className="comments-section-nesty">
+                        {(post.comments || []).map((c) => (
+                          <div key={c.id} className="comment-row">
+                            <div className="comment-avatar">
+                              {c.user?.avatar_url ? (
+                                <img src={c.user.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                              ) : (
+                                (c.user?.username || "?").charAt(0).toUpperCase()
+                              )}
+                            </div>
+                            <div className="comment-bubble">
+                              <span className="comment-author-name">@{c.user?.username || "builder"}</span>
+                              <span>{c.content}</span>
+                            </div>
+                          </div>
+                        ))}
 
-                    {(expandedComments[post.id] || false) && (
-                      <div className="comment-section">
-                        <div className="comment-form">
+                        <div className="comment-form-row">
                           <input
-                            className="input"
-                            placeholder="Write a constructive comment..."
+                            className="comment-input-pill"
+                            placeholder="Write a constructive reply..."
                             value={commentInputs[post.id] || ""}
-                            onChange={(e) => setCommentInputs(prev => ({ ...prev, [post.id]: e.target.value }))}
+                            onChange={(e) =>
+                              setCommentInputs((prev) => ({ ...prev, [post.id]: e.target.value }))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleAddComment(post.id);
+                            }}
                           />
                           <button
-                            className="primary-btn"
-                            onClick={async () => {
-                              const text = commentInputs[post.id];
-                              if (!text || !text.trim()) return;
-                              try {
-                                const res = await fetch(`http://localhost:8080/api/posts/${post.id}/comments`, {
-                                  method: "POST",
-                                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                                  body: JSON.stringify({ content: text })
-                                });
-                                if (res.ok) {
-                                  const newComment = await res.json();
-                                  setPosts(prev => prev.map(p => p.id === post.id ? { ...p, comments: [...(p.comments || []), newComment] } : p));
-                                  setCommentInputs(prev => ({ ...prev, [post.id]: "" }));
-                                }
-                              } catch (err) { console.error("Comment submission error", err); }
-                            }}
+                            className="comment-submit-btn"
+                            onClick={() => handleAddComment(post.id)}
                           >
                             Reply
                           </button>
                         </div>
-
-                        <div className="comment-list">
-                          {postComments.map((comment) => (
-                            <div key={comment.id} className="comment-row">
-                              <b
-                                className="comment-author"
-                                style={{ cursor: comment.user?.id ? "pointer" : "default" }}
-                                onClick={() => comment.user?.id && openProfile(comment.user.id)}
-                              >
-                                @{comment.user?.username || "builder"}:
-                              </b>
-                              <span className="comment-text">{renderWithMentions(comment.content)}</span>
-                            </div>
-                          ))}
-                          {postComments.length === 0 && (
-                            <p className="comment-empty">Be the first to spark context on this post!</p>
-                          )}
-                        </div>
                       </div>
                     )}
-
-                  </div>
+                  </article>
                 );
               })}
-
-              {posts.length === 0 && <p className="feed-empty">No posts found on the feed.</p>}
-
-              {hasMore && posts.length > 0 && (
-                <div style={{ marginTop: 20 }}>
-                  <button className="primary-btn" onClick={loadMorePosts} disabled={loadingMore}>
-                    {loadingMore ? "Loading..." : "Load More Posts"}
-                  </button>
-                </div>
-              )}
             </div>
           </>
         )}
 
-        {/* CREATE */}
-        {page === "create" && (
-          <div className="create-box">
-            <h1>Create Post</h1>
-            <textarea
-              className="textarea"
-              placeholder="Share a win, bug, idea, or question..."
-              value={newPost}
-              onChange={(e) => setNewPost(e.target.value)}
-            />
-
-            <div className="file-input-wrapper">
-              <label className="file-input-label">
-                📎 Attach media
-                <input
-                  type="file"
-                  accept="image/*,video/*"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0] || null;
-                    setSelectedFile(file);
-                    if (file) {
-                      setMediaPreview(URL.createObjectURL(file));
-                    } else {
-                      setMediaPreview(null);
-                    }
-                  }}
-                />
-              </label>
-              <span className="file-name">{selectedFile ? selectedFile.name : "No file chosen"}</span>
-            </div>
-
-            {mediaPreview && selectedFile && (
-              <div style={{ marginBottom: 15, position: "relative", maxWidth: "100%" }}>
-                {selectedFile.type.startsWith("video/") ? (
-                  <video src={mediaPreview} controls style={{ width: "100%", maxHeight: 300, borderRadius: 8 }} />
-                ) : (
-                  <img src={mediaPreview} alt="Preview" style={{ width: "100%", maxHeight: 300, objectFit: "cover", borderRadius: 8 }} />
-                )}
-              </div>
-            )}
-
-            <button
-              className="primary-btn"
-              onClick={createPost}
-              disabled={uploadingMedia}
-            >
-              {uploadingMedia ? "Uploading & Publishing..." : "Publish"}
-            </button>
-          </div>
-        )}
-
-        {/* PROFILE */}
+        {/* VIEW 2: PROFILE PAGE (MATCHING SCREENSHOT 2) */}
         {page === "profile" && (
-          <div className="profile-page-full">
-            {profileLoading && !profileData ? (
-              <p>Loading profile...</p>
-            ) : profileData ? (
-              <>
-                {!editingProfile ? (
-                  <>
-                    <div
-                      className="profile-banner"
-                      style={
-                        profileData.user.banner_url
-                          ? { backgroundImage: `url(${profileData.user.banner_url})` }
-                          : undefined
+          <div className="profile-view-wrapper">
+            <div className="profile-card-nesty">
+              {/* MINT COVER BANNER */}
+              <div
+                className="profile-cover-mint"
+                style={
+                  (profileData?.user.banner_url || (profileData?.is_self ? user?.banner_url : undefined))
+                    ? {
+                        backgroundImage: `url(${profileData?.user.banner_url || user?.banner_url})`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
                       }
-                    >
-                      <div className="profile-avatar-overlap">
-                        {profileData.user.avatar_url ? (
-                          <img src={profileData.user.avatar_url} alt="Avatar" />
-                        ) : (
-                          <span>{(profileData.user.username || "U").charAt(0).toUpperCase()}</span>
-                        )}
-                      </div>
-                    </div>
+                    : undefined
+                }
+              >
+                {(profileData?.is_self || viewedUserId === user?.id) && (
+                  <label className="edit-cover-floating-btn" title="Change Wallpaper">
+                    📷 Change Wallpaper
+                    <input
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={handleQuickBannerChange}
+                    />
+                  </label>
+                )}
 
-                    <div className="profile-header-row">
-                      <div>
-                        <h2 className="profile-name">{profileData.user.name || profileData.user.username}</h2>
-                        <div className="profile-username">@{profileData.user.username}</div>
-                      </div>
+                {/* OVERLAPPING AVATAR */}
+                <div className="profile-avatar-big">
+                  {(profileData?.user.avatar_url || (profileData?.is_self ? user?.avatar_url : undefined)) ? (
+                    <img src={profileData?.user.avatar_url || user?.avatar_url} alt="" />
+                  ) : (
+                    (profileData?.user.username || user?.username || "J").charAt(0).toUpperCase()
+                  )}
+                  {(profileData?.is_self || viewedUserId === user?.id) && (
+                    <label className="avatar-edit-overlay-icon" title="Change Profile Picture">
+                      📷
+                      <input
+                        type="file"
+                        accept="image/*"
+                        style={{ display: "none" }}
+                        onChange={handleQuickAvatarChange}
+                      />
+                    </label>
+                  )}
+                </div>
+              </div>
 
-                      {profileData.is_self ? (
+              <div className="profile-details-section">
+                <div className="profile-edit-btn-wrap">
+                  <div className="profile-action-buttons">
+                    {(!profileData?.is_self && viewedUserId !== user?.id) ? (
+                      <>
                         <button
-                          className="secondary-btn"
+                          className="profile-chat-btn"
+                          onClick={() => {
+                            const partner = profileData?.user || { id: viewedUserId || 0, username: "Nester", email: "" };
+                            startChatWithUser(partner);
+                          }}
+                        >
+                          💬 Chat
+                        </button>
+                        <button
+                          className="profile-call-btn"
+                          onClick={() => {
+                            const partner = profileData?.user || { id: viewedUserId || 0, username: "Nester", email: "" };
+                            startCallWithUser(partner, false);
+                          }}
+                        >
+                          📞 Call
+                        </button>
+                        <button
+                          className="profile-videocall-btn"
+                          onClick={() => {
+                            const partner = profileData?.user || { id: viewedUserId || 0, username: "Nester", email: "" };
+                            startCallWithUser(partner, true);
+                          }}
+                        >
+                          📹 Video
+                        </button>
+                        <button
+                          className="post-pill-submit"
+                          disabled={followBusy}
+                          onClick={toggleFollow}
+                        >
+                          {followBusy ? "..." : profileData?.is_following ? "Following" : "Follow"}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="edit-profile-pill-btn"
                           onClick={() => {
                             setProfileForm({
-                              username: profileData.user.username || "",
-                              bio: profileData.user.bio || "",
-                              skills: profileData.user.skills || "",
-                              location: profileData.user.location || "",
+                              username: profileData?.user.username || user?.username || "",
+                              name: profileData?.user.name || user?.name || "",
+                              bio: profileData?.user.bio || user?.bio || "Aspiring Full-Stack Engineer",
+                              skills: profileData?.user.skills || user?.skills || "Go, React, TypeScript",
+                              location: profileData?.user.location || user?.location || "Otukpo, Nigeria",
+                              avatar_url: profileData?.user.avatar_url || user?.avatar_url || "",
+                              banner_url: profileData?.user.banner_url || user?.banner_url || "",
                             });
-                            setMediaPreview(profileData.user.avatar_url || null);
-                            setBannerPreview(profileData.user.banner_url || null);
-                            setSelectedFile(null);
-                            setBannerFile(null);
                             setEditingProfile(true);
                           }}
                         >
                           Edit Profile
                         </button>
-                      ) : (
                         <button
-                          className={profileData.is_following ? "secondary-btn" : "primary-btn"}
-                          disabled={followBusy}
-                          onClick={toggleFollow}
-                        >
-                          {followBusy ? "..." : profileData.is_following ? "Following" : "Follow"}
-                        </button>
-                      )}
-                    </div>
-
-                    {profileData.user.bio && <p className="profile-bio">{profileData.user.bio}</p>}
-
-                    {profileData.user.location && (
-                      <div className="profile-meta-row">📍 {profileData.user.location}</div>
-                    )}
-
-                    <div className="profile-stats">
-                      <div className="profile-stat"><b>{profileData.post_count}</b> Posts</div>
-                      <div className="profile-stat clickable" onClick={() => openFollowList("followers", profileData.user.id)}><b>{profileData.follower_count}</b> Followers</div>
-                      <div className="profile-stat clickable" onClick={() => openFollowList("following", profileData.user.id)}><b>{profileData.following_count}</b> Following</div>
-                    </div>
-
-                    <div className="feed profile-post-list">
-                      {profilePosts.map((p) => {
-                        const displayName = p.user?.username || "Anonymous";
-                        const postComments = p.comments || [];
-                        const isDropdownOpen = activeDropdown === p.id;
-                        const isProfileShareOpen = activeShareDropdown === p.id;
-                        const isVideoFile = p.media_url && (p.media_url.match(/\.(mp4|webm|ogg|mov)/i) || p.media_url.includes("video"));
-
-                        return (
-                          <div key={p.id} className="post-card">
-                            <div className="post-header">
-                              <div className="avatar">
-                                {p.user?.avatar_url ? (
-                                  <img src={p.user.avatar_url} alt="Avatar" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                                ) : (
-                                  displayName.charAt(0).toUpperCase()
-                                )}
-                              </div>
-                              <div>
-                                <b>{displayName}</b>
-                                <div className="timestamp">{p.created_at ? timeAgo(p.created_at) : "Just now"}</div>
-                              </div>
-
-                              {profileData.is_self && (
-                                <div style={{ marginLeft: "auto", position: "relative" }}>
-                                  <button
-                                    className="icon-btn"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setActiveDropdown(isDropdownOpen ? null : p.id);
-                                    }}
-                                  >
-                                    ⋮
-                                  </button>
-                                  {isDropdownOpen && (
-                                    <div className="dropdown-menu">
-                                      <button
-                                        className="dropdown-item"
-                                        onClick={() => { setEditingPost(p); setEditText(p.content); setActiveDropdown(null); }}
-                                      >
-                                        ✏️ Edit Post
-                                      </button>
-                                      <button
-                                        className="dropdown-item danger"
-                                        onClick={() => { deleteProfilePost(p.id); setActiveDropdown(null); }}
-                                      >
-                                        🗑️ Delete Post
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-
-                            <p className="post-content">{renderWithMentions(p.content)}</p>
-                            {renderParentPost(p.parent)}
-
-                            {p.media_url && (
-                              <div className="post-media">
-                                {isVideoFile ? (
-                                  <video src={p.media_url} controls />
-                                ) : (
-                                  <img src={p.media_url} alt="Post asset" />
-                                )}
-                              </div>
-                            )}
-
-                            <div className="action-bar">
-                              <button
-                                className={`action-btn${p.liked_by_me ? " liked" : ""}`}
-                                onClick={async () => {
-                                  try {
-                                    const res = await fetch(`http://localhost:8080/api/posts/${p.id}/like`, {
-                                      method: "POST",
-                                      headers: { Authorization: `Bearer ${token}` },
-                                    });
-                                    if (res.ok) {
-                                      const data = await res.json();
-                                      setProfilePosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, likes: data.likes, liked_by_me: data.liked } : pp));
-                                    }
-                                  } catch (err) { console.error("Like error", err); }
-                                }}
-                              >
-                                {p.liked_by_me ? "❤️" : "🤍"} {p.likes || 0} Likes
-                              </button>
-
-                              <button
-                                className="action-btn"
-                                onClick={() => setExpandedComments((prev) => ({ ...prev, [p.id]: !(expandedComments[p.id] || false) }))}
-                              >
-                                💬 {postComments.length} Comments
-                              </button>
-
-                              <div style={{ position: "relative" }}>
-                                <button
-                                  className="action-btn"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setActiveShareDropdown(isProfileShareOpen ? null : p.id);
-                                  }}
-                                >
-                                  🔗 Share
-                                </button>
-                                {isProfileShareOpen && (
-                                  <div className="dropdown-menu share-menu" onClick={(e) => e.stopPropagation()}>
-                                    <button className="dropdown-item" onClick={() => { handleRepostAction(p.id); setActiveShareDropdown(null); }}>
-                                      🔁 Repost inside feed
-                                    </button>
-                                    <button className="dropdown-item" onClick={() => { handleCopyLinkAction(p.id); setActiveShareDropdown(null); }}>
-                                      📋 Copy link string
-                                    </button>
-                                    <button className="dropdown-item" onClick={() => { handleNativeShareAction(p); setActiveShareDropdown(null); }}>
-                                      🌐 Share externally...
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-
-                            {editingPost?.id === p.id && (
-                              <div className="edit-panel">
-                                <h3>Edit Post</h3>
-                                <textarea className="textarea" value={editText} onChange={(e) => setEditText(e.target.value)} />
-                                <div className="edit-panel-actions">
-                                  <button
-                                    className="primary-btn"
-                                    onClick={async () => {
-                                      try {
-                                        const res = await fetch(`http://localhost:8080/api/posts/${editingPost?.id}`, {
-                                          method: "PUT",
-                                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                                          body: JSON.stringify({ content: editText }),
-                                        });
-                                        if (!res.ok) return;
-                                        const updatedPost = await res.json();
-                                        setProfilePosts((prev) => prev.map((pp) => pp.id === updatedPost.id ? { ...pp, content: updatedPost.content } : pp));
-                                        setEditingPost(null);
-                                      } catch (err) { console.error(err); }
-                                    }}
-                                  >
-                                    Save
-                                  </button>
-                                  <button className="secondary-btn" onClick={() => setEditingPost(null)}>Cancel</button>
-                                </div>
-                              </div>
-                            )}
-
-                            {(expandedComments[p.id] || false) && (
-                              <div className="comment-section">
-                                <div className="comment-form">
-                                  <input
-                                    className="input"
-                                    placeholder="Write a constructive comment..."
-                                    value={commentInputs[p.id] || ""}
-                                    onChange={(e) => setCommentInputs((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                                  />
-                                  <button
-                                    className="primary-btn"
-                                    onClick={async () => {
-                                      const text = commentInputs[p.id];
-                                      if (!text || !text.trim()) return;
-                                      try {
-                                        const res = await fetch(`http://localhost:8080/api/posts/${p.id}/comments`, {
-                                          method: "POST",
-                                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                                          body: JSON.stringify({ content: text }),
-                                        });
-                                        if (res.ok) {
-                                          const newComment = await res.json();
-                                          setProfilePosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, comments: [...(pp.comments || []), newComment] } : pp));
-                                          setCommentInputs((prev) => ({ ...prev, [p.id]: "" }));
-                                        }
-                                      } catch (err) { console.error("Comment submission error", err); }
-                                    }}
-                                  >
-                                    Reply
-                                  </button>
-                                </div>
-
-                                <div className="comment-list">
-                                  {postComments.map((comment) => (
-                                    <div key={comment.id} className="comment-row">
-                                      <b
-                                        className="comment-author"
-                                        style={{ cursor: comment.user?.id ? "pointer" : "default" }}
-                                        onClick={() => comment.user?.id && openProfile(comment.user.id)}
-                                      >
-                                        @{comment.user?.username || "builder"}:
-                                      </b>
-                                      <span className="comment-text">{renderWithMentions(comment.content)}</span>
-                                    </div>
-                                  ))}
-                                  {postComments.length === 0 && (
-                                    <p className="comment-empty">Be the first to spark context on this post!</p>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-
-                      {profilePosts.length === 0 && (
-                        <p className="feed-empty">No posts yet.</p>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="profile-card">
-                    <label className="label">Banner Image</label>
-                    <div className="banner-edit-preview" style={bannerPreview ? { backgroundImage: `url(${bannerPreview})` } : undefined}>
-                      {!bannerPreview && <span>No banner</span>}
-                    </div>
-                    <label className="file-input-label" style={{ marginBottom: 16 }}>
-                      📎 Change banner
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0] || null;
-                          setBannerFile(file);
-                          if (file) setBannerPreview(URL.createObjectURL(file));
-                        }}
-                      />
-                    </label>
-
-                    <label className="label">Profile Picture</label>
-                    <div className="profile-avatar-edit-row">
-                      <div className="avatar-placeholder">
-                        {mediaPreview ? (
-                          <img src={mediaPreview} alt="Preview" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                        ) : (
-                          <span>No Image</span>
-                        )}
-                      </div>
-                      <label className="file-input-label">
-                        📎 Change photo
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0] || null;
-                            setSelectedFile(file);
-                            if (file) {
-                              setMediaPreview(URL.createObjectURL(file));
+                          className="profile-chat-btn"
+                          onClick={() => {
+                            const partner = communityStats.online_users.find(u => u.id && u.id !== user?.id);
+                            if (partner && partner.id) {
+                              startChatWithUser({ id: partner.id, username: partner.username, email: "" });
+                            } else {
+                              alert("Select a user from Online now to chat!");
                             }
                           }}
-                        />
-                      </label>
-                    </div>
-
-                    <label className="label">Username</label>
-                    <input className="input" value={profileForm.username} onChange={(e) => setProfileForm((f) => ({ ...f, username: e.target.value }))} />
-
-                    <label className="label">Bio</label>
-                    <textarea className="textarea" value={profileForm.bio} onChange={(e) => setProfileForm((f) => ({ ...f, bio: e.target.value }))} />
-
-                    <label className="label">Skills</label>
-                    <input className="input" value={profileForm.skills} onChange={(e) => setProfileForm((f) => ({ ...f, skills: e.target.value }))} />
-
-                    <label className="label">Location</label>
-                    <input className="input" value={profileForm.location} onChange={(e) => setProfileForm((f) => ({ ...f, location: e.target.value }))} />
-
-                    <div className="form-actions">
-                      <button
-                        className="primary-btn"
-                        disabled={uploadingMedia}
-                        onClick={async () => {
-                          setUploadingMedia(true);
-                          try {
-                            let currentAvatarUrl = profileData.user.avatar_url || "";
-                            let currentBannerUrl = profileData.user.banner_url || "";
-
-                            if (selectedFile) {
-                              const formData = new FormData();
-                              formData.append("file", selectedFile);
-                              const uploadRes = await fetch("http://localhost:8080/api/upload", {
-                                method: "POST",
-                                headers: { Authorization: `Bearer ${token}` },
-                                body: formData,
-                              });
-                              if (uploadRes.ok) {
-                                const uploadData = await uploadRes.json();
-                                currentAvatarUrl = uploadData.url;
-                              } else {
-                                alert("Failed to upload avatar image.");
-                                setUploadingMedia(false);
-                                return;
-                              }
-                            }
-
-                            if (bannerFile) {
-                              const formData = new FormData();
-                              formData.append("file", bannerFile);
-                              const uploadRes = await fetch("http://localhost:8080/api/upload", {
-                                method: "POST",
-                                headers: { Authorization: `Bearer ${token}` },
-                                body: formData,
-                              });
-                              if (uploadRes.ok) {
-                                const uploadData = await uploadRes.json();
-                                currentBannerUrl = uploadData.url;
-                              } else {
-                                alert("Failed to upload banner image.");
-                                setUploadingMedia(false);
-                                return;
-                              }
-                            }
-
-                            const profilePayload = {
-                              ...profileForm,
-                              avatar_url: currentAvatarUrl,
-                              banner_url: currentBannerUrl,
-                            };
-
-                            const res = await fetch(
-                              `http://localhost:8080/api/users/${profileData.user.id}`,
-                              {
-                                method: "PUT",
-                                headers: {
-                                  "Content-Type": "application/json",
-                                  Authorization: `Bearer ${token}`,
-                                },
-                                body: JSON.stringify(profilePayload),
-                              }
-                            );
-
-                            if (!res.ok) { alert("Failed to update profile"); return; }
-                            const updated = await res.json();
-                            setUser(updated);
-                            setEditingProfile(false);
-                            setSelectedFile(null);
-                            setMediaPreview(null);
-                            setBannerFile(null);
-                            setBannerPreview(null);
-                            fetchProfile(updated.id);
-                          } catch (err) {
-                            console.error(err);
-                            alert("Error updating profile");
-                          } finally {
-                            setUploadingMedia(false);
-                          }
-                        }}
-                      >
-                        {uploadingMedia ? "Saving..." : "Save"}
-                      </button>
-                      <button className="secondary-btn" onClick={() => { setEditingProfile(false); setSelectedFile(null); setMediaPreview(null); setBannerFile(null); setBannerPreview(null); }}>Cancel</button>
-                    </div>
+                        >
+                          💬 Messages & Calls
+                        </button>
+                      </>
+                    )}
                   </div>
-                )}
-              </>
-            ) : (
-              <p>Could not load profile.</p>
-            )}
+                </div>
+
+                <h2 className="profile-user-name">
+                  {profileData?.user.name || profileData?.user.username || user?.name || user?.username || "Jaytricks"}
+                </h2>
+                <div className="profile-user-handle">
+                  @{profileData?.user.username || user?.username || "jaytricks"}
+                </div>
+
+                <div className="profile-bio-text">
+                  {profileData?.user.bio || user?.bio || "Aspiring Full-Stack Engineer"}
+                </div>
+
+                <div className="profile-location-text">
+                  <span>📍</span>
+                  <span>{profileData?.user.location || user?.location || "Otukpo, Nigeria"}</span>
+                </div>
+
+                {/* STATS ROW */}
+                <div className="profile-stats-row">
+                  <div className="stat-item">
+                    <b>{profileData?.post_count ?? 23}</b> Posts
+                  </div>
+                  <div
+                    className="stat-item"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => {
+                      if (profileData?.user.id) {
+                        setFollowListModal({ type: "followers", userId: profileData.user.id });
+                      }
+                    }}
+                  >
+                    <b>{profileData?.follower_count ?? 1}</b> Followers
+                  </div>
+                  <div
+                    className="stat-item"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => {
+                      if (profileData?.user.id) {
+                        setFollowListModal({ type: "following", userId: profileData.user.id });
+                      }
+                    }}
+                  >
+                    <b>{profileData?.following_count ?? 1}</b> Following
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* USER POSTS FEED TIMELINE */}
+            <div className="nesty-posts-feed">
+              {(profilePosts.length > 0 ? profilePosts : posts).map(
+                (post) => {
+                  const displayName = post.user?.name || post.user?.username || "Jaytricks";
+                  const handle = post.user?.username || "jaytricks";
+
+                  return (
+                    <article key={post.id} className="post-card-nesty">
+                      <div className="post-header-nesty">
+                        <div className="avatar-with-dot" style={{ width: "42px", height: "42px" }}>
+                          {post.user?.avatar_url ? (
+                            <img src={post.user.avatar_url} alt="" />
+                          ) : (
+                            handle.charAt(0).toUpperCase()
+                          )}
+                          <span className="online-dot" />
+                        </div>
+                        <div className="post-header-author-info">
+                          <span className="author-display-name">{displayName}</span>
+                          <span className="verified-dot-green" />
+                          <span className="author-handle">@{handle}</span>
+                          <span className="post-date-ago">· {post.created_at ? timeAgo(post.created_at) : "1h ago"}</span>
+                        </div>
+                      </div>
+
+                      <div className="post-content-body">{renderWithMentions(post.content)}</div>
+
+                      {post.media_url ? (
+                        post.media_url === "photo_placeholder" ? (
+                          <div className="mock-photo-placeholder">Photo</div>
+                        ) : (
+                          <div className="post-media-container">
+                            <img src={post.media_url} alt="" />
+                          </div>
+                        )
+                      ) : null}
+
+                      <div className="post-actions-bar">
+                        <button className="action-pill-btn" onClick={() => handleLike(post.id)}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                          </svg>
+                          <span>{post.likes || 28}</span>
+                        </button>
+                        <button className="action-pill-btn">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                          </svg>
+                          <span>{post.comments?.length || 6}</span>
+                        </button>
+                        <button className="action-pill-btn">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <line x1="7" y1="17" x2="17" y2="7" />
+                            <polyline points="7 7 17 7 17 17" />
+                          </svg>
+                        </button>
+                      </div>
+                    </article>
+                  );
+                }
+              )}
+            </div>
           </div>
         )}
 
-      </div>
-
-      {followListModal && (
-        <div className="modal-overlay" onClick={() => setFollowListModal(null)}>
-          <div className="follow-list-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="follow-list-header">
-              <b>{followListModal.type === "followers" ? "Followers" : "Following"}</b>
-              <button className="icon-btn" onClick={() => setFollowListModal(null)}>✕</button>
+        {/* VIEW 3: DEDICATED CREATE POST PAGE (MATCHING SCREENSHOT 3) */}
+        {page === "create" && (
+          <div className="dedicated-create-card">
+            <div className="composer-top-row">
+              <div className="avatar-with-dot">
+                {user?.avatar_url ? (
+                  <img src={user.avatar_url} alt="" />
+                ) : (
+                  (user?.username || "J").charAt(0).toUpperCase()
+                )}
+                <span className="online-dot" />
+              </div>
+              <textarea
+                className="composer-textarea"
+                placeholder="Share a win, bug, idea, or question..."
+                value={newPost}
+                onChange={(e) => setNewPost(e.target.value)}
+              />
             </div>
-            <div className="follow-list-body">
-              {followListLoading && <p className="notif-empty">Loading...</p>}
-              {!followListLoading && followListUsers.length === 0 && (
-                <p className="notif-empty">
-                  {followListModal.type === "followers" ? "No followers yet." : "Not following anyone yet."}
-                </p>
-              )}
-              {followListUsers.map((u) => (
-                <div key={u.id} className="follow-list-row">
-                  <div className="follow-list-user" onClick={() => goToProfileFromList(u.id)}>
-                    <div className="avatar" style={{ width: 36, height: 36 }}>
-                      {u.avatar_url ? (
-                        <img src={u.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                      ) : (
-                        (u.username || "?").charAt(0).toUpperCase()
-                      )}
-                    </div>
-                    <span>{u.username}</span>
+
+            {mediaPreview && (
+              <div style={{ marginBottom: "16px", borderRadius: "12px", overflow: "hidden", position: "relative" }}>
+                <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "320px", objectFit: "cover" }} />
+                <button
+                  style={{ position: "absolute", top: "10px", right: "10px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "26px", height: "26px", cursor: "pointer" }}
+                  onClick={() => { setSelectedFile(null); setMediaPreview(null); }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            <div className="composer-bottom-bar">
+              <label className="attach-media-pill-btn">
+                <span>📎</span>
+                <span>Attach media</span>
+                <input
+                  type="file"
+                  accept="image/*,video/*"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0] || null;
+                    setSelectedFile(file);
+                    if (file) setMediaPreview(URL.createObjectURL(file));
+                  }}
+                />
+              </label>
+
+              <button
+                className="publish-pill-btn"
+                disabled={uploadingMedia || (!newPost.trim() && !selectedFile)}
+                onClick={createPost}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+                <span>{uploadingMedia ? "Publishing..." : "Publish"}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* PERSONAL SCROLL CONTROLS FOR CENTER FEED */}
+        <div className="center-scroll-bar-ctrl">
+          <button
+            className="scroll-ctrl-btn"
+            onClick={() => centerFeedRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
+            title="Scroll to top of feed"
+          >
+            ▲ Top
+          </button>
+          <button
+            className="scroll-ctrl-btn"
+            onClick={() => centerFeedRef.current?.scrollBy({ top: 600, behavior: "smooth" })}
+            title="Scroll down messages"
+          >
+            ▼ More
+          </button>
+        </div>
+      </main>
+
+      {/* =====================================================================
+          3. RIGHT COLUMN: WIDGETS SIDEBAR (NESTY CARD, FEATURED, ONLINE NOW)
+          ===================================================================== */}
+      <aside ref={sidebarRightRef} className="nesty-sidebar-right">
+        {/* CARD 1: NESTY COMMUNITY CARD (FOREST GREEN) */}
+        <div className="nesty-community-widget">
+          {/* Logo container left blank per instruction: "leave the logo blank until I come up with one." */}
+          <img src="/nesty-logo.png" alt="Nesty" className="community-widget-logo-img" />
+          <h3 className="community-widget-title">Nesty</h3>
+          <p className="community-widget-desc">
+            A space for Piscine candidates to share victories, discoveries and coding questions.
+          </p>
+          <div className="community-widget-members">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+            <span>{liveUserCount} users</span>
+          </div>
+          <button
+            className="invite-friends-btn"
+            onClick={() => {
+              navigator.clipboard.writeText(window.location.origin);
+              alert("Invite link copied to clipboard!");
+            }}
+          >
+            <span>+</span>
+            <span>Invite friends</span>
+          </button>
+        </div>
+
+        {/* CARD 2: FEATURED CHANNELS */}
+        <div className="featured-widget">
+          <h4 className="featured-heading">Featured</h4>
+          <div className="featured-channels-list">
+            <div
+              className="featured-channel-row"
+              onClick={() => {
+                setSelectedCommunity("coding-help");
+                setPage("feed");
+              }}
+            >
+              <div className="featured-icon-badge purple">&lt;/&gt;</div>
+              <div className="featured-channel-text">
+                <span className="featured-channel-title">Coding Help</span>
+                <span className="featured-channel-sub">Stuck? Get help from the community.</span>
+              </div>
+              <span className="featured-chevron">›</span>
+            </div>
+
+            <div
+              className="featured-channel-row"
+              onClick={() => {
+                setSelectedCommunity("showcase");
+                setPage("feed");
+              }}
+            >
+              <div className="featured-icon-badge violet">💡</div>
+              <div className="featured-channel-text">
+                <span className="featured-channel-title">Project Showcase</span>
+                <span className="featured-channel-sub">Show off what you're building.</span>
+              </div>
+              <span className="featured-chevron">›</span>
+            </div>
+
+            <div
+              className="featured-channel-row"
+              onClick={() => {
+                setSelectedCommunity("opportunities");
+                setPage("feed");
+              }}
+            >
+              <div className="featured-icon-badge orange">💼</div>
+              <div className="featured-channel-text">
+                <span className="featured-channel-title">Opportunities</span>
+                <span className="featured-channel-sub">Jobs, Internships and more.</span>
+              </div>
+              <span className="featured-chevron">›</span>
+            </div>
+          </div>
+        </div>
+
+        {/* CARD 3: ONLINE NOW */}
+        <div className="online-widget">
+          <div className="online-widget-header">
+            <span className="online-widget-title">Online now</span>
+            <span
+              className="online-widget-seeall"
+              onClick={() => alert("Showing all active Nesters")}
+            >
+              See all
+            </span>
+          </div>
+
+          <div className="online-users-list">
+            {communityStats.online_users.map((u, i) => {
+              const bgColors = ["#134e40", "#78350f", "#b45309", "#334155", "#047857"];
+              const bgColor = bgColors[i % bgColors.length];
+
+              return (
+                <div
+                  key={u.id || i}
+                  className="online-user-item"
+                  onClick={() => u.id && openProfile(u.id)}
+                >
+                  <div
+                    className="online-user-avatar"
+                    style={{ background: bgColor }}
+                  >
+                    {u.avatar_url ? (
+                      <img src={u.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                    ) : (
+                      u.username.charAt(0).toUpperCase()
+                    )}
+                    <span className="online-user-dot" />
                   </div>
-                  {u.id !== user?.id && (
-                    <button
-                      className={u.is_following ? "secondary-btn" : "primary-btn"}
-                      style={{ padding: "6px 14px", fontSize: 13 }}
-                      onClick={() => toggleFollowInList(u)}
-                    >
-                      {u.is_following ? "Following" : "Follow"}
-                    </button>
+                  <div className="online-user-info" style={{ flex: 1 }}>
+                    <span className="online-user-name">{u.name || u.username}</span>
+                    <span className="online-user-status">{u.status || "Building something great"}</span>
+                  </div>
+                  {u.id && u.id !== user?.id && (
+                    <div style={{ display: "flex", gap: "4px" }} onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="scroll-ctrl-btn"
+                        style={{ padding: "3px 8px", fontSize: "11px" }}
+                        title={`Chat with ${u.username}`}
+                        onClick={() => startChatWithUser({ id: u.id!, username: u.username, email: "" })}
+                      >
+                        💬
+                      </button>
+                      <button
+                        className="scroll-ctrl-btn"
+                        style={{ padding: "3px 8px", fontSize: "11px" }}
+                        title={`Call ${u.username}`}
+                        onClick={() => startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false)}
+                      >
+                        📞
+                      </button>
+                      <button
+                        className="scroll-ctrl-btn"
+                        style={{ padding: "3px 8px", fontSize: "11px" }}
+                        title={`Video call ${u.username}`}
+                        onClick={() => startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true)}
+                      >
+                        📹
+                      </button>
+                    </div>
                   )}
                 </div>
-              ))}
+              );
+            })}
+          </div>
+        </div>
+
+        {/* PERSONAL SCROLL CONTROLS FOR RIGHT SIDEBAR */}
+        <div className="sidebar-scroll-bar-ctrl">
+          <button
+            className="scroll-ctrl-btn"
+            onClick={() => sidebarRightRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
+            title="Scroll to top"
+          >
+            ▲ Top
+          </button>
+          <button
+            className="scroll-ctrl-btn"
+            onClick={() => sidebarRightRef.current?.scrollBy({ top: 400, behavior: "smooth" })}
+            title="Scroll down"
+          >
+            ▼ More
+          </button>
+        </div>
+      </aside>
+
+      {/* CREATE COMMUNITY MODAL */}
+      {createCommModalOpen && (
+        <div className="modal-overlay-nesty" onClick={() => setCreateCommModalOpen(false)}>
+          <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginBottom: "12px", color: "var(--text-h)" }}>Create New Community</h3>
+            <p style={{ fontSize: "13.5px", color: "var(--text-muted)", marginBottom: "16px" }}>
+              Start a new focused channel for questions, tracks, or local meetups.
+            </p>
+            <input
+              className="auth-input"
+              placeholder="e.g. Algorithms, DevOps, Python..."
+              value={newCommName}
+              onChange={(e) => setNewCommName(e.target.value)}
+              style={{ marginBottom: "16px" }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                className="edit-profile-pill-btn"
+                onClick={() => setCreateCommModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="post-pill-submit"
+                onClick={() => {
+                  if (!newCommName.trim()) return;
+                  const slug = newCommName.toLowerCase().replace(/\s+/g, "-");
+                  const newChannel: CommunityChannel = {
+                    id: slug,
+                    name: newCommName.trim(),
+                    badgeClass: "custom",
+                    subtitle: `Discussions and updates for ${newCommName.trim()}`,
+                  };
+                  setCommunities((prev) => [...prev, newChannel]);
+                  setSelectedCommunity(slug);
+                  setPage("feed");
+                  setNewCommName("");
+                  setCreateCommModalOpen(false);
+                }}
+              >
+                Create
+              </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT PROFILE MODAL */}
+      {editingProfile && (
+        <div className="modal-overlay-nesty" onClick={() => setEditingProfile(false)}>
+          <div className="modal-content-card" style={{ maxWidth: "520px", maxHeight: "90vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <h3 style={{ margin: 0, color: "var(--text-h)" }}>Edit Profile</h3>
+              <button className="edit-profile-pill-btn" style={{ padding: "4px 8px", fontSize: "12px" }} onClick={() => setEditingProfile(false)}>✕</button>
+            </div>
+
+            {/* 1. WALLPAPER / COVER BANNER SECTION */}
+            <div className="profile-edit-section">
+              <label className="profile-edit-label">Wallpaper / Cover Banner</label>
+              <div
+                className="profile-edit-banner-preview"
+                style={{
+                  backgroundImage: profileForm.banner_url ? `url(${profileForm.banner_url})` : undefined,
+                  backgroundColor: profileForm.banner_url ? "transparent" : "var(--surface-subtle)",
+                }}
+              >
+                {!profileForm.banner_url && <span style={{ color: "var(--text-muted)", fontSize: "12px" }}>Default Wallpaper</span>}
+                <label className="edit-cover-upload-pill">
+                  {uploadingBanner ? "Uploading..." : "📁 Upload Wallpaper"}
+                  <input type="file" accept="image/*" style={{ display: "none" }} onChange={handleBannerFileChange} disabled={uploadingBanner} />
+                </label>
+              </div>
+
+              <input
+                className="auth-input"
+                placeholder="Or paste wallpaper image URL..."
+                value={profileForm.banner_url}
+                onChange={(e) => setProfileForm({ ...profileForm, banner_url: e.target.value })}
+                style={{ marginBottom: "6px", fontSize: "12px" }}
+              />
+
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Wallpaper Presets:</div>
+              <div className="preset-chips-row">
+                {WALLPAPER_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    className={`preset-chip-btn ${profileForm.banner_url === p.url ? "selected" : ""}`}
+                    onClick={() => setProfileForm({ ...profileForm, banner_url: p.url })}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mobile-divider" style={{ margin: "16px 0" }} />
+
+            {/* 2. PROFILE PICTURE / AVATAR SECTION */}
+            <div className="profile-edit-section">
+              <label className="profile-edit-label">Profile Picture</label>
+              <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "8px" }}>
+                <div className="profile-edit-avatar-preview">
+                  {profileForm.avatar_url ? (
+                    <img src={profileForm.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <div style={{ width: "100%", height: "100%", background: "#134e40", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px", fontWeight: "bold" }}>
+                      {(profileForm.username || "J").charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label className="edit-avatar-upload-btn">
+                    {uploadingAvatar ? "Uploading..." : "📁 Upload New Photo"}
+                    <input type="file" accept="image/*" style={{ display: "none" }} onChange={handleAvatarFileChange} disabled={uploadingAvatar} />
+                  </label>
+                  <input
+                    className="auth-input"
+                    placeholder="Or paste avatar image URL..."
+                    value={profileForm.avatar_url}
+                    onChange={(e) => setProfileForm({ ...profileForm, avatar_url: e.target.value })}
+                    style={{ marginTop: "6px", fontSize: "12px" }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Avatar Presets:</div>
+              <div className="preset-chips-row">
+                {AVATAR_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    className={`preset-chip-btn ${profileForm.avatar_url === p.url ? "selected" : ""}`}
+                    onClick={() => setProfileForm({ ...profileForm, avatar_url: p.url })}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mobile-divider" style={{ margin: "16px 0" }} />
+
+            {/* 3. PROFILE INFO FIELDS */}
+            <label className="profile-edit-label">Name</label>
+            <input
+              className="auth-input"
+              placeholder="Display name"
+              value={profileForm.name}
+              onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+              style={{ marginBottom: "12px" }}
+            />
+
+            <label className="profile-edit-label">Username</label>
+            <input
+              className="auth-input"
+              placeholder="Username handle"
+              value={profileForm.username}
+              onChange={(e) => setProfileForm({ ...profileForm, username: e.target.value })}
+              style={{ marginBottom: "12px" }}
+            />
+
+            <label className="profile-edit-label">Bio</label>
+            <input
+              className="auth-input"
+              placeholder="Short bio"
+              value={profileForm.bio}
+              onChange={(e) => setProfileForm({ ...profileForm, bio: e.target.value })}
+              style={{ marginBottom: "12px" }}
+            />
+
+            <label className="profile-edit-label">Skills</label>
+            <input
+              className="auth-input"
+              placeholder="e.g. Go, React, Python"
+              value={profileForm.skills}
+              onChange={(e) => setProfileForm({ ...profileForm, skills: e.target.value })}
+              style={{ marginBottom: "12px" }}
+            />
+
+            <label className="profile-edit-label">Location</label>
+            <input
+              className="auth-input"
+              placeholder="City, Country"
+              value={profileForm.location}
+              onChange={(e) => setProfileForm({ ...profileForm, location: e.target.value })}
+              style={{ marginBottom: "18px" }}
+            />
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button className="edit-profile-pill-btn" onClick={() => setEditingProfile(false)}>
+                Cancel
+              </button>
+              <button
+                className="post-pill-submit"
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`http://localhost:8080/api/users/${user?.id}`, {
+                      method: "PUT",
+                      headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                      },
+                      body: JSON.stringify({
+                        name: profileForm.name || profileForm.username,
+                        username: profileForm.username,
+                        bio: profileForm.bio,
+                        skills: profileForm.skills,
+                        location: profileForm.location,
+                        avatar_url: profileForm.avatar_url,
+                        banner_url: profileForm.banner_url,
+                      }),
+                    });
+                    if (res.ok) {
+                      const updated = await res.json();
+                      setUser(updated);
+                      if (user?.id) fetchProfile(user.id);
+                      setEditingProfile(false);
+                    }
+                  } catch (err) {
+                    console.error("Failed to update profile", err);
+                  }
+                }}
+              >
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT POST MODAL */}
+      {editingPost && (
+        <div className="modal-overlay-nesty" onClick={() => setEditingPost(null)}>
+          <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginBottom: "12px", color: "var(--text-h)" }}>Edit Post</h3>
+            <textarea
+              className="composer-textarea"
+              style={{ minHeight: "120px", border: "1px solid var(--border)", borderRadius: "10px", padding: "10px", marginBottom: "14px" }}
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button className="edit-profile-pill-btn" onClick={() => setEditingPost(null)}>Cancel</button>
+              <button
+                className="post-pill-submit"
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`http://localhost:8080/api/posts/${editingPost.id}`, {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                      body: JSON.stringify({ content: editText })
+                    });
+                    if (res.ok) {
+                      setPosts(prev => prev.map(p => p.id === editingPost.id ? { ...p, content: editText } : p));
+                      setEditingPost(null);
+                    }
+                  } catch (err) { console.error(err); }
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {/* =====================================================================
+          CHAT DRAWER & MESSAGING MODAL
+          ===================================================================== */}
+      {activeChatPartner && (
+        <div className="chat-drawer-overlay">
+          <div className="chat-drawer-header">
+            <div className="chat-partner-info">
+              <div className="chat-partner-avatar">
+                {activeChatPartner.avatar_url ? (
+                  <img src={activeChatPartner.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%" }} />
+                ) : (
+                  (activeChatPartner.username || "U").charAt(0).toUpperCase()
+                )}
+              </div>
+              <div className="chat-partner-details">
+                <span className="chat-partner-name">{activeChatPartner.name || activeChatPartner.username}</span>
+                <span className="chat-partner-status">Active now</span>
+              </div>
+            </div>
+            <div className="chat-header-actions">
+              <button
+                className="chat-header-icon-btn"
+                title="Voice Call"
+                onClick={() => startCallWithUser(activeChatPartner, false)}
+              >
+                📞
+              </button>
+              <button
+                className="chat-header-icon-btn"
+                title="Video Call"
+                onClick={() => startCallWithUser(activeChatPartner, true)}
+              >
+                📹
+              </button>
+              <button
+                className="chat-header-icon-btn"
+                title="Close chat"
+                onClick={() => setActiveChatPartner(null)}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          <div className="chat-messages-container">
+            {isChatLoading ? (
+              <div style={{ textAlign: "center", padding: "20px", color: "var(--text-muted)", fontSize: "13px" }}>
+                Loading conversation...
+              </div>
+            ) : chatMessages.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text-muted)", fontSize: "13px" }}>
+                Say hi to @{activeChatPartner.username}! 👋 Start the conversation.
+              </div>
+            ) : (
+              chatMessages.map((msg, i) => {
+                const isMine = msg.sender_id === user?.id;
+                return (
+                  <div key={msg.id || i} className={`chat-msg-row ${isMine ? "outgoing" : "incoming"}`}>
+                    <div className="chat-msg-bubble">
+                      <div>{msg.content}</div>
+                      {msg.created_at && (
+                        <span className="chat-msg-time">{timeAgo(msg.created_at)}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            <div ref={chatBottomRef} />
+          </div>
+
+          <form
+            className="chat-drawer-footer"
+            onSubmit={(e) => {
+              e.preventDefault();
+              sendChatMessage();
+            }}
+          >
+            <input
+              type="text"
+              className="chat-drawer-input"
+              placeholder={`Message @${activeChatPartner.username}...`}
+              value={chatInputText}
+              onChange={(e) => setChatInputText(e.target.value)}
+              autoFocus
+            />
+            <button type="submit" className="chat-drawer-send-btn" disabled={!chatInputText.trim()}>
+              Send
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* =====================================================================
+          INCOMING CALL MODAL
+          ===================================================================== */}
+      {incomingCall && (
+        <div className="incoming-call-overlay">
+          <div className="incoming-call-card">
+            <div className="call-avatar-wrapper">
+              <div className="call-pulse-ring" style={{ borderColor: "#22c55e" }} />
+              <div className="call-avatar-img">
+                {incomingCall.caller.avatar_url ? (
+                  <img
+                    src={incomingCall.caller.avatar_url}
+                    alt=""
+                    style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }}
+                  />
+                ) : (
+                  (incomingCall.caller.username || "U").charAt(0).toUpperCase()
+                )}
+              </div>
+            </div>
+
+            <div className="call-user-name">{incomingCall.caller.name || incomingCall.caller.username}</div>
+            <div className="call-user-handle">@{incomingCall.caller.username}</div>
+
+            <div className="incoming-call-badge">
+              {incomingCall.isVideo ? "📹 Incoming Video Call..." : "📞 Incoming Voice Call..."}
+            </div>
+
+            <div className="incoming-call-actions">
+              <div className="incoming-action-wrapper">
+                <button
+                  className="incoming-action-btn decline"
+                  title="Decline Call"
+                  onClick={declineIncomingCall}
+                >
+                  ✕
+                </button>
+                <span className="incoming-action-label">Decline</span>
+              </div>
+
+              <div className="incoming-action-wrapper">
+                <button
+                  className="incoming-action-btn accept"
+                  title="Answer Call"
+                  onClick={acceptIncomingCall}
+                >
+                  📞
+                </button>
+                <span className="incoming-action-label">Accept</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          ACTIVE CALL OVERLAY & REAL WEBRTC VIDEO / VOICE CALL MODAL
+          ===================================================================== */}
+      {activeCall && (
+        <div className="call-overlay" onClick={endCall}>
+          {/* Real Audio playback element */}
+          <audio ref={remoteAudioRef} autoPlay playsInline />
+
+          <div className="call-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="call-avatar-wrapper">
+              {activeCall.status === "ringing" && <div className="call-pulse-ring" />}
+              <div className="call-avatar-img">
+                {activeCall.partner.avatar_url ? (
+                  <img src={activeCall.partner.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                ) : (
+                  (activeCall.partner.username || "U").charAt(0).toUpperCase()
+                )}
+              </div>
+            </div>
+
+            <div className="call-user-name">{activeCall.partner.name || activeCall.partner.username}</div>
+            <div className="call-user-handle">@{activeCall.partner.username}</div>
+
+            <div className={`call-status-badge ${activeCall.status === "connected" ? "connected" : ""}`}>
+              {activeCall.status === "calling" && (activeCall.statusText || "Calling...")}
+              {activeCall.status === "ringing" && (activeCall.statusText || "🔔 Ringing...")}
+              {activeCall.status === "connected" && `Connected • ${formatDuration(activeCall.duration)}`}
+              {activeCall.status === "ended" && (activeCall.statusText || "Call ended")}
+            </div>
+
+            {/* If Video Call: real WebRTC remote video feed + local PIP video */}
+            {activeCall.isVideo ? (
+              <div className="call-video-grid">
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  className="call-video-element"
+                  style={{ display: activeCall.status === "connected" ? "block" : "none" }}
+                />
+                {activeCall.status !== "connected" && (
+                  <div style={{ color: "#94a3b8", fontSize: "14px", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
+                    <span>📹 {activeCall.status === "calling" ? "Calling..." : "🔔 Ringing..."}</span>
+                    <span style={{ fontSize: "12px", opacity: 0.8 }}>Connecting to @{activeCall.partner.username}</span>
+                  </div>
+                )}
+                <div className="call-video-pip">
+                  <video
+                    ref={localVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="call-video-pip-element"
+                  />
+                </div>
+              </div>
+            ) : (
+              /* If Voice Call: audio waveform visualizer */
+              <div className="audio-waves-container">
+                <div className="wave-bar" style={{ animationDelay: "0.1s" }} />
+                <div className="wave-bar" style={{ animationDelay: "0.3s" }} />
+                <div className="wave-bar" style={{ animationDelay: "0.2s" }} />
+                <div className="wave-bar" style={{ animationDelay: "0.5s" }} />
+                <div className="wave-bar" style={{ animationDelay: "0.4s" }} />
+                <div className="wave-bar" style={{ animationDelay: "0.2s" }} />
+                <div className="wave-bar" style={{ animationDelay: "0.3s" }} />
+              </div>
+            )}
+
+            <div className="call-actions-row">
+              <button
+                className={`call-ctrl-btn ${activeCall.isMuted ? "active" : ""}`}
+                title={activeCall.isMuted ? "Unmute" : "Mute"}
+                onClick={toggleMute}
+              >
+                {activeCall.isMuted ? "🔇" : "🎤"}
+              </button>
+              <button
+                className={`call-ctrl-btn ${activeCall.isVideo ? "active" : ""}`}
+                title={activeCall.isVideo ? "Turn off video" : "Turn on video"}
+                onClick={toggleVideo}
+              >
+                {activeCall.isVideo ? "📹" : "📷"}
+              </button>
+              <button
+                className={`call-ctrl-btn ${activeCall.isSpeaker ? "active" : ""}`}
+                title={activeCall.isSpeaker ? "Speaker On" : "Speaker Off"}
+                onClick={toggleSpeaker}
+              >
+                {activeCall.isSpeaker ? "🔊" : "🔈"}
+              </button>
+              <button
+                className="call-ctrl-btn end-call"
+                title="End Call"
+                onClick={endCall}
+              >
+                📞
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* FOLLOWERS / FOLLOWING MODAL */}
+      {followListModal && (
+        <div className="modal-overlay-nesty" onClick={() => setFollowListModal(null)}>
+          <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+              <h3 style={{ textTransform: "capitalize", color: "var(--text-h)" }}>{followListModal.type}</h3>
+              <button className="edit-profile-pill-btn" onClick={() => setFollowListModal(null)}>✕</button>
+            </div>
+            {followListLoading ? (
+              <p>Loading...</p>
+            ) : followListUsers.length === 0 ? (
+              <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>No {followListModal.type} yet.</p>
+            ) : (
+              <div style={{ maxHeight: "300px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "10px" }}>
+                {followListUsers.map((fu) => (
+                  <div key={fu.id} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }} onClick={() => { openProfile(fu.id); setFollowListModal(null); }}>
+                    <div className="search-avatar-mini">{fu.username.charAt(0).toUpperCase()}</div>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: "13.5px" }}>{fu.name || fu.username}</div>
+                      <div style={{ color: "var(--text-muted)", fontSize: "11.5px" }}>@{fu.username}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -42,7 +42,8 @@ func Run() error {
 		&model.Comment{}, 
 		&model.Follow{}, 
 		&model.Like{}, 
-		&model.Notification{}, // 👈 Added this line
+		&model.Notification{},
+		&model.Message{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
