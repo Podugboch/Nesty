@@ -1309,6 +1309,43 @@
   overflow: visible;
 }
 
+.online-user-avatar img,
+.online-avatar-img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  border-radius: 50% !important;
+  object-fit: cover !important;
+  flex-shrink: 0 !important;
+  display: block !important;
+}
+
+.online-avatar-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  user-select: none;
+}
+
+.online-dot-badge {
+  position: absolute;
+  bottom: 0px;
+  right: 0px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #10b981;
+  border: 1.5px solid var(--surface, #1e293b);
+  z-index: 2;
+}
+
 .online-user-dot {
   position: absolute;
   bottom: 0px;
@@ -3148,11 +3185,71 @@
     opacity: 0.6;
   }
 
+  .online-drawer-accordion-content {
+    max-height: 70vh !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    padding: 6px 2px 12px 2px !important;
+  }
+
+  .mobile-online-list {
+    display: flex !important;
+    flex-direction: column !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+    gap: 6px !important;
+  }
+
   .mobile-online-list .online-user-item {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
     padding: 8px 10px !important;
     border-radius: 8px !important;
     background: var(--surface-subtle) !important;
-    margin-bottom: 6px !important;
+    margin-bottom: 0 !important;
+    gap: 8px !important;
+    overflow: hidden !important;
+  }
+
+  .mobile-online-list .online-user-avatar {
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px !important;
+    min-height: 40px !important;
+    border-radius: 50% !important;
+    flex-shrink: 0 !important;
+    position: relative !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    overflow: visible !important;
+  }
+
+  .mobile-online-list .online-user-avatar img,
+  .mobile-online-list .online-avatar-img {
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px !important;
+    min-height: 40px !important;
+    max-width: 100% !important;
+    border-radius: 50% !important;
+    object-fit: cover !important;
+    flex-shrink: 0 !important;
+    display: block !important;
+  }
+
+  /* Constraint: Ensure no <img> in drawer or accordion can render at natural unconstrained size */
+  .nesty-sidebar-left img:not(.brand-logo-img),
+  .drawer-accordion-content img,
+  .mobile-online-list img {
+    max-width: 100% !important;
   }
 
   /* Notifications flyout: COVERS ENTIRE MOBILE SCREEN WHEN CLICKED */
