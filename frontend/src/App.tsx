@@ -2400,6 +2400,15 @@ export default function App() {
               {communityStats.online_users.length}
             </span>
           </button>
+
+          <button
+            data-nav="logout"
+            className="nav-item-btn logout-nav-item"
+            onClick={handleLogout}
+          >
+            <span className="nav-item-icon">🚪</span>
+            <span>Log Out</span>
+          </button>
         </div>
 
         {/* COMMUNITIES LIST */}
