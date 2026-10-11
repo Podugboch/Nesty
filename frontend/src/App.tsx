@@ -2459,8 +2459,6 @@ export default function App() {
               className={`drawer-menu-item-btn ${showOnline ? "expanded" : ""}`}
               onClick={() => {
                 setShowOnline(!showOnline);
-                setOnlineModalOpen(true);
-                setMobileMenuOpen(false);
               }}
             >
               <div className="drawer-menu-item-left">
@@ -2473,7 +2471,7 @@ export default function App() {
               <span className="drawer-menu-chevron">{showOnline ? "▾" : "›"}</span>
             </button>
             {showOnline && (
-              <div className="drawer-accordion-content">
+              <div className="drawer-accordion-content online-drawer-accordion-content">
                 <div className="online-users-list mobile-online-list">
                   {communityStats.online_users.map((u, i) => {
                     const bgColors = ["#134e40", "#78350f", "#b45309", "#334155", "#047857"];
@@ -2481,7 +2479,8 @@ export default function App() {
                     return (
                       <div key={u.id || i} className="online-user-item">
                         <div
-                          style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, cursor: "pointer" }}
+                          className="online-user-item-left"
+                          style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0, cursor: "pointer", overflow: "hidden" }}
                           onClick={() => {
                             if (u.id) {
                               openProfile(u.id);
@@ -2490,19 +2489,32 @@ export default function App() {
                           }}
                         >
                           <div className="online-user-avatar" style={{ background: bgColor }}>
-                            {u.avatar_url ? <img src={u.avatar_url} alt="" /> : u.username.charAt(0).toUpperCase()}
+                            {u.avatar_url ? (
+                              <img
+                                src={u.avatar_url}
+                                alt={u.username}
+                                className="online-avatar-img"
+                                style={{ width: "40px", height: "40px", borderRadius: "50%", objectFit: "cover", flexShrink: 0, maxWidth: "100%" }}
+                              />
+                            ) : (
+                              <span className="online-avatar-initial">{u.username.charAt(0).toUpperCase()}</span>
+                            )}
                             <span className="online-dot-badge" />
                           </div>
-                          <div className="online-user-meta">
-                            <span className="online-user-name">{u.name || u.username}</span>
-                            <span className="online-user-status">{u.status || "Active now"}</span>
+                          <div className="online-user-meta" style={{ minWidth: 0, flex: 1, overflow: "hidden" }}>
+                            <span className="online-user-name" style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                              {u.name || u.username}
+                            </span>
+                            <span className="online-user-status" style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                              {u.status || "Active now"}
+                            </span>
                           </div>
                         </div>
                         {u.id && u.id !== user?.id && (
-                          <div style={{ display: "flex", gap: "4px" }}>
+                          <div className="online-user-item-actions" style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
                             <button
                               className="scroll-ctrl-btn"
-                              style={{ padding: "3px 8px", fontSize: "11px" }}
+                              style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
                               title={`Chat with ${u.username}`}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -2514,7 +2526,7 @@ export default function App() {
                             </button>
                             <button
                               className="scroll-ctrl-btn"
-                              style={{ padding: "3px 8px", fontSize: "11px" }}
+                              style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
                               title={`Call ${u.username}`}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -2526,7 +2538,7 @@ export default function App() {
                             </button>
                             <button
                               className="scroll-ctrl-btn"
-                              style={{ padding: "3px 8px", fontSize: "11px" }}
+                              style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
                               title={`Video call ${u.username}`}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -4271,7 +4283,16 @@ export default function App() {
                     }}
                   >
                     <div className="online-user-avatar" style={{ background: "#047857" }}>
-                      {u.avatar_url ? <img src={u.avatar_url} alt="" /> : u.username.charAt(0).toUpperCase()}
+                      {u.avatar_url ? (
+                        <img
+                          src={u.avatar_url}
+                          alt={u.username}
+                          className="online-avatar-img"
+                          style={{ width: "40px", height: "40px", borderRadius: "50%", objectFit: "cover", flexShrink: 0, maxWidth: "100%" }}
+                        />
+                      ) : (
+                        <span className="online-avatar-initial">{u.username.charAt(0).toUpperCase()}</span>
+                      )}
                       <span className="online-dot-badge" />
                     </div>
                     <div className="online-user-meta">
