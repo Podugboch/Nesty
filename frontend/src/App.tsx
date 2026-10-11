@@ -230,6 +230,11 @@ export default function App() {
   const [showFeatured, setShowFeatured] = useState(false);
   const [showOnline, setShowOnline] = useState(false);
 
+  // Pull-to-refresh state
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const isPullingRef = useRef(false);
+
   const sidebarLeftRef = useRef<HTMLElement>(null);
   const centerFeedRef = useRef<HTMLElement>(null);
   const sidebarRightRef = useRef<HTMLElement>(null);
@@ -1732,6 +1737,7 @@ export default function App() {
       cleanupMediaAndCall();
     }
   };
+  (window as any).handleLogout = handleLogout;
 
   const fetchProfile = async (userId: number) => {
     try {
@@ -1762,6 +1768,96 @@ export default function App() {
     const targetId = viewedUserId ?? user?.id;
     if (targetId) fetchProfile(targetId);
   }, [page, viewedUserId, token]);
+
+  // Pull-to-refresh handler
+  const triggerRefresh = async () => {
+    setIsRefreshing(true);
+    setPullDistance(52);
+    try {
+      const promises: Promise<any>[] = [
+        fetchPosts(1, selectedCommunity),
+        fetchNotifications(),
+        fetchCommunityStats(),
+      ];
+      if (page === "profile") {
+        const targetId = viewedUserId ?? user?.id;
+        if (targetId) {
+          promises.push(fetchProfile(targetId));
+        }
+      }
+      await Promise.allSettled(promises);
+    } catch (e) {
+      console.error("Refresh error:", e);
+    } finally {
+      setTimeout(() => {
+        setIsRefreshing(false);
+        setPullDistance(0);
+      }, 500);
+    }
+  };
+
+  useEffect(() => {
+    let startY = 0;
+    let startX = 0;
+    let pulling = false;
+
+    const onStart = (clientY: number, clientX: number) => {
+      const scrollY = centerFeedRef.current ? centerFeedRef.current.scrollTop : window.scrollY;
+      if (scrollY <= 4 && !mobileMenuOpen && !isRefreshing) {
+        startY = clientY;
+        startX = clientX;
+        pulling = true;
+        isPullingRef.current = true;
+      }
+    };
+
+    const onMove = (clientY: number, clientX: number, cancelable: boolean, prevent: () => void) => {
+      if (!pulling || isRefreshing) return;
+      const diffY = clientY - startY;
+      const diffX = Math.abs(clientX - startX);
+      const scrollY = centerFeedRef.current ? centerFeedRef.current.scrollTop : window.scrollY;
+
+      if (diffY > 0 && diffY > diffX && scrollY <= 4) {
+        const dist = Math.min(diffY * 0.42, 65);
+        setPullDistance(dist);
+        if (cancelable && diffY > 8) {
+          prevent();
+        }
+      } else if (diffY < 0) {
+        pulling = false;
+        isPullingRef.current = false;
+        setPullDistance(0);
+      }
+    };
+
+    const onEnd = () => {
+      if (!pulling) return;
+      pulling = false;
+      isPullingRef.current = false;
+      setPullDistance((current) => {
+        if (current >= 45) {
+          triggerRefresh();
+          return 50;
+        }
+        return 0;
+      });
+    };
+
+    const handleTouchStart = (e: TouchEvent) => onStart(e.touches[0].clientY, e.touches[0].clientX);
+    const handleTouchMove = (e: TouchEvent) =>
+      onMove(e.touches[0].clientY, e.touches[0].clientX, e.cancelable, () => e.preventDefault());
+    const handleTouchEnd = () => onEnd();
+
+    window.addEventListener("touchstart", handleTouchStart, { passive: true });
+    window.addEventListener("touchmove", handleTouchMove, { passive: false });
+    window.addEventListener("touchend", handleTouchEnd, { passive: true });
+
+    return () => {
+      window.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+    };
+  }, [mobileMenuOpen, isRefreshing, page, viewedUserId, user, selectedCommunity]);
 
   const toggleFollow = async () => {
     if (!profileData || profileData.is_self) return;
@@ -2304,15 +2400,6 @@ export default function App() {
               {communityStats.online_users.length}
             </span>
           </button>
-
-          <button
-            data-nav="logout"
-            className="nav-item-btn logout-nav-item"
-            onClick={handleLogout}
-          >
-            <span className="nav-item-icon">🚪</span>
-            <span>Log Out</span>
-          </button>
         </div>
 
         {/* COMMUNITIES LIST */}
@@ -2587,26 +2674,7 @@ export default function App() {
               <span className="user-card-name">{user?.name || user?.username || "Jaytricks"}</span>
               <span className="user-card-handle">@{user?.username || "jaytricks"}</span>
             </div>
-            <span
-              className="user-card-settings"
-              title="Logout"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleLogout();
-              }}
-            >
-              🚪
-            </span>
           </div>
-
-          <button
-            className="sidebar-logout-btn"
-            onClick={handleLogout}
-            title="Log out of your account"
-          >
-            <span>🚪</span>
-            <span>Log Out</span>
-          </button>
         </div>
       </aside>
 
@@ -2674,6 +2742,29 @@ export default function App() {
           2. CENTER COLUMN: COMMUNITY FEED / PROFILE / CREATE POST
           ===================================================================== */}
       <main ref={centerFeedRef} className="nesty-center-feed">
+        {/* PULL TO REFRESH INDICATOR */}
+        <div
+          className={`pull-to-refresh-banner ${isRefreshing ? "refreshing" : ""}`}
+          style={{
+            height: `${pullDistance}px`,
+            opacity: pullDistance > 8 ? 1 : 0,
+            transition: isPullingRef.current ? "none" : "all 0.28s cubic-bezier(0.4, 0, 0.2, 1)",
+          }}
+        >
+          <div className="pull-to-refresh-pill">
+            <span className={`pull-to-refresh-spinner ${isRefreshing ? "spin" : ""}`}>
+              {isRefreshing ? "⏳" : pullDistance >= 45 ? "↻" : "↓"}
+            </span>
+            <span className="pull-to-refresh-text">
+              {isRefreshing
+                ? "Refreshing..."
+                : pullDistance >= 45
+                ? "Release to refresh"
+                : "Pull down to refresh"}
+            </span>
+          </div>
+        </div>
+
         {/* TOP BAR */}
         <div className="feed-top-bar">
           <div className="feed-top-left">

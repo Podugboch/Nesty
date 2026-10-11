@@ -3414,38 +3414,54 @@
 }
 
 /* ==========================================================================
-   SIDEBAR LOGOUT BUTTON & NAV LOGOUT
+   PULL TO REFRESH BANNER & ANIMATION
    ========================================================================== */
-.sidebar-logout-btn {
-  width: 100%;
+.pull-to-refresh-banner {
+  overflow: hidden;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  background: rgba(239, 68, 68, 0.08);
-  color: #ef4444;
-  font-size: 13.5px;
+  justify-content: center;
+  width: 100%;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.pull-to-refresh-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  color: var(--text-h);
+  font-size: 12.5px;
   font-weight: 600;
-  cursor: pointer;
-  transition: all 0.18s ease;
-  margin-top: 10px;
 }
 
-.sidebar-logout-btn:hover {
-  background: #ef4444;
-  color: #ffffff;
-  border-color: #ef4444;
+:root[data-theme="dark"] .pull-to-refresh-pill {
+  background: #181818;
+  border-color: #2a2a2a;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
 }
 
-.nav-item-btn.logout-nav-item {
-  color: #ef4444 !important;
-  margin-top: 6px;
+.pull-to-refresh-spinner {
+  font-size: 14px;
+  display: inline-block;
+  transition: transform 0.2s ease;
 }
 
-.nav-item-btn.logout-nav-item:hover {
-  background: rgba(239, 68, 68, 0.15) !important;
-  color: #ef4444 !important;
+.pull-to-refresh-spinner.spin {
+  animation: pullSpin 0.75s linear infinite;
+}
+
+@keyframes pullSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
