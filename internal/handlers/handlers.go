@@ -693,11 +693,16 @@ func (h *Handler) GetUser(c *gin.Context) {
 }
 
 func (h *Handler) GetUserByUsername(c *gin.Context) {
-	username := c.Param("username")
+	username := strings.TrimSpace(c.Param("username"))
+	noSpaces := strings.ReplaceAll(strings.ToLower(username), " ", "")
+	withUnderscores := strings.ReplaceAll(strings.ToLower(username), " ", "_")
 
 	var user model.User
-	// Using LOWER() for a bulletproof case-insensitive match (crucial for clickable mentions)
-	if err := h.DB.Where("LOWER(username) = LOWER(?)", username).First(&user).Error; err != nil {
+	// Match case-insensitively by username, name, or formatted variants
+	if err := h.DB.Where(
+		"LOWER(username) = LOWER(?) OR LOWER(username) = ? OR LOWER(name) = LOWER(?) OR REPLACE(LOWER(username), '_', '') = ? OR REPLACE(LOWER(name), ' ', '') = ?",
+		username, withUnderscores, username, noSpaces, noSpaces,
+	).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
@@ -1013,9 +1018,14 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 
 	identifier := strings.TrimSpace(input.Email)
-	var users []model.User
+	idWithoutSpaces := strings.ReplaceAll(strings.ToLower(identifier), " ", "")
+	idWithUnderscores := strings.ReplaceAll(strings.ToLower(identifier), " ", "_")
 
-	if err := h.DB.Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", identifier, identifier).Find(&users).Error; err != nil || len(users) == 0 {
+	var users []model.User
+	if err := h.DB.Where(
+		"LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?) OR LOWER(username) = ? OR LOWER(name) = LOWER(?) OR REPLACE(LOWER(username), '_', '') = ? OR REPLACE(LOWER(name), ' ', '') = ?",
+		identifier, identifier, idWithUnderscores, identifier, idWithoutSpaces, idWithoutSpaces,
+	).Find(&users).Error; err != nil || len(users) == 0 {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 		return
 	}
@@ -1241,6 +1251,12 @@ type CallSignalInput struct {
 	ToUserID uint        `json:"to_user_id" binding:"required"`
 	Type     string      `json:"type" binding:"required"`
 	Data     interface{} `json:"data"`
+	Caller   *struct {
+		ID        uint   `json:"id"`
+		Username  string `json:"username"`
+		Name      string `json:"name"`
+		AvatarURL string `json:"avatar_url"`
+	} `json:"caller"`
 }
 
 func (h *Handler) SendCallSignal(c *gin.Context) {
@@ -1251,9 +1267,22 @@ func (h *Handler) SendCallSignal(c *gin.Context) {
 		return
 	}
 
-	// Fetch caller profile so callee can display name/avatar
-	var caller model.User
-	h.DB.Select("id", "username", "name", "avatar_url").First(&caller, userID)
+	callerID := userID
+	callerUsername := ""
+	callerName := ""
+	callerAvatar := ""
+
+	if input.Caller != nil && input.Caller.ID == userID && input.Caller.Username != "" {
+		callerUsername = input.Caller.Username
+		callerName = input.Caller.Name
+		callerAvatar = input.Caller.AvatarURL
+	} else {
+		var caller model.User
+		h.DB.Select("id", "username", "name", "avatar_url").First(&caller, userID)
+		callerUsername = caller.Username
+		callerName = caller.Name
+		callerAvatar = caller.AvatarURL
+	}
 
 	online := h.Hub.IsUserOnline(input.ToUserID)
 
@@ -1263,10 +1292,10 @@ func (h *Handler) SendCallSignal(c *gin.Context) {
 		"from_user_id": userID,
 		"to_user_id":   input.ToUserID,
 		"caller": gin.H{
-			"id":         caller.ID,
-			"username":   caller.Username,
-			"name":       caller.Name,
-			"avatar_url": caller.AvatarURL,
+			"id":         callerID,
+			"username":   callerUsername,
+			"name":       callerName,
+			"avatar_url": callerAvatar,
 		},
 		"data": input.Data,
 	})

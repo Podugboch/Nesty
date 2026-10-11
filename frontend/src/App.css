@@ -3200,3 +3200,155 @@
     z-index: 105 !important;
   }
 }
+
+/* ==========================================================================
+   VIDEO CALL EXPANDED & CAMERA FLIP STYLES
+   ========================================================================== */
+.call-modal-card.video-active {
+  width: 680px;
+  max-width: 96vw;
+  padding: 16px 16px 20px 16px;
+}
+
+.call-modal-card.video-active .call-video-grid {
+  height: 480px;
+  max-height: 65vh;
+  margin-bottom: 16px;
+}
+
+.call-video-header-overlay {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding: 0 4px;
+}
+
+.pip-flip-badge {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #38bdf8;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+
+/* ==========================================================================
+   ONLINE NESTERS MODAL
+   ========================================================================== */
+.online-nesters-modal {
+  width: 520px;
+  max-width: 94vw;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.online-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 16px;
+}
+
+.online-modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: 60vh;
+  padding-right: 4px;
+}
+
+.online-modal-user-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  gap: 12px;
+}
+
+.online-modal-user-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+}
+
+.online-modal-user-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.online-action-btn {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  color: var(--text-color);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.online-action-btn:hover {
+  background: var(--brand-accent);
+  color: #fff;
+  border-color: var(--brand-accent);
+}
+
+/* ==========================================================================
+   SIDEBAR LOGOUT BUTTON & NAV LOGOUT
+   ========================================================================== */
+.sidebar-logout-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  margin-top: 10px;
+}
+
+.sidebar-logout-btn:hover {
+  background: #ef4444;
+  color: #ffffff;
+  border-color: #ef4444;
+}
+
+.nav-item-btn.logout-nav-item {
+  color: #ef4444 !important;
+  margin-top: 6px;
+}
+
+.nav-item-btn.logout-nav-item:hover {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #ef4444 !important;
+}
+
