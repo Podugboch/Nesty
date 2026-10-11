@@ -3465,3 +3465,13 @@
   }
 }
 
+.nav-item-btn.logout-nav-item {
+  color: #ef4444 !important;
+  margin-top: 4px;
+}
+
+.nav-item-btn.logout-nav-item:hover {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #ef4444 !important;
+}
+
