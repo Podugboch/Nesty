@@ -178,19 +178,18 @@ export default function App() {
   // -----------------------------
   // COMMUNITY STATS & ONLINE USERS
   // -----------------------------
-  const [liveUserCount, setLiveUserCount] = useState<number>(5);
+  const [liveUserCount, setLiveUserCount] = useState<number>(3);
   const [communityStats, setCommunityStats] = useState<{
     user_count?: number;
     total_users?: number;
     member_count?: number;
     online_users: Array<{ id?: number; username: string; name?: string; avatar_url?: string; status?: string }>;
   }>({
-    user_count: 5,
+    user_count: 3,
     online_users: [
-      { id: 3, username: "Jaytricks", name: "Jaytricks", status: "Working on DevNest" },
-      { id: 7, username: "piscine_builder", name: "piscine_builder", status: "Building something great" },
-      { id: 2, username: "SnowJay", name: "SnowJay", status: "Learning Go" },
+      { id: 3, username: "Jaytricks", name: "Patrick Sean Odugboche", status: "Active now" },
       { id: 4, username: "Snowball", name: "Snowball", status: "Active now" },
+      { id: 12, username: "abwonder", name: "abwonder", status: "Active now" },
     ],
   });
 
@@ -205,6 +204,10 @@ export default function App() {
 
   const [activeCall, setActiveCall] = useState<CallState | null>(null);
   const [incomingCall, setIncomingCall] = useState<IncomingCallState | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
+  const [onlineModalOpen, setOnlineModalOpen] = useState(false);
 
   // WebRTC & Calling Audio / Video Refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -220,6 +223,7 @@ export default function App() {
   const ringtoneCleanupRef = useRef<(() => void) | null>(null);
   const callDisconnectTimeoutRef = useRef<any>(null);
   const callRingTimeoutRef = useRef<any>(null);
+  const iceQueueRef = useRef<any[]>([]);
 
   // Hamburger drawer accordion state
   const [showOverview, setShowOverview] = useState(false);
@@ -508,6 +512,9 @@ export default function App() {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return () => {};
       const audioCtx = new AudioCtx();
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
       let isPlaying = true;
       let timer: any;
 
@@ -558,13 +565,16 @@ export default function App() {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return () => {};
       const audioCtx = new AudioCtx();
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
       let isPlaying = true;
       let timer: any;
 
       const chime = () => {
         if (!isPlaying || audioCtx.state === "closed") return;
         try {
-          const freqs = [523.25, 659.25, 783.99, 1046.50];
+          const freqs = [523.25, 659.25, 783.99, 1046.5];
           [0, 0.2, 0.4, 0.6].forEach((delay, idx) => {
             const osc = audioCtx.createOscillator();
             const gain = audioCtx.createGain();
@@ -601,6 +611,9 @@ export default function App() {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
       const audioCtx = new AudioCtx();
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume().catch(() => {});
+      }
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.type = "sine";
@@ -632,7 +645,10 @@ export default function App() {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
+    setLocalStream(null);
     remoteStreamRef.current = null;
+    setRemoteStream(null);
+    iceQueueRef.current = [];
 
     if (peerConnectionRef.current) {
       try {
@@ -646,74 +662,156 @@ export default function App() {
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
   };
 
-  const setupLocalMedia = async (video: boolean): Promise<MediaStream | null> => {
+  const setupLocalMedia = async (video: boolean, requestedFacing?: "user" | "environment"): Promise<MediaStream | null> => {
     try {
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: video ? { width: { ideal: 640 }, height: { ideal: 480 } } : false,
-      });
-      localStreamRef.current = stream;
-      if (localVideoRef.current && video) {
-        localVideoRef.current.srcObject = stream;
+
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      };
+
+      let stream: MediaStream | null = null;
+      const targetFacing = requestedFacing || facingMode;
+
+      if (video) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints,
+            video: {
+              facingMode: { ideal: targetFacing },
+              width: { ideal: 1280, max: 1920 },
+              height: { ideal: 720, max: 1080 },
+            },
+          });
+        } catch (vErr) {
+          console.warn("High-res video failed, trying standard video:", vErr);
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: audioConstraints,
+              video: { facingMode: targetFacing },
+            });
+          } catch (vErr2) {
+            console.warn("FacingMode failed, trying generic video:", vErr2);
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({
+                audio: audioConstraints,
+                video: true,
+              });
+            } catch (vErr3) {
+              console.warn("All video failed, falling back to audio only:", vErr3);
+              stream = await navigator.mediaDevices.getUserMedia({
+                audio: audioConstraints,
+                video: false,
+              });
+            }
+          }
+        }
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: false,
+        });
+      }
+
+      if (stream) {
+        localStreamRef.current = stream;
+        setLocalStream(stream);
+
+        // Update senders on existing peer connection if active
+        if (peerConnectionRef.current) {
+          const senders = peerConnectionRef.current.getSenders();
+          stream.getTracks().forEach((track) => {
+            const sender = senders.find((s) => s.track && s.track.kind === track.kind);
+            if (sender) {
+              sender.replaceTrack(track).catch(() => {});
+            } else {
+              peerConnectionRef.current?.addTrack(track, stream!);
+            }
+          });
+        }
+
+        if (localVideoRef.current && video) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play().catch(() => {});
+        }
       }
       return stream;
     } catch (err) {
-      console.warn("Could not acquire media stream directly (permission or headless)", err);
-      try {
-        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-        if (AudioCtx) {
-          const ctx = new AudioCtx();
-          const dest = ctx.createMediaStreamDestination();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          gain.gain.value = 0;
-          osc.connect(gain);
-          gain.connect(dest);
-          osc.start();
-          localStreamRef.current = dest.stream;
-          return dest.stream;
-        }
-      } catch {}
+      console.warn("Could not acquire media stream directly", err);
       return null;
     }
   };
 
+  const flipCamera = async () => {
+    const nextFacing = facingMode === "user" ? "environment" : "user";
+    setFacingMode(nextFacing);
+    if (activeCall && activeCall.isVideo) {
+      await setupLocalMedia(true, nextFacing);
+    }
+  };
+
   const sendCallSignal = async (type: string, toUserId: number, data?: any) => {
+    const callerInfo = user
+      ? {
+          id: user.id,
+          username: user.username,
+          name: user.name || user.username,
+          avatar_url: user.avatar_url || "",
+        }
+      : undefined;
+
     const payload = {
       event: "call_signal",
       type,
       to_user_id: toUserId,
+      caller: callerInfo,
       data,
     };
+
+    // Immediate WebSocket delivery for zero delay
+    let wsDelivered = false;
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(payload));
-    }
-    try {
-      const res = await fetch(`${API_URL}/api/call/signal`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          type,
-          to_user_id: toUserId,
-          data,
-        }),
-      });
-      if (res.ok) {
-        return await res.json();
+      try {
+        wsRef.current.send(JSON.stringify(payload));
+        wsDelivered = true;
+      } catch (wsErr) {
+        console.warn("WS send error, falling back to REST", wsErr);
       }
-    } catch (err) {
-      console.error("Signal REST error", err);
     }
-    return null;
+
+    // Call REST endpoint for invites (or if WS delivery failed)
+    if (!wsDelivered || type === "call_invite") {
+      try {
+        const res = await fetch(`${API_URL}/api/call/signal`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            type,
+            to_user_id: toUserId,
+            caller: callerInfo,
+            data,
+          }),
+        });
+        if (res.ok) {
+          const resData = await res.json();
+          return { ...resData, sent: true };
+        }
+      } catch (err) {
+        console.error("Signal REST error", err);
+      }
+    }
+
+    return { sent: wsDelivered };
   };
 
-  const createPeerConnection = (targetUserId: number): RTCPeerConnection => {
+  const createPeerConnection = (targetUserId: number, isVideo: boolean = false): RTCPeerConnection => {
     if (peerConnectionRef.current) {
       try {
         peerConnectionRef.current.close();
@@ -723,6 +821,11 @@ export default function App() {
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun3.l.google.com:19302" },
+        { urls: "stun:stun4.l.google.com:19302" },
+        { urls: "stun:stun.cloudflare.com:3478" },
+        { urls: "stun:global.stun.twilio.com:3478" },
       ],
     });
 
@@ -732,6 +835,17 @@ export default function App() {
       });
     }
 
+    // Ensure audio and video transceivers are configured
+    const senders = pc.getSenders();
+    const hasAudio = senders.some((s) => s.track && s.track.kind === "audio");
+    const hasVideo = senders.some((s) => s.track && s.track.kind === "video");
+    if (!hasAudio) {
+      try { pc.addTransceiver("audio", { direction: "sendrecv" }); } catch {}
+    }
+    if (isVideo && !hasVideo) {
+      try { pc.addTransceiver("video", { direction: "sendrecv" }); } catch {}
+    }
+
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         sendCallSignal("ice_candidate", targetUserId, { candidate: event.candidate });
@@ -739,13 +853,27 @@ export default function App() {
     };
 
     pc.ontrack = (event) => {
-      const stream = event.streams[0] || new MediaStream([event.track]);
-      remoteStreamRef.current = stream;
+      let rStream = remoteStreamRef.current;
+      if (!rStream) {
+        rStream = event.streams[0] || new MediaStream();
+        remoteStreamRef.current = rStream;
+      }
+      if (!rStream.getTracks().some((t) => t.id === event.track.id)) {
+        rStream.addTrack(event.track);
+      }
+      setRemoteStream(rStream);
+
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== rStream) {
+        remoteVideoRef.current.srcObject = rStream;
+      }
       if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = stream;
+        remoteVideoRef.current.play().catch(() => {});
+      }
+      if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== rStream) {
+        remoteAudioRef.current.srcObject = rStream;
       }
       if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = stream;
+        remoteAudioRef.current.play().catch(() => {});
       }
     };
 
@@ -770,9 +898,15 @@ export default function App() {
     // Start outgoing telephone ring tone
     ringtoneCleanupRef.current = startCallerRingtone();
 
-    callRingTimeoutRef.current = setTimeout(() => {
-      setActiveCall((prev) => (prev ? { ...prev, status: "ringing", statusText: "🔔 Ringing..." } : null));
-    }, 800);
+    // Prepare local camera and mic immediately
+    if (video) {
+      await setupLocalMedia(true, facingMode);
+    } else {
+      await setupLocalMedia(false);
+    }
+
+    // Set ringing status
+    setActiveCall((prev) => (prev ? { ...prev, status: "ringing", statusText: "🔔 Ringing..." } : null));
 
     // Send call invite to callee
     const res = await sendCallSignal("call_invite", targetUser.id, {
@@ -878,8 +1012,9 @@ export default function App() {
       isCaller: false,
     });
 
-    await setupLocalMedia(isVideo);
-    createPeerConnection(partner.id);
+    // Automatically turn device camera on if it's a video call!
+    await setupLocalMedia(isVideo, "user");
+    createPeerConnection(partner.id, isVideo);
     sendCallSignal("call_accepted", partner.id, { isVideo });
   };
 
@@ -891,12 +1026,25 @@ export default function App() {
     setActiveCall((prev) => (prev ? { ...prev, isMuted: !prev.isMuted } : null));
   };
 
-  const toggleVideo = () => {
+  const toggleVideo = async () => {
     if (localStreamRef.current) {
       const videoTracks = localStreamRef.current.getVideoTracks();
-      videoTracks.forEach((t) => (t.enabled = !t.enabled));
+      if (videoTracks.length > 0) {
+        const nextEnabled = !videoTracks[0].enabled;
+        videoTracks.forEach((t) => (t.enabled = nextEnabled));
+        setActiveCall((prev) => (prev ? { ...prev, isVideo: nextEnabled } : null));
+        return;
+      }
     }
-    setActiveCall((prev) => (prev ? { ...prev, isVideo: !prev.isVideo } : null));
+    // If no video track yet, acquire camera
+    try {
+      const stream = await setupLocalMedia(true, facingMode);
+      if (stream) {
+        setActiveCall((prev) => (prev ? { ...prev, isVideo: true } : null));
+      }
+    } catch (err) {
+      console.warn("Could not toggle video on", err);
+    }
   };
 
   const toggleSpeaker = () => {
@@ -915,7 +1063,7 @@ export default function App() {
     const fromUserId = signal.from_user_id;
 
     if (signal.type === "call_invite") {
-      if (currentActiveCall && currentActiveCall.status !== "ended") {
+      if ((currentActiveCall && currentActiveCall.status !== "ended") || incomingCallRef.current) {
         sendCallSignal("call_busy", fromUserId);
         return;
       }
@@ -951,12 +1099,14 @@ export default function App() {
 
       // Caller sets up media and creates WebRTC Offer
       const isVideo = !!signal.data?.isVideo || !!currentActiveCall?.isVideo;
-      await setupLocalMedia(isVideo);
-      const pc = createPeerConnection(fromUserId);
+      if (!localStreamRef.current) {
+        await setupLocalMedia(isVideo, "user");
+      }
+      const pc = createPeerConnection(fromUserId, isVideo);
       try {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        sendCallSignal("webrtc_offer", fromUserId, { sdp: offer });
+        sendCallSignal("webrtc_offer", fromUserId, { sdp: offer, isVideo });
       } catch (err) {
         console.error("Failed to create offer", err);
       }
@@ -1000,17 +1150,35 @@ export default function App() {
         setActiveCall(null);
         cleanupMediaAndCall();
       }, 2500);
+    } else if (signal.type === "call_timeout") {
+      if (ringtoneCleanupRef.current) {
+        ringtoneCleanupRef.current();
+        ringtoneCleanupRef.current = null;
+      }
+      playDisconnectTone();
+      setIncomingCall(null);
     } else if (signal.type === "webrtc_offer") {
+      const isVideo = !!signal.data?.isVideo || !!currentActiveCall?.isVideo;
+      if (!localStreamRef.current) {
+        await setupLocalMedia(isVideo, "user");
+      }
       let pc = peerConnectionRef.current;
-      if (!pc && currentActiveCall) {
-        pc = createPeerConnection(fromUserId);
+      if (!pc) {
+        pc = createPeerConnection(fromUserId, isVideo);
       }
       if (pc && signal.data?.sdp) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(signal.data.sdp));
+          // Drain queued ICE candidates
+          while (iceQueueRef.current.length > 0) {
+            const cand = iceQueueRef.current.shift();
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch {}
+          }
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          sendCallSignal("webrtc_answer", fromUserId, { sdp: answer });
+          sendCallSignal("webrtc_answer", fromUserId, { sdp: answer, isVideo });
         } catch (err) {
           console.error("Failed to handle offer", err);
         }
@@ -1020,17 +1188,28 @@ export default function App() {
       if (pc && signal.data?.sdp) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(signal.data.sdp));
+          // Drain queued ICE candidates
+          while (iceQueueRef.current.length > 0) {
+            const cand = iceQueueRef.current.shift();
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch {}
+          }
         } catch (err) {
           console.error("Failed to set remote description answer", err);
         }
       }
     } else if (signal.type === "ice_candidate") {
       const pc = peerConnectionRef.current;
-      if (pc && signal.data?.candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.data.candidate));
-        } catch (err) {
-          console.error("Failed to add ice candidate", err);
+      if (signal.data?.candidate) {
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.data.candidate));
+          } catch (err) {
+            console.error("Failed to add ice candidate", err);
+          }
+        } else {
+          iceQueueRef.current.push(signal.data.candidate);
         }
       }
     } else if (signal.type === "call_ended") {
@@ -1039,6 +1218,7 @@ export default function App() {
         ringtoneCleanupRef.current = null;
       }
       playDisconnectTone();
+      setIncomingCall(null);
       setActiveCall((prev) =>
         prev
           ? {
@@ -1048,9 +1228,6 @@ export default function App() {
             }
           : null
       );
-      if (incomingCallRef.current) {
-        setIncomingCall(null);
-      }
       setTimeout(() => {
         setActiveCall(null);
         cleanupMediaAndCall();
@@ -1069,16 +1246,19 @@ export default function App() {
 
   // Bind video and audio elements on media state update
   useEffect(() => {
-    if (activeCall?.isVideo && localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
+    if (activeCall?.isVideo && localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.play().catch(() => {});
     }
-    if (activeCall?.isVideo && remoteVideoRef.current && remoteStreamRef.current) {
-      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    if (activeCall?.isVideo && remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch(() => {});
     }
-    if (remoteAudioRef.current && remoteStreamRef.current) {
-      remoteAudioRef.current.srcObject = remoteStreamRef.current;
+    if (remoteAudioRef.current && remoteStream) {
+      remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.play().catch(() => {});
     }
-  }, [activeCall?.status, activeCall?.isVideo]);
+  }, [activeCall?.status, activeCall?.isVideo, localStream, remoteStream]);
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -1113,32 +1293,75 @@ export default function App() {
   // WEBSOCKET FOR NOTIFICATIONS & CALL SIGNALING
   // -----------------------------
   useEffect(() => {
-    if (!token || !user) return;
-    const ws = new WebSocket(`${WS_BASE_URL}/ws?token=${token}`);
-    wsRef.current = ws;
+    if (!token) return;
+    let isSubscribed = true;
+    let reconnectTimeout: any = null;
+    let pingInterval: any = null;
 
-    ws.onmessage = (event) => {
+    const connectWs = () => {
+      if (!isSubscribed) return;
       try {
-        const data = JSON.parse(event.data);
-        if (data.event === "notification" && data.notification) {
-          setNotifications((prev) => [data.notification, ...prev]);
-          setUnreadCount((prev) => prev + 1);
-        } else if (
-          data.event === "call_signal" ||
-          (data.type && (data.type.startsWith("call_") || data.type.startsWith("webrtc_") || data.type === "ice_candidate"))
-        ) {
-          handleIncomingCallSignal(data);
+        const ws = new WebSocket(`${WS_BASE_URL}/ws?token=${token}`);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          // Heartbeat keepalive every 20s
+          if (pingInterval) clearInterval(pingInterval);
+          pingInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "ping" }));
+            }
+          }, 20000);
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "pong") return;
+            if (data.event === "notification" && data.notification) {
+              setNotifications((prev) => [data.notification, ...prev]);
+              setUnreadCount((prev) => prev + 1);
+            } else if (
+              data.event === "call_signal" ||
+              (data.type && (data.type.startsWith("call_") || data.type.startsWith("webrtc_") || data.type === "ice_candidate"))
+            ) {
+              handleIncomingCallSignal(data);
+            }
+          } catch (err) {
+            console.error("Failed to parse WS message", err);
+          }
+        };
+
+        ws.onclose = () => {
+          clearInterval(pingInterval);
+          if (isSubscribed) {
+            reconnectTimeout = setTimeout(connectWs, 2000);
+          }
+        };
+
+        ws.onerror = (err) => {
+          console.warn("[WS] Error", err);
+          ws.close();
+        };
+      } catch (e) {
+        if (isSubscribed) {
+          reconnectTimeout = setTimeout(connectWs, 3000);
         }
-      } catch (err) {
-        console.error("Failed to parse WS message", err);
       }
     };
 
+    connectWs();
+
     return () => {
-      ws.close();
-      wsRef.current = null;
+      isSubscribed = false;
+      clearTimeout(reconnectTimeout);
+      clearInterval(pingInterval);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
-  }, [token, user?.id]);
+  }, [token]);
 
   // -----------------------------
   // FETCH COMMUNITY STATS
@@ -1160,21 +1383,24 @@ export default function App() {
   // -----------------------------
   // FETCH USER PROFILE ("ME")
   // -----------------------------
-  const fetchMe = async (jwt: string) => {
+  const fetchMe = async (jwt: string): Promise<User | null> => {
     try {
       const res = await fetch(`${API_URL}/api/me`, {
         headers: { Authorization: `Bearer ${jwt}` },
       });
       if (res.ok) {
-        const data = await res.json();
+        const data: User = await res.json();
         setUser(data);
+        return data;
       } else {
         localStorage.removeItem("token");
         setToken(null);
+        return null;
       }
     } catch {
       localStorage.removeItem("token");
       setToken(null);
+      return null;
     }
   };
 
@@ -1199,56 +1425,8 @@ export default function App() {
       if (res.ok) {
         const data: Post[] = await res.json();
 
-        // Baseline reference posts matching the user screenshots
-        let fetchedPosts = data || [];
-        if (pageNum === 1 && fetchedPosts.length === 0) {
-          fetchedPosts = [
-            {
-              id: 9001,
-              content: "Hello Piscine community! DevNest is alive and kicking!",
-              likes: 12,
-              created_at: new Date(Date.now() - 39 * 60000).toISOString(),
-              user: {
-                id: 101,
-                username: "piscine_builder",
-                name: "piscine_builder",
-                email: "builder@piscine.dev",
-              },
-              comments: [
-                { id: 1, post_id: 9001, content: "Looking amazing! Can't wait to test it.", created_at: new Date().toISOString(), user: { id: 102, username: "devking", email: "" } }
-              ],
-            },
-            {
-              id: 9002,
-              content: "We have set a new milestone today!",
-              likes: 28,
-              created_at: new Date(Date.now() - 60 * 60000).toISOString(),
-              media_url: "photo_placeholder",
-              user: {
-                id: user?.id || 1,
-                username: user?.username || "Jaytricks",
-                name: user?.name || "Jaytricks",
-                email: user?.email || "jay@devnest.org",
-              },
-              comments: [
-                { id: 2, post_id: 9002, content: "Congrats team DevNest!", created_at: new Date().toISOString(), user: { id: 103, username: "codewith_ella", email: "" } }
-              ],
-            },
-            {
-              id: 9003,
-              content: "Just diving deep into Go channels and WebSockets. The concurrency model is fantastic!",
-              likes: 19,
-              created_at: new Date(Date.now() - 180 * 60000).toISOString(),
-              user: {
-                id: 104,
-                username: "devking",
-                name: "devking",
-                email: "devking@devnest.org",
-              },
-              comments: [],
-            },
-          ];
-        }
+        // Only real posts from the database - zero system-induced fake likes
+        const fetchedPosts = data || [];
 
         const dedupe = (arr: Post[]) => {
           const seen = new Set<number>();
@@ -1424,9 +1602,38 @@ export default function App() {
         setPosts((prev) =>
           prev.map((p) => (p.id === postId ? { ...p, likes: data.likes, liked_by_me: data.liked } : p))
         );
+        setProfilePosts((prev) =>
+          prev.map((p) => (p.id === postId ? { ...p, likes: data.likes, liked_by_me: data.liked } : p))
+        );
       }
     } catch (err) {
       console.error("Like error", err);
+    }
+  };
+
+  const handleSharePost = async (post: Post) => {
+    const postUrl = `${window.location.origin}/?post=${post.id}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "Nesty Post",
+          text: post.content,
+          url: postUrl,
+        });
+        return;
+      } catch (err: any) {
+        if (err.name === "AbortError") return;
+      }
+    }
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(postUrl);
+        alert("Post link copied to clipboard!");
+      } else {
+        prompt("Copy post link:", postUrl);
+      }
+    } catch {
+      prompt("Copy post link:", postUrl);
     }
   };
 
@@ -1439,6 +1646,7 @@ export default function App() {
       });
       if (res.ok) {
         setPosts((prev) => prev.filter((p) => p.id !== id));
+        setProfilePosts((prev) => prev.filter((p) => p.id !== id));
       }
     } catch (err) {
       console.error("Delete error", err);
@@ -1456,7 +1664,7 @@ export default function App() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ content: text }),
+        body: JSON.stringify({ content: text.trim() }),
       });
 
       if (res.ok) {
@@ -1466,6 +1674,11 @@ export default function App() {
           user: commentData.user || user || { id: 0, username: "You", email: "" },
         };
         setPosts((prev) =>
+          prev.map((p) =>
+            p.id === postId ? { ...p, comments: [...(p.comments || []), newComment] } : p
+          )
+        );
+        setProfilePosts((prev) =>
           prev.map((p) =>
             p.id === postId ? { ...p, comments: [...(p.comments || []), newComment] } : p
           )
@@ -1480,10 +1693,44 @@ export default function App() {
   // -----------------------------
   // PROFILE VIEW LOGIC
   // -----------------------------
+  const openMyProfile = () => {
+    setProfileData(null);
+    setProfilePosts([]);
+    const myId = user?.id;
+    setViewedUserId(myId || null);
+    setPage("profile");
+    setMobileMenuOpen(false);
+
+    if (myId) {
+      fetchProfile(myId);
+    } else if (token) {
+      fetchMe(token).then((me) => {
+        if (me?.id) {
+          setViewedUserId(me.id);
+          fetchProfile(me.id);
+        }
+      });
+    }
+  };
+
   const openProfile = (userId: number) => {
+    setProfileData(null);
+    setProfilePosts([]);
     setViewedUserId(userId);
     setPage("profile");
     setMobileMenuOpen(false);
+    fetchProfile(userId);
+  };
+
+  const handleLogout = () => {
+    if (confirm("Are you sure you want to log out?")) {
+      localStorage.removeItem("token");
+      setToken(null);
+      setUser(null);
+      setPage("feed");
+      setMobileMenuOpen(false);
+      cleanupMediaAndCall();
+    }
   };
 
   const fetchProfile = async (userId: number) => {
@@ -2000,10 +2247,7 @@ export default function App() {
           <button
             data-nav="profile"
             className={`nav-item-btn ${page === "profile" && (viewedUserId === user?.id || viewedUserId === null) ? "active" : ""}`}
-            onClick={() => {
-              if (user?.id) openProfile(user.id);
-              else setPage("profile");
-            }}
+            onClick={openMyProfile}
           >
             <span className="nav-item-icon">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2012,6 +2256,23 @@ export default function App() {
               </svg>
             </span>
             <span>Profile</span>
+          </button>
+
+          <button
+            data-nav="messages"
+            className="nav-item-btn"
+            onClick={() => {
+              const partner = communityStats.online_users.find((u) => u.id && u.id !== user?.id);
+              if (partner && partner.id) {
+                startChatWithUser({ id: partner.id, username: partner.username, email: "", avatar_url: partner.avatar_url, name: partner.name });
+              } else {
+                setOnlineModalOpen(true);
+              }
+              setMobileMenuOpen(false);
+            }}
+          >
+            <span className="nav-item-icon">💬</span>
+            <span>Messages</span>
           </button>
 
           <button
@@ -2027,6 +2288,30 @@ export default function App() {
             </span>
             <span>Notifications</span>
             {unreadCount > 0 && <span className="nav-unread-badge">{unreadCount}</span>}
+          </button>
+
+          <button
+            data-nav="online"
+            className="nav-item-btn"
+            onClick={() => {
+              setOnlineModalOpen(true);
+              setMobileMenuOpen(false);
+            }}
+          >
+            <span className="nav-item-icon">🟢</span>
+            <span>Online Nesters</span>
+            <span className="nav-unread-badge" style={{ background: "#059669", marginLeft: "auto" }}>
+              {communityStats.online_users.length}
+            </span>
+          </button>
+
+          <button
+            data-nav="logout"
+            className="nav-item-btn logout-nav-item"
+            onClick={handleLogout}
+          >
+            <span className="nav-item-icon">🚪</span>
+            <span>Log Out</span>
           </button>
         </div>
 
@@ -2172,7 +2457,11 @@ export default function App() {
             <button
               type="button"
               className={`drawer-menu-item-btn ${showOnline ? "expanded" : ""}`}
-              onClick={() => setShowOnline(!showOnline)}
+              onClick={() => {
+                setShowOnline(!showOnline);
+                setOnlineModalOpen(true);
+                setMobileMenuOpen(false);
+              }}
             >
               <div className="drawer-menu-item-left">
                 <span className="drawer-menu-icon">🟢</span>
@@ -2273,7 +2562,7 @@ export default function App() {
 
           <div
             className="sidebar-user-card"
-            onClick={() => user?.id && openProfile(user.id)}
+            onClick={openMyProfile}
           >
             <div className="sidebar-user-avatar">
               {user?.avatar_url ? (
@@ -2291,16 +2580,21 @@ export default function App() {
               title="Logout"
               onClick={(e) => {
                 e.stopPropagation();
-                if (confirm("Do you want to log out?")) {
-                  localStorage.removeItem("token");
-                  setToken(null);
-                  setUser(null);
-                }
+                handleLogout();
               }}
             >
-              ⚙️
+              🚪
             </span>
           </div>
+
+          <button
+            className="sidebar-logout-btn"
+            onClick={handleLogout}
+            title="Log out of your account"
+          >
+            <span>🚪</span>
+            <span>Log Out</span>
+          </button>
         </div>
       </aside>
 
@@ -2660,14 +2954,8 @@ export default function App() {
 
                       <button
                         className="action-pill-btn"
-                        onClick={() => {
-                          if (navigator.share) {
-                            navigator.share({ title: "Nesty Post", text: post.content, url: window.location.href });
-                          } else {
-                            navigator.clipboard.writeText(window.location.href);
-                            alert("Post link copied to clipboard!");
-                          }
-                        }}
+                        title="Share post"
+                        onClick={() => handleSharePost(post)}
                       >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <line x1="7" y1="17" x2="17" y2="7" />
@@ -2681,7 +2969,11 @@ export default function App() {
                       <div className="comments-section-nesty">
                         {(post.comments || []).map((c) => (
                           <div key={c.id} className="comment-row">
-                            <div className="comment-avatar">
+                            <div
+                              className="comment-avatar"
+                              style={{ cursor: "pointer" }}
+                              onClick={() => c.user?.id && openProfile(c.user.id)}
+                            >
                               {c.user?.avatar_url ? (
                                 <img src={c.user.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                               ) : (
@@ -2689,7 +2981,13 @@ export default function App() {
                               )}
                             </div>
                             <div className="comment-bubble">
-                              <span className="comment-author-name">@{c.user?.username || "builder"}</span>
+                              <span
+                                className="comment-author-name"
+                                style={{ cursor: "pointer" }}
+                                onClick={() => c.user?.id && openProfile(c.user.id)}
+                              >
+                                @{c.user?.username || "builder"}
+                              </span>
                               <span>{c.content}</span>
                             </div>
                           </div>
@@ -2723,245 +3021,338 @@ export default function App() {
           </>
         )}
 
-        {/* VIEW 2: PROFILE PAGE (MATCHING SCREENSHOT 2) */}
-        {page === "profile" && (
-          <div className="profile-view-wrapper">
-            <div className="profile-card-nesty">
-              {/* MINT COVER BANNER */}
-              <div
-                className="profile-cover-mint"
-                style={
-                  (profileData?.user.banner_url || (profileData?.is_self ? user?.banner_url : undefined))
-                    ? {
-                        backgroundImage: `url(${profileData?.user.banner_url || user?.banner_url})`,
-                        backgroundSize: "cover",
-                        backgroundPosition: "center",
-                      }
-                    : undefined
-                }
-              >
-                {(profileData?.is_self || viewedUserId === user?.id) && (
-                  <label className="edit-cover-floating-btn" title="Change Wallpaper">
-                    📷 Change Wallpaper
-                    <input
-                      type="file"
-                      accept="image/*"
-                      style={{ display: "none" }}
-                      onChange={handleQuickBannerChange}
-                    />
-                  </label>
-                )}
+        {/* VIEW 2: PROFILE PAGE */}
+        {page === "profile" && (() => {
+          const isViewingSelf = viewedUserId === null || (user?.id && viewedUserId === user.id) || !!profileData?.is_self;
+          const displayUser = isViewingSelf ? (profileData?.user || user) : profileData?.user;
+          const bannerUrl = isViewingSelf ? (profileData?.user?.banner_url || user?.banner_url) : profileData?.user?.banner_url;
+          const avatarUrl = isViewingSelf ? (profileData?.user?.avatar_url || user?.avatar_url) : profileData?.user?.avatar_url;
+          const displayName = displayUser?.name || displayUser?.username || (isViewingSelf ? (user?.name || user?.username || "Your Profile") : "Loading profile...");
+          const handle = displayUser?.username || (isViewingSelf ? (user?.username || "") : "");
+          const bio = displayUser?.bio ?? (isViewingSelf ? (user?.bio || "Aspiring Full-Stack Engineer") : "");
+          const location = displayUser?.location ?? (isViewingSelf ? (user?.location || "Otukpo, Nigeria") : "");
 
-                {/* OVERLAPPING AVATAR */}
-                <div className="profile-avatar-big">
-                  {(profileData?.user.avatar_url || (profileData?.is_self ? user?.avatar_url : undefined)) ? (
-                    <img src={profileData?.user.avatar_url || user?.avatar_url} alt="" />
-                  ) : (
-                    (profileData?.user.username || user?.username || "J").charAt(0).toUpperCase()
-                  )}
-                  {(profileData?.is_self || viewedUserId === user?.id) && (
-                    <label className="avatar-edit-overlay-icon" title="Change Profile Picture">
-                      📷
+          return (
+            <div className="profile-view-wrapper">
+              <div className="profile-card-nesty">
+                {/* MINT COVER BANNER */}
+                <div
+                  className="profile-cover-mint"
+                  style={
+                    bannerUrl
+                      ? {
+                          backgroundImage: `url(${bannerUrl})`,
+                          backgroundSize: "cover",
+                          backgroundPosition: "center",
+                        }
+                      : undefined
+                  }
+                >
+                  {isViewingSelf && (
+                    <label className="edit-cover-floating-btn" title="Change Wallpaper">
+                      📷 Change Wallpaper
                       <input
                         type="file"
                         accept="image/*"
                         style={{ display: "none" }}
-                        onChange={handleQuickAvatarChange}
+                        onChange={handleQuickBannerChange}
                       />
                     </label>
                   )}
-                </div>
-              </div>
 
-              <div className="profile-details-section">
-                <div className="profile-edit-btn-wrap">
-                  <div className="profile-action-buttons">
-                    {(!profileData?.is_self && viewedUserId !== user?.id) ? (
-                      <>
-                        <button
-                          className="profile-chat-btn"
-                          onClick={() => {
-                            const partner = profileData?.user || { id: viewedUserId || 0, username: "Nester", email: "" };
-                            startChatWithUser(partner);
-                          }}
-                        >
-                          💬 Chat
-                        </button>
-                        <button
-                          className="profile-call-btn"
-                          onClick={() => {
-                            const partner = profileData?.user || { id: viewedUserId || 0, username: "Nester", email: "" };
-                            startCallWithUser(partner, false);
-                          }}
-                        >
-                          📞 Call
-                        </button>
-                        <button
-                          className="profile-videocall-btn"
-                          onClick={() => {
-                            const partner = profileData?.user || { id: viewedUserId || 0, username: "Nester", email: "" };
-                            startCallWithUser(partner, true);
-                          }}
-                        >
-                          📹 Video
-                        </button>
-                        <button
-                          className="post-pill-submit"
-                          disabled={followBusy}
-                          onClick={toggleFollow}
-                        >
-                          {followBusy ? "..." : profileData?.is_following ? "Following" : "Follow"}
-                        </button>
-                      </>
+                  {/* OVERLAPPING AVATAR */}
+                  <div className="profile-avatar-big">
+                    {avatarUrl ? (
+                      <img src={avatarUrl} alt="" />
                     ) : (
-                      <>
-                        <button
-                          className="edit-profile-pill-btn"
-                          onClick={() => {
-                            setProfileForm({
-                              username: profileData?.user.username || user?.username || "",
-                              name: profileData?.user.name || user?.name || "",
-                              bio: profileData?.user.bio || user?.bio || "Aspiring Full-Stack Engineer",
-                              skills: profileData?.user.skills || user?.skills || "Go, React, TypeScript",
-                              location: profileData?.user.location || user?.location || "Otukpo, Nigeria",
-                              avatar_url: profileData?.user.avatar_url || user?.avatar_url || "",
-                              banner_url: profileData?.user.banner_url || user?.banner_url || "",
-                            });
-                            setEditingProfile(true);
-                          }}
-                        >
-                          Edit Profile
-                        </button>
-                        <button
-                          className="profile-chat-btn"
-                          onClick={() => {
-                            const partner = communityStats.online_users.find(u => u.id && u.id !== user?.id);
-                            if (partner && partner.id) {
-                              startChatWithUser({ id: partner.id, username: partner.username, email: "" });
-                            } else {
-                              alert("Select a user from Online now to chat!");
-                            }
-                          }}
-                        >
-                          💬 Messages & Calls
-                        </button>
-                      </>
+                      (handle || "U").charAt(0).toUpperCase()
+                    )}
+                    {isViewingSelf && (
+                      <label className="avatar-edit-overlay-icon" title="Change Profile Picture">
+                        📷
+                        <input
+                          type="file"
+                          accept="image/*"
+                          style={{ display: "none" }}
+                          onChange={handleQuickAvatarChange}
+                        />
+                      </label>
                     )}
                   </div>
                 </div>
 
-                <h2 className="profile-user-name">
-                  {profileData?.user.name || profileData?.user.username || user?.name || user?.username || "Jaytricks"}
-                </h2>
-                <div className="profile-user-handle">
-                  @{profileData?.user.username || user?.username || "jaytricks"}
-                </div>
-
-                <div className="profile-bio-text">
-                  {profileData?.user.bio || user?.bio || "Aspiring Full-Stack Engineer"}
-                </div>
-
-                <div className="profile-location-text">
-                  <span>📍</span>
-                  <span>{profileData?.user.location || user?.location || "Otukpo, Nigeria"}</span>
-                </div>
-
-                {/* STATS ROW */}
-                <div className="profile-stats-row">
-                  <div className="stat-item">
-                    <b>{profileData?.post_count ?? 23}</b> Posts
+                <div className="profile-details-section">
+                  <div className="profile-edit-btn-wrap">
+                    <div className="profile-action-buttons">
+                      {!isViewingSelf ? (
+                        <>
+                          <button
+                            className="profile-chat-btn"
+                            onClick={() => {
+                              const partner = profileData?.user || { id: viewedUserId || 0, username: handle || "Nester", email: "" };
+                              startChatWithUser(partner);
+                            }}
+                          >
+                            💬 Chat
+                          </button>
+                          <button
+                            className="profile-call-btn"
+                            onClick={() => {
+                              const partner = profileData?.user || { id: viewedUserId || 0, username: handle || "Nester", email: "" };
+                              startCallWithUser(partner, false);
+                            }}
+                          >
+                            📞 Call
+                          </button>
+                          <button
+                            className="profile-videocall-btn"
+                            onClick={() => {
+                              const partner = profileData?.user || { id: viewedUserId || 0, username: handle || "Nester", email: "" };
+                              startCallWithUser(partner, true);
+                            }}
+                          >
+                            📹 Video
+                          </button>
+                          <button
+                            className="post-pill-submit"
+                            disabled={followBusy}
+                            onClick={toggleFollow}
+                          >
+                            {followBusy ? "..." : profileData?.is_following ? "Following" : "Follow"}
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            className="edit-profile-pill-btn"
+                            onClick={() => {
+                              setProfileForm({
+                                username: user?.username || profileData?.user?.username || "",
+                                name: user?.name || profileData?.user?.name || "",
+                                bio: user?.bio || profileData?.user?.bio || "Aspiring Full-Stack Engineer",
+                                skills: user?.skills || profileData?.user?.skills || "Go, React, TypeScript",
+                                location: user?.location || profileData?.user?.location || "Otukpo, Nigeria",
+                                avatar_url: user?.avatar_url || profileData?.user?.avatar_url || "",
+                                banner_url: user?.banner_url || profileData?.user?.banner_url || "",
+                              });
+                              setEditingProfile(true);
+                            }}
+                          >
+                            Edit Profile
+                          </button>
+                          <button
+                            className="profile-chat-btn"
+                            onClick={() => {
+                              const partner = communityStats.online_users.find((u) => u.id && u.id !== user?.id);
+                              if (partner && partner.id) {
+                                startChatWithUser({ id: partner.id, username: partner.username, email: "", avatar_url: partner.avatar_url, name: partner.name });
+                              } else {
+                                setOnlineModalOpen(true);
+                              }
+                            }}
+                          >
+                            💬 Messages & Calls
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <div
-                    className="stat-item"
-                    style={{ cursor: "pointer" }}
-                    onClick={() => {
-                      if (profileData?.user.id) {
-                        setFollowListModal({ type: "followers", userId: profileData.user.id });
-                      }
-                    }}
-                  >
-                    <b>{profileData?.follower_count ?? 1}</b> Followers
-                  </div>
-                  <div
-                    className="stat-item"
-                    style={{ cursor: "pointer" }}
-                    onClick={() => {
-                      if (profileData?.user.id) {
-                        setFollowListModal({ type: "following", userId: profileData.user.id });
-                      }
-                    }}
-                  >
-                    <b>{profileData?.following_count ?? 1}</b> Following
+
+                  <h2 className="profile-user-name">{displayName}</h2>
+                  {handle && <div className="profile-user-handle">@{handle}</div>}
+
+                  {bio && <div className="profile-bio-text">{bio}</div>}
+
+                  {location && (
+                    <div className="profile-location-text">
+                      <span>📍</span>
+                      <span>{location}</span>
+                    </div>
+                  )}
+
+                  {/* STATS ROW */}
+                  <div className="profile-stats-row">
+                    <div className="stat-item">
+                      <b>{profileData?.post_count ?? profilePosts.length}</b> Posts
+                    </div>
+                    <div
+                      className="stat-item"
+                      style={{ cursor: "pointer" }}
+                      onClick={() => {
+                        if (displayUser?.id) {
+                          setFollowListModal({ type: "followers", userId: displayUser.id });
+                        }
+                      }}
+                    >
+                      <b>{profileData?.follower_count ?? 0}</b> Followers
+                    </div>
+                    <div
+                      className="stat-item"
+                      style={{ cursor: "pointer" }}
+                      onClick={() => {
+                        if (displayUser?.id) {
+                          setFollowListModal({ type: "following", userId: displayUser.id });
+                        }
+                      }}
+                    >
+                      <b>{profileData?.following_count ?? 0}</b> Following
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            {/* USER POSTS FEED TIMELINE */}
-            <div className="nesty-posts-feed">
-              {(profilePosts.length > 0 ? profilePosts : posts).map(
-                (post) => {
-                  const displayName = post.user?.name || post.user?.username || "Jaytricks";
-                  const handle = post.user?.username || "jaytricks";
+              {/* USER POSTS FEED TIMELINE */}
+              <div className="nesty-posts-feed">
+                {profilePosts.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)", fontSize: "14px", background: "var(--card-bg)", borderRadius: "14px", border: "1px solid var(--border-color)", margin: "16px 0" }}>
+                    No posts yet from this user.
+                  </div>
+                ) : (
+                  profilePosts.map((post) => {
+                    const postDisplayName = post.user?.name || post.user?.username || displayName;
+                    const postHandle = post.user?.username || handle;
 
-                  return (
-                    <article key={post.id} className="post-card-nesty">
-                      <div className="post-header-nesty">
-                        <div className="avatar-with-dot" style={{ width: "42px", height: "42px" }}>
-                          {post.user?.avatar_url ? (
-                            <img src={post.user.avatar_url} alt="" />
-                          ) : (
-                            handle.charAt(0).toUpperCase()
-                          )}
-                          <span className="online-dot" />
-                        </div>
-                        <div className="post-header-author-info">
-                          <span className="author-display-name">{displayName}</span>
-                          <span className="verified-dot-green" />
-                          <span className="author-handle">@{handle}</span>
-                          <span className="post-date-ago">· {post.created_at ? timeAgo(post.created_at) : "1h ago"}</span>
-                        </div>
-                      </div>
-
-                      <div className="post-content-body">{renderWithMentions(post.content)}</div>
-
-                      {post.media_url ? (
-                        post.media_url === "photo_placeholder" ? (
-                          <div className="mock-photo-placeholder">Photo</div>
-                        ) : (
-                          <div className="post-media-container">
-                            <img src={post.media_url} alt="" />
+                    return (
+                      <article key={post.id} className="post-card-nesty">
+                        <div className="post-header-nesty">
+                          <div
+                            className="avatar-with-dot"
+                            style={{ width: "42px", height: "42px", cursor: "pointer" }}
+                            onClick={() => post.user?.id && openProfile(post.user.id)}
+                          >
+                            {post.user?.avatar_url ? (
+                              <img src={post.user.avatar_url} alt="" />
+                            ) : (
+                              (postHandle || "U").charAt(0).toUpperCase()
+                            )}
+                            <span className="online-dot" />
                           </div>
-                        )
-                      ) : null}
+                          <div className="post-header-author-info">
+                            <span
+                              className="author-display-name"
+                              style={{ cursor: "pointer" }}
+                              onClick={() => post.user?.id && openProfile(post.user.id)}
+                            >
+                              {postDisplayName}
+                            </span>
+                            <span className="verified-dot-green" />
+                            <span
+                              className="author-handle"
+                              style={{ cursor: "pointer" }}
+                              onClick={() => post.user?.id && openProfile(post.user.id)}
+                            >
+                              @{postHandle}
+                            </span>
+                            <span className="post-date-ago">· {post.created_at ? timeAgo(post.created_at) : "1h ago"}</span>
+                          </div>
+                        </div>
 
-                      <div className="post-actions-bar">
-                        <button className="action-pill-btn" onClick={() => handleLike(post.id)}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                          </svg>
-                          <span>{post.likes || 28}</span>
-                        </button>
-                        <button className="action-pill-btn">
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                          </svg>
-                          <span>{post.comments?.length || 6}</span>
-                        </button>
-                        <button className="action-pill-btn">
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <line x1="7" y1="17" x2="17" y2="7" />
-                            <polyline points="7 7 17 7 17 17" />
-                          </svg>
-                        </button>
-                      </div>
-                    </article>
-                  );
-                }
-              )}
+                        <div className="post-content-body">{renderWithMentions(post.content)}</div>
+
+                        {post.media_url ? (
+                          post.media_url === "photo_placeholder" ? (
+                            <div className="mock-photo-placeholder">Photo</div>
+                          ) : (
+                            <div className="post-media-container">
+                              <img src={post.media_url} alt="" />
+                            </div>
+                          )
+                        ) : null}
+
+                        <div className="post-actions-bar">
+                          <button
+                            className={`action-pill-btn ${post.liked_by_me ? "liked" : ""}`}
+                            onClick={() => handleLike(post.id)}
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill={post.liked_by_me ? "#ef4444" : "none"} stroke="currentColor" strokeWidth="2">
+                              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                            </svg>
+                            <span>{post.likes ?? 0}</span>
+                          </button>
+                          <button
+                            className="action-pill-btn"
+                            onClick={() =>
+                              setExpandedComments((prev) => ({
+                                ...prev,
+                                [post.id]: !prev[post.id],
+                              }))
+                            }
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                            </svg>
+                            <span>{post.comments?.length ?? 0}</span>
+                          </button>
+                          <button
+                            className="action-pill-btn"
+                            title="Share post"
+                            onClick={() => handleSharePost(post)}
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <line x1="7" y1="17" x2="17" y2="7" />
+                              <polyline points="7 7 17 7 17 17" />
+                            </svg>
+                          </button>
+                        </div>
+
+                        {/* EXPANDABLE COMMENTS */}
+                        {expandedComments[post.id] && (
+                          <div className="comments-section-nesty">
+                            {(post.comments || []).map((c) => (
+                              <div key={c.id} className="comment-row">
+                                <div
+                                  className="comment-avatar"
+                                  style={{ cursor: "pointer" }}
+                                  onClick={() => c.user?.id && openProfile(c.user.id)}
+                                >
+                                  {c.user?.avatar_url ? (
+                                    <img src={c.user.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                                  ) : (
+                                    (c.user?.username || "?").charAt(0).toUpperCase()
+                                  )}
+                                </div>
+                                <div className="comment-bubble">
+                                  <span
+                                    className="comment-author-name"
+                                    style={{ cursor: "pointer" }}
+                                    onClick={() => c.user?.id && openProfile(c.user.id)}
+                                  >
+                                    @{c.user?.username || "builder"}
+                                  </span>
+                                  <span>{c.content}</span>
+                                </div>
+                              </div>
+                            ))}
+
+                            <div className="comment-form-row">
+                              <input
+                                className="comment-input-pill"
+                                placeholder="Write a constructive reply..."
+                                value={commentInputs[post.id] || ""}
+                                onChange={(e) =>
+                                  setCommentInputs((prev) => ({ ...prev, [post.id]: e.target.value }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleAddComment(post.id);
+                                }}
+                              />
+                              <button
+                                className="comment-submit-btn"
+                                onClick={() => handleAddComment(post.id)}
+                              >
+                                Reply
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* VIEW 3: DEDICATED CREATE POST PAGE (MATCHING SCREENSHOT 3) */}
         {page === "create" && (
@@ -3494,7 +3885,17 @@ export default function App() {
       {activeChatPartner && (
         <div className="chat-drawer-overlay">
           <div className="chat-drawer-header">
-            <div className="chat-partner-info">
+            <div
+              className="chat-partner-info"
+              style={{ cursor: "pointer" }}
+              title={`View @${activeChatPartner.username}'s profile`}
+              onClick={() => {
+                if (activeChatPartner.id) {
+                  openProfile(activeChatPartner.id);
+                  setActiveChatPartner(null);
+                }
+              }}
+            >
               <div className="chat-partner-avatar">
                 {activeChatPartner.avatar_url ? (
                   <img src={activeChatPartner.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%" }} />
@@ -3587,7 +3988,11 @@ export default function App() {
       {incomingCall && (
         <div className="incoming-call-overlay">
           <div className="incoming-call-card">
-            <div className="call-avatar-wrapper">
+            <div
+              className="call-avatar-wrapper"
+              style={{ cursor: "pointer" }}
+              onClick={() => incomingCall.caller.id && openProfile(incomingCall.caller.id)}
+            >
               <div className="call-pulse-ring" style={{ borderColor: "#22c55e" }} />
               <div className="call-avatar-img">
                 {incomingCall.caller.avatar_url ? (
@@ -3602,8 +4007,20 @@ export default function App() {
               </div>
             </div>
 
-            <div className="call-user-name">{incomingCall.caller.name || incomingCall.caller.username}</div>
-            <div className="call-user-handle">@{incomingCall.caller.username}</div>
+            <div
+              className="call-user-name"
+              style={{ cursor: "pointer" }}
+              onClick={() => incomingCall.caller.id && openProfile(incomingCall.caller.id)}
+            >
+              {incomingCall.caller.name || incomingCall.caller.username}
+            </div>
+            <div
+              className="call-user-handle"
+              style={{ cursor: "pointer" }}
+              onClick={() => incomingCall.caller.id && openProfile(incomingCall.caller.id)}
+            >
+              @{incomingCall.caller.username}
+            </div>
 
             <div className="incoming-call-badge">
               {incomingCall.isVideo ? "📹 Incoming Video Call..." : "📞 Incoming Voice Call..."}
@@ -3627,9 +4044,9 @@ export default function App() {
                   title="Answer Call"
                   onClick={acceptIncomingCall}
                 >
-                  📞
+                  {incomingCall.isVideo ? "📹" : "📞"}
                 </button>
-                <span className="incoming-action-label">Accept</span>
+                <span className="incoming-action-label">{incomingCall.isVideo ? "Answer Video" : "Answer"}</span>
               </div>
             </div>
           </div>
@@ -3644,53 +4061,129 @@ export default function App() {
           {/* Real Audio playback element */}
           <audio ref={remoteAudioRef} autoPlay playsInline />
 
-          <div className="call-modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="call-avatar-wrapper">
-              {activeCall.status === "ringing" && <div className="call-pulse-ring" />}
-              <div className="call-avatar-img">
-                {activeCall.partner.avatar_url ? (
-                  <img src={activeCall.partner.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
-                ) : (
-                  (activeCall.partner.username || "U").charAt(0).toUpperCase()
-                )}
+          <div className={`call-modal-card ${activeCall.isVideo && activeCall.status === "connected" ? "video-active" : ""}`} onClick={(e) => e.stopPropagation()}>
+            {!(activeCall.isVideo && activeCall.status === "connected") ? (
+              <>
+                <div
+                  className="call-avatar-wrapper"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => activeCall.partner.id && openProfile(activeCall.partner.id)}
+                >
+                  {activeCall.status === "ringing" && <div className="call-pulse-ring" />}
+                  <div className="call-avatar-img">
+                    {activeCall.partner.avatar_url ? (
+                      <img src={activeCall.partner.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                    ) : (
+                      (activeCall.partner.username || "U").charAt(0).toUpperCase()
+                    )}
+                  </div>
+                </div>
+
+                <div
+                  className="call-user-name"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => activeCall.partner.id && openProfile(activeCall.partner.id)}
+                >
+                  {activeCall.partner.name || activeCall.partner.username}
+                </div>
+                <div
+                  className="call-user-handle"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => activeCall.partner.id && openProfile(activeCall.partner.id)}
+                >
+                  @{activeCall.partner.username}
+                </div>
+
+                <div className={`call-status-badge ${activeCall.status === "connected" ? "connected" : ""}`}>
+                  {activeCall.status === "calling" && (activeCall.statusText || "Calling...")}
+                  {activeCall.status === "ringing" && (activeCall.statusText || "🔔 Ringing...")}
+                  {activeCall.status === "connected" && `Connected • ${formatDuration(activeCall.duration)}`}
+                  {activeCall.status === "ended" && (activeCall.statusText || "Call ended")}
+                </div>
+              </>
+            ) : (
+              <div className="call-video-header-overlay">
+                <div
+                  style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}
+                  onClick={() => activeCall.partner.id && openProfile(activeCall.partner.id)}
+                >
+                  <div className="search-avatar-mini">
+                    {activeCall.partner.avatar_url ? (
+                      <img src={activeCall.partner.avatar_url} alt="" />
+                    ) : (
+                      (activeCall.partner.username || "U").charAt(0).toUpperCase()
+                    )}
+                  </div>
+                  <div style={{ textAlign: "left" }}>
+                    <div style={{ fontWeight: 600, fontSize: "14px", color: "#ffffff" }}>
+                      {activeCall.partner.name || activeCall.partner.username}
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#38bdf8" }}>
+                      Connected • {formatDuration(activeCall.duration)}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  className="call-ctrl-btn"
+                  style={{ width: "38px", height: "38px", fontSize: "14px" }}
+                  title="Flip camera"
+                  onClick={flipCamera}
+                >
+                  🔄
+                </button>
               </div>
-            </div>
-
-            <div className="call-user-name">{activeCall.partner.name || activeCall.partner.username}</div>
-            <div className="call-user-handle">@{activeCall.partner.username}</div>
-
-            <div className={`call-status-badge ${activeCall.status === "connected" ? "connected" : ""}`}>
-              {activeCall.status === "calling" && (activeCall.statusText || "Calling...")}
-              {activeCall.status === "ringing" && (activeCall.statusText || "🔔 Ringing...")}
-              {activeCall.status === "connected" && `Connected • ${formatDuration(activeCall.duration)}`}
-              {activeCall.status === "ended" && (activeCall.statusText || "Call ended")}
-            </div>
+            )}
 
             {/* If Video Call: real WebRTC remote video feed + local PIP video */}
             {activeCall.isVideo ? (
               <div className="call-video-grid">
                 <video
-                  ref={remoteVideoRef}
+                  ref={(el) => {
+                    remoteVideoRef.current = el;
+                    if (el && remoteStreamRef.current) el.srcObject = remoteStreamRef.current;
+                  }}
                   autoPlay
                   playsInline
                   className="call-video-element"
                   style={{ display: activeCall.status === "connected" ? "block" : "none" }}
                 />
+
                 {activeCall.status !== "connected" && (
-                  <div style={{ color: "#94a3b8", fontSize: "14px", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
-                    <span>📹 {activeCall.status === "calling" ? "Calling..." : "🔔 Ringing..."}</span>
-                    <span style={{ fontSize: "12px", opacity: 0.8 }}>Connecting to @{activeCall.partner.username}</span>
+                  <div className="call-calling-preview-container">
+                    <video
+                      ref={(el) => {
+                        localVideoRef.current = el;
+                        if (el && localStreamRef.current) el.srcObject = localStreamRef.current;
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="call-calling-preview-video"
+                    />
+                    <div className="call-calling-preview-overlay">
+                      <span className="call-calling-tag">
+                        📹 {activeCall.status === "calling" ? "Calling..." : "🔔 Ringing..."}
+                      </span>
+                      <span className="call-calling-sub">Connecting with @{activeCall.partner.username}</span>
+                    </div>
                   </div>
                 )}
-                <div className="call-video-pip">
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="call-video-pip-element"
-                  />
-                </div>
+
+                {activeCall.status === "connected" && (
+                  <div className="call-video-pip" onClick={flipCamera} title="Click to flip camera">
+                    <video
+                      ref={(el) => {
+                        localVideoRef.current = el;
+                        if (el && localStreamRef.current) el.srcObject = localStreamRef.current;
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="call-video-pip-element"
+                    />
+                    <span className="pip-flip-badge" title="Flip camera">🔄</span>
+                  </div>
+                )}
               </div>
             ) : (
               /* If Voice Call: audio waveform visualizer */
@@ -3720,6 +4213,15 @@ export default function App() {
               >
                 {activeCall.isVideo ? "📹" : "📷"}
               </button>
+              {activeCall.isVideo && (
+                <button
+                  className="call-ctrl-btn"
+                  title={`Flip Camera (${facingMode === "user" ? "Switch to Back Camera" : "Switch to Front Camera"})`}
+                  onClick={flipCamera}
+                >
+                  🔄
+                </button>
+              )}
               <button
                 className={`call-ctrl-btn ${activeCall.isSpeaker ? "active" : ""}`}
                 title={activeCall.isSpeaker ? "Speaker On" : "Speaker Off"}
@@ -3734,6 +4236,87 @@ export default function App() {
               >
                 📞
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ONLINE NESTERS MODAL */}
+      {onlineModalOpen && (
+        <div className="modal-overlay-nesty" onClick={() => setOnlineModalOpen(false)}>
+          <div className="modal-content-card online-nesters-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="online-modal-header">
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "22px" }}>🟢</span>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "var(--text-h)" }}>Online Nesters</h3>
+                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                    {communityStats.online_users.length} active now
+                  </span>
+                </div>
+              </div>
+              <button className="edit-profile-pill-btn" onClick={() => setOnlineModalOpen(false)}>✕</button>
+            </div>
+
+            <div className="online-modal-list">
+              {communityStats.online_users.map((u, i) => (
+                <div key={u.id || i} className="online-modal-user-card">
+                  <div
+                    className="online-modal-user-left"
+                    onClick={() => {
+                      if (u.id) {
+                        openProfile(u.id);
+                        setOnlineModalOpen(false);
+                      }
+                    }}
+                  >
+                    <div className="online-user-avatar" style={{ background: "#047857" }}>
+                      {u.avatar_url ? <img src={u.avatar_url} alt="" /> : u.username.charAt(0).toUpperCase()}
+                      <span className="online-dot-badge" />
+                    </div>
+                    <div className="online-user-meta">
+                      <span className="online-user-name">{u.name || u.username}</span>
+                      <span className="online-user-handle">@{u.username}</span>
+                      <span className="online-user-status">{u.status || "Active now"}</span>
+                    </div>
+                  </div>
+
+                  {u.id && u.id !== user?.id && (
+                    <div className="online-modal-user-actions">
+                      <button
+                        className="online-action-btn chat"
+                        title={`Chat with ${u.username}`}
+                        onClick={() => {
+                          startChatWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name });
+                          setOnlineModalOpen(false);
+                        }}
+                      >
+                        💬 Chat
+                      </button>
+                      <button
+                        className="online-action-btn voice"
+                        title={`Voice Call ${u.username}`}
+                        onClick={() => {
+                          startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false);
+                          setOnlineModalOpen(false);
+                        }}
+                      >
+                        📞 Voice
+                      </button>
+                      <button
+                        className="online-action-btn video"
+                        title={`Video Call ${u.username}`}
+                        onClick={() => {
+                          startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true);
+                          setOnlineModalOpen(false);
+                        }}
+                      >
+                        📹 Video
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         </div>

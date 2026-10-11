@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -124,16 +125,47 @@ func (h *Hub) HandleConnections(w http.ResponseWriter, r *http.Request, userID u
 	sc := &SafeConn{conn: wsConn}
 	h.Register <- registration{conn: sc, userID: userID}
 
+	// Keep connection alive across proxies (Render, Cloudflare) with periodic pings
+	ticker := time.NewTicker(25 * time.Second)
+	stopPing := make(chan struct{})
+	defer func() {
+		ticker.Stop()
+		close(stopPing)
+		h.Unregister <- sc
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				if err := sc.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+					return
+				}
+			case <-stopPing:
+				return
+			}
+		}
+	}()
+
+	wsConn.SetPongHandler(func(string) error {
+		return nil
+	})
+
 	for {
 		_, msg, err := wsConn.ReadMessage()
 		if err != nil {
-			h.Unregister <- sc
 			break
 		}
 
-		// Handle targeted signaling message if 'to_user_id' is present
+		// Handle client-side heartbeat ping
 		var raw map[string]interface{}
 		if err := json.Unmarshal(msg, &raw); err == nil {
+			if msgType, ok := raw["type"].(string); ok && msgType == "ping" {
+				sc.WriteMessage(websocket.TextMessage, []byte(`{"type":"pong"}`))
+				continue
+			}
+
+			// Handle targeted signaling message if 'to_user_id' is present
 			if target, ok := raw["to_user_id"]; ok {
 				var targetID uint
 				switch v := target.(type) {
@@ -177,10 +209,13 @@ func (h *Hub) SendToUser(userID uint, msg []byte) bool {
 	}
 	h.mu.RUnlock()
 
+	sentCount := 0
 	for _, sc := range list {
-		sc.WriteMessage(websocket.TextMessage, msg)
+		if err := sc.WriteMessage(websocket.TextMessage, msg); err == nil {
+			sentCount++
+		}
 	}
-	return true
+	return sentCount > 0
 }
 
 // IsUserOnline returns true if the user currently has at least one active WebSocket connection
