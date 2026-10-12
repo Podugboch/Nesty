@@ -1,9 +1,16 @@
 package model
 
-import "gorm.io/gorm"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type Message struct {
-	gorm.Model
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at,omitempty"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 
 	SenderID    uint   `json:"sender_id" gorm:"not null;index"`
 	RecipientID uint   `json:"recipient_id" gorm:"not null;index"`

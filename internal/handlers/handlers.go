@@ -1241,7 +1241,7 @@ func (h *Handler) GetChatHistory(c *gin.Context) {
 	}
 
 	userID := c.GetUint("user_id")
-	var messages []model.Message
+	messages := make([]model.Message, 0)
 	h.DB.Where("(sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)",
 		userID, uint(partnerID), uint(partnerID), userID).
 		Order("created_at ASC").

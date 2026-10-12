@@ -525,6 +525,7 @@ export default function App() {
     } else {
       setChatFilePreview(null);
     }
+    e.target.value = "";
   };
 
   const removeChatSelectedFile = () => {
@@ -600,13 +601,19 @@ export default function App() {
           const uploadData = await uploadRes.json();
           uploadedUrl = uploadData.url;
         } else {
-          console.error("Upload failed in chat");
+          const errText = await uploadRes.text();
+          console.error("Upload failed in chat:", uploadRes.status, errText);
         }
       } catch (upErr) {
         console.error("Upload exception in chat", upErr);
       } finally {
         setIsChatUploading(false);
       }
+    }
+
+    if (fileToSend && !uploadedUrl) {
+      alert("Failed to upload attachment. Please check your network and try again.");
+      return;
     }
 
     const tempMsg: ChatMessage = {
@@ -642,9 +649,16 @@ export default function App() {
         setChatMessages((prev) =>
           prev.map((m) => (m === tempMsg ? savedMsg : m))
         );
+      } else {
+        const errText = await res.text();
+        console.error("Send message error:", res.status, errText);
+        setChatMessages((prev) => prev.filter((m) => m !== tempMsg));
+        alert("Failed to send message.");
       }
     } catch (err) {
       console.error("Failed to send message:", err);
+      setChatMessages((prev) => prev.filter((m) => m !== tempMsg));
+      alert("Network error sending message.");
     }
   };
 
@@ -4834,46 +4848,51 @@ export default function App() {
             ) : (
               chatMessages.map((msg, i) => {
                 const isMine = msg.sender_id === user?.id;
+                const mediaUrl = msg.media_url || (msg as any).MediaURL;
+                const mediaType = msg.media_type || (msg as any).MediaType;
+                const fileName = msg.file_name || (msg as any).FileName;
+                const fileSize = msg.file_size || (msg as any).FileSize;
+                const timestamp = msg.created_at || (msg as any).CreatedAt;
                 return (
-                  <div key={msg.id || i} className={`chat-msg-row ${isMine ? "outgoing" : "incoming"}`}>
+                  <div key={msg.id || (msg as any).ID || i} className={`chat-msg-row ${isMine ? "outgoing" : "incoming"}`}>
                     <div className="chat-msg-bubble">
-                      {msg.media_url && (
+                      {mediaUrl && (
                         <>
-                          {msg.media_type === "image" ? (
-                            <a href={msg.media_url} target="_blank" rel="noopener noreferrer">
+                          {mediaType === "image" ? (
+                            <a href={mediaUrl} target="_blank" rel="noopener noreferrer">
                               <img
-                                src={msg.media_url}
-                                alt={msg.file_name || "Attachment"}
+                                src={mediaUrl}
+                                alt={fileName || "Attachment"}
                                 className="chat-msg-media-img"
                               />
                             </a>
-                          ) : msg.media_type === "video" ? (
+                          ) : mediaType === "video" ? (
                             <video
-                              src={msg.media_url}
+                              src={mediaUrl}
                               controls
                               playsInline
                               className="chat-msg-media-video"
                             />
-                          ) : msg.media_type === "audio" ? (
+                          ) : mediaType === "audio" ? (
                             <audio
-                              src={msg.media_url}
+                              src={mediaUrl}
                               controls
                               className="chat-msg-media-audio"
                             />
                           ) : (
                             <a
-                              href={msg.media_url}
+                              href={mediaUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              download={msg.file_name}
+                              download={fileName}
                               className="chat-msg-doc-pill"
                             >
                               <span className="doc-icon">📄</span>
                               <div className="doc-info">
-                                <span className="doc-name">{msg.file_name || "Document"}</span>
+                                <span className="doc-name">{fileName || "Document"}</span>
                                 <span className="doc-size">
-                                  {msg.file_size
-                                    ? `${(msg.file_size / 1024).toFixed(0)} KB`
+                                  {fileSize
+                                    ? `${(fileSize / 1024).toFixed(0)} KB`
                                     : "Download"}
                                 </span>
                               </div>
@@ -4883,8 +4902,8 @@ export default function App() {
                         </>
                       )}
                       {msg.content && <div>{msg.content}</div>}
-                      {msg.created_at && (
-                        <span className="chat-msg-time">{timeAgo(msg.created_at)}</span>
+                      {timestamp && (
+                        <span className="chat-msg-time">{timeAgo(timestamp)}</span>
                       )}
                     </div>
                   </div>
