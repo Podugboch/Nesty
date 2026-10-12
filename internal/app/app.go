@@ -13,6 +13,7 @@ import (
 
 	"piscine-devnest/internal/handlers"
 	"piscine-devnest/internal/model"
+	"piscine-devnest/internal/push"
 	"piscine-devnest/internal/ws"
 )
 
@@ -35,7 +36,7 @@ func Run() error {
 		return fmt.Errorf("connect db: %w", err)
 	}
 
-	// 2. FIXED: Added &model.Comment{} to migrate and create the missing table (fixes SQLSTATE 42P01)
+	// 2. FIXED: Added &model.Comment{} and &model.Device{} to migrate
 	if err := db.AutoMigrate(
 		&model.User{},
 		&model.Resource{},
@@ -46,6 +47,7 @@ func Run() error {
 		&model.Like{}, 
 		&model.Notification{},
 		&model.Message{},
+		&model.Device{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
@@ -58,12 +60,16 @@ func Run() error {
 	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 	r.Use(cors.New(corsConfig))
 
+	// Push service for native wake-up (FCM / APNs PushKit)
+	pushSvc := push.NewPushService(db)
+
 	// WebSocket Hub
 	hub := ws.NewHub()
-	go hub.Run()
 
 	// handler
-	h := handlers.NewHandler(db, hub)
+	h := handlers.NewHandler(db, hub, pushSvc)
+	hub.OnCallSignal = h.HandleCallSignalHook
+	go hub.Run()
 
 	h.RegisterRoutes(r)
 

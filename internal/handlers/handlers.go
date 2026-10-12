@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv" // 👈 Added for parameter parsing
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,19 +18,26 @@ import (
 	"gorm.io/gorm"
 
 	"piscine-devnest/internal/model"
+	"piscine-devnest/internal/push"
 	"piscine-devnest/internal/storage"
 	"piscine-devnest/internal/utils"
 	"piscine-devnest/internal/ws"
 )
 
 type Handler struct {
-	DB  *gorm.DB
-	Hub *ws.Hub
+	DB         *gorm.DB
+	Hub        *ws.Hub
+	Push       *push.PushService
+	callTimers sync.Map
 }
 
 // Constructor
-func NewHandler(db *gorm.DB, hub *ws.Hub) *Handler {
-	return &Handler{DB: db, Hub: hub}
+func NewHandler(db *gorm.DB, hub *ws.Hub, pushSvc *push.PushService) *Handler {
+	return &Handler{
+		DB:   db,
+		Hub:  hub,
+		Push: pushSvc,
+	}
 }
 
 // ---------------------- ROUTES ----------------------
@@ -99,7 +107,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// CALL & WEBRTC SIGNALING
 		protected.GET("/call/online/:id", h.CheckUserOnline)
 		protected.POST("/call/signal", h.SendCallSignal)
+
+		// DEVICE PUSH TOKENS
+		protected.POST("/devices", h.RegisterDevice)
+		protected.DELETE("/devices", h.UnregisterDevice)
+		protected.POST("/logout", h.Logout)
 	}
+
+	// Direct root fallbacks for mobile / devices
+	r.POST("/devices", utils.JWTMiddleware(), h.RegisterDevice)
+	r.DELETE("/devices", utils.JWTMiddleware(), h.UnregisterDevice)
+	r.POST("/logout", utils.JWTMiddleware(), h.Logout)
 
 	// WebSocket
 	r.GET("/ws", func(c *gin.Context) {
@@ -1336,6 +1354,9 @@ func (h *Handler) SendCallSignal(c *gin.Context) {
 
 	sent := h.Hub.SendToUser(input.ToUserID, payload)
 
+	// Process call signal for push notifications & 30s ring timeout
+	h.processCallSignal(userID, input.ToUserID, input.Type, callerName, callerAvatar, input.Data)
+
 	if input.Type == "missed_call" || input.Type == "missed_video_call" {
 		h.createNotification(input.ToUserID, userID, input.Type, nil)
 	}
@@ -1346,4 +1367,187 @@ func (h *Handler) SendCallSignal(c *gin.Context) {
 		"type":    input.Type,
 		"to_user": input.ToUserID,
 	})
+}
+
+func (h *Handler) processCallSignal(fromUserID, toUserID uint, signalType, callerName, callerAvatar string, data interface{}) {
+	callID := ""
+	callType := "audio"
+
+	if m, ok := data.(map[string]interface{}); ok {
+		if cid, exists := m["callId"].(string); exists && cid != "" {
+			callID = cid
+		}
+		if isVid, exists := m["isVideo"].(bool); exists && isVid {
+			callType = "video"
+		}
+	}
+	if signalType == "call_invite_video" || strings.Contains(signalType, "video") {
+		callType = "video"
+	}
+	if callID == "" {
+		callID = fmt.Sprintf("call_%d_%d_%d", fromUserID, toUserID, time.Now().UnixMilli())
+	}
+
+	switch signalType {
+	case "call_invite", "call_invite_video":
+		// Send high-priority data push notification (Android FCM / iOS APNs PushKit)
+		if h.Push != nil {
+			go h.Push.SendCallInvite(toUserID, push.CallPushPayload{
+				CallID:          callID,
+				CallerID:        fromUserID,
+				CallerName:      callerName,
+				CallerAvatarURL: callerAvatar,
+				CallType:        callType,
+			})
+		}
+
+		// Ring timeout (about 30 seconds)
+		timer := time.AfterFunc(30*time.Second, func() {
+			h.callTimers.Delete(callID)
+
+			// Missed call push notification
+			if h.Push != nil {
+				h.Push.SendMissedCallNotification(toUserID, push.CallPushPayload{
+					CallID:          callID,
+					CallerID:        fromUserID,
+					CallerName:      callerName,
+					CallerAvatarURL: callerAvatar,
+					CallType:        callType,
+				})
+			}
+
+			// Broadcast call_ended to both parties
+			calleeMsg, _ := json.Marshal(gin.H{
+				"event":        "call_signal",
+				"type":         "call_ended",
+				"from_user_id": 0,
+				"to_user_id":   toUserID,
+				"data": gin.H{
+					"callId": callID,
+					"reason": "timeout",
+				},
+			})
+			h.Hub.SendToUser(toUserID, calleeMsg)
+
+			callerMsg, _ := json.Marshal(gin.H{
+				"event":        "call_signal",
+				"type":         "call_ended",
+				"from_user_id": 0,
+				"to_user_id":   fromUserID,
+				"data": gin.H{
+					"callId": callID,
+					"reason": "timeout",
+				},
+			})
+			h.Hub.SendToUser(fromUserID, callerMsg)
+
+			// Record missed call in DB
+			notifType := "missed_call"
+			if callType == "video" {
+				notifType = "missed_video_call"
+			}
+			h.createNotification(toUserID, fromUserID, notifType, nil)
+		})
+		h.callTimers.Store(callID, timer)
+
+	case "call_accepted":
+		if t, ok := h.callTimers.Load(callID); ok {
+			if timer, isTimer := t.(*time.Timer); isTimer {
+				timer.Stop()
+			}
+			h.callTimers.Delete(callID)
+		}
+
+	case "call_ended", "call_declined", "call_busy", "call_cancelled":
+		if t, ok := h.callTimers.Load(callID); ok {
+			if timer, isTimer := t.(*time.Timer); isTimer {
+				timer.Stop()
+			}
+			h.callTimers.Delete(callID)
+		}
+		// When caller cancels, send cancel push so callee ringing stops
+		if h.Push != nil && callID != "" {
+			go h.Push.SendCallCancel(toUserID, callID)
+		}
+	}
+}
+
+// HandleCallSignalHook is invoked by Hub when a targeted signal is sent directly over WebSocket
+func (h *Handler) HandleCallSignalHook(fromUserID uint, toUserID uint, raw map[string]interface{}) {
+	sigType, _ := raw["type"].(string)
+	var callerName, callerAvatar string
+	if callerMap, ok := raw["caller"].(map[string]interface{}); ok {
+		callerName, _ = callerMap["name"].(string)
+		callerAvatar, _ = callerMap["avatar_url"].(string)
+	}
+	h.processCallSignal(fromUserID, toUserID, sigType, callerName, callerAvatar, raw["data"])
+}
+
+// ---------------------- DEVICES & PUSH TOKENS ----------------------
+type DeviceRegisterInput struct {
+	Token     string `json:"token" binding:"required"`
+	Platform  string `json:"platform" binding:"required"` // "android", "ios", "web"
+	VoipToken string `json:"voip_token"`
+}
+
+func (h *Handler) RegisterDevice(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var input DeviceRegisterInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var device model.Device
+	err := h.DB.Where("token = ?", input.Token).First(&device).Error
+	if err == nil {
+		device.UserID = userID
+		device.Platform = input.Platform
+		if input.VoipToken != "" {
+			device.VoipToken = input.VoipToken
+		}
+		h.DB.Save(&device)
+	} else {
+		device = model.Device{
+			UserID:    userID,
+			Token:     input.Token,
+			Platform:  input.Platform,
+			VoipToken: input.VoipToken,
+		}
+		if err := h.DB.Create(&device).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register device"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "device registered", "device": device})
+}
+
+func (h *Handler) UnregisterDevice(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var input struct {
+		Token string `json:"token"`
+	}
+	_ = c.ShouldBindJSON(&input)
+
+	if input.Token != "" {
+		h.DB.Where("token = ? AND user_id = ?", input.Token, userID).Delete(&model.Device{})
+	} else {
+		h.DB.Where("user_id = ?", userID).Delete(&model.Device{})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "device unregistered"})
+}
+
+func (h *Handler) Logout(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var input struct {
+		Token string `json:"token"`
+	}
+	_ = c.ShouldBindJSON(&input)
+
+	if input.Token != "" {
+		h.DB.Where("token = ? AND user_id = ?", input.Token, userID).Delete(&model.Device{})
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
 }

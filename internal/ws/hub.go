@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,14 +47,17 @@ type userMessage struct {
 	payload []byte
 }
 
+type CallSignalHandler func(fromUserID uint, toUserID uint, raw map[string]interface{})
+
 type Hub struct {
-	mu          sync.RWMutex
-	Clients     map[*SafeConn]uint
-	UserConns   map[uint]map[*SafeConn]bool
-	BroadcastC  chan []byte
-	Register    chan registration
-	Unregister  chan *SafeConn
-	SendToUserC chan userMessage
+	mu           sync.RWMutex
+	Clients      map[*SafeConn]uint
+	UserConns    map[uint]map[*SafeConn]bool
+	BroadcastC   chan []byte
+	Register     chan registration
+	Unregister   chan *SafeConn
+	SendToUserC  chan userMessage
+	OnCallSignal CallSignalHandler
 }
 
 func NewHub() *Hub {
@@ -177,23 +182,54 @@ func (h *Hub) HandleConnections(w http.ResponseWriter, r *http.Request, userID u
 			}
 
 			// Handle targeted signaling message if 'to_user_id' is present
-			if target, ok := raw["to_user_id"]; ok {
+			if target, ok := raw["to_user_id"]; ok && target != nil {
 				var targetID uint
 				switch v := target.(type) {
 				case float64:
 					targetID = uint(v)
 				case int:
 					targetID = uint(v)
+				case int64:
+					targetID = uint(v)
+				case string:
+					if parsed, parseErr := strconv.ParseUint(v, 10, 32); parseErr == nil {
+						targetID = uint(parsed)
+					}
+				case json.Number:
+					if parsed, parseErr := v.Int64(); parseErr == nil {
+						targetID = uint(parsed)
+					}
 				}
+
 				if targetID > 0 {
 					raw["from_user_id"] = userID
 					if _, hasEvent := raw["event"]; !hasEvent {
 						raw["event"] = "call_signal"
 					}
 					outMsg, _ := json.Marshal(raw)
-					h.SendToUser(targetID, outMsg)
-					continue
+					delivered := h.SendToUser(targetID, outMsg)
+
+					// Trigger callback for push notification / background wake-up
+					if h.OnCallSignal != nil {
+						go h.OnCallSignal(userID, targetID, raw)
+					}
+
+					// Log if callee is offline
+					if !delivered {
+						log.Printf("[Hub] Targeted message to user %d could not be delivered directly (user offline)", targetID)
+					}
 				}
+
+				// CRITICAL FIX: Targeted WebRTC signals must NEVER fall through to h.Broadcast!
+				continue
+			}
+
+			// CRITICAL FIX: Guard against untargeted call_signal broadcast leaks
+			if ev, ok := raw["event"].(string); ok && ev == "call_signal" {
+				continue
+			}
+			if typ, ok := raw["type"].(string); ok && strings.HasPrefix(typ, "call_") {
+				continue
 			}
 		}
 

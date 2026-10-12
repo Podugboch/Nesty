@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { timeAgo } from "./utils/timeAgo";
 import "./App.css";
 
@@ -98,6 +98,70 @@ type CommunityChannel = {
   badgeClass: string;
   subtitle: string;
 };
+
+// Isolated duration timer: updates every 1s internally without re-rendering App or <video> elements!
+const CallDurationTimer = React.memo(({ isConnected }: { isConnected: boolean }) => {
+  const [seconds, setSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!isConnected) {
+      setSeconds(0);
+      return;
+    }
+    setSeconds(0);
+    const interval = setInterval(() => {
+      setSeconds((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isConnected]);
+
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return <span>{`${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`}</span>;
+});
+
+// Isolated video component: sets srcObject only when stream reference changes, preventing frame drops!
+const VideoFeed = React.memo(({
+  stream,
+  isMuted = false,
+  className,
+  style,
+  onClick,
+  title,
+}: {
+  stream: MediaStream | null;
+  isMuted?: boolean;
+  className?: string;
+  style?: React.CSSProperties;
+  onClick?: () => void;
+  title?: string;
+}) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (el.srcObject !== stream) {
+      el.srcObject = stream;
+    }
+    if (stream) {
+      el.play().catch(() => {});
+    }
+  }, [stream]);
+
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      muted={isMuted}
+      className={className}
+      style={style}
+      onClick={onClick}
+      title={title}
+    />
+  );
+});
 
 export default function App() {
   // -----------------------------
@@ -222,6 +286,12 @@ export default function App() {
   const iceQueueRef = useRef<any[]>([]);
   const incomingCallNotifRef = useRef<any>(null);
   const tokenRef = useRef<string | null>(null);
+  const statsIntervalRef = useRef<any>(null);
+  const lossStreakRef = useRef<number>(0);
+  const currentMaxBitrateRef = useRef<number>(800000);
+  const lastPacketsLostRef = useRef<number>(0);
+  const lastPacketsReceivedRef = useRef<number>(0);
+  const iceRestartCountRef = useRef<number>(0);
 
   // Hamburger drawer accordion state
   const [showOverview, setShowOverview] = useState(false);
@@ -685,6 +755,12 @@ export default function App() {
 
   // WebRTC media & peer connection setup
   const cleanupMediaAndCall = () => {
+    if (statsIntervalRef.current) {
+      clearInterval(statsIntervalRef.current);
+      statsIntervalRef.current = null;
+    }
+    lossStreakRef.current = 0;
+    iceRestartCountRef.current = 0;
     if (ringtoneCleanupRef.current) {
       ringtoneCleanupRef.current();
       ringtoneCleanupRef.current = null;
@@ -693,11 +769,19 @@ export default function App() {
     clearTimeout(callRingTimeoutRef.current);
 
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current.getTracks().forEach((track) => {
+        try { track.stop(); } catch {}
+      });
       localStreamRef.current = null;
     }
     setLocalStream(null);
-    remoteStreamRef.current = null;
+
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach((track) => {
+        try { track.stop(); } catch {}
+      });
+      remoteStreamRef.current = null;
+    }
     setRemoteStream(null);
     iceQueueRef.current = [];
 
@@ -713,87 +797,166 @@ export default function App() {
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
   };
 
-  const tuneBitrate = (pc: RTCPeerConnection) => {
+  const tuneBitrate = (pc: RTCPeerConnection, targetBitrate: number = 800000) => {
+    currentMaxBitrateRef.current = targetBitrate;
     try {
       const senders = pc.getSenders();
+      // Video sender parameters: maxBitrate ~800000 (or 400000 adapted), maxFramerate 30, degradationPreference "maintain-framerate"
       const videoSender = senders.find((s) => s.track && s.track.kind === "video");
       if (videoSender && videoSender.getParameters) {
         const params = videoSender.getParameters();
-        if (params.encodings && params.encodings.length > 0) {
-          params.encodings[0].maxBitrate = 1200000; // 1.2 Mbps peak, smooth 30fps
-          params.encodings[0].maxFramerate = 30;
-          params.encodings[0].priority = "high";
-          params.encodings[0].networkPriority = "high";
-          videoSender.setParameters(params).catch(() => {});
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
         }
+        params.encodings[0].maxBitrate = targetBitrate;
+        params.encodings[0].maxFramerate = 30;
+        (params as any).degradationPreference = "maintain-framerate";
+        videoSender.setParameters(params).catch(() => {});
+      }
+
+      // Audio Opus sender: maxBitrate ~32000
+      const audioSender = senders.find((s) => s.track && s.track.kind === "audio");
+      if (audioSender && audioSender.getParameters) {
+        const aParams = audioSender.getParameters();
+        if (!aParams.encodings || aParams.encodings.length === 0) {
+          aParams.encodings = [{}];
+        }
+        aParams.encodings[0].maxBitrate = 32000;
+        audioSender.setParameters(aParams).catch(() => {});
       }
     } catch {}
+  };
+
+  const startStatsMonitor = (pc: RTCPeerConnection) => {
+    if (statsIntervalRef.current) {
+      clearInterval(statsIntervalRef.current);
+    }
+    lossStreakRef.current = 0;
+    lastPacketsLostRef.current = 0;
+    lastPacketsReceivedRef.current = 0;
+
+    statsIntervalRef.current = setInterval(async () => {
+      if (!pc || pc.signalingState === "closed") {
+        clearInterval(statsIntervalRef.current);
+        return;
+      }
+      try {
+        const stats = await pc.getStats();
+        let fps = 0;
+        let packetsLost = 0;
+        let packetsReceived = 0;
+        let jitter = 0;
+        let rtt = 0;
+        let candidateType = "unknown";
+
+        stats.forEach((report) => {
+          if (report.type === "inbound-rtp" && report.kind === "video") {
+            fps = report.framesPerSecond || 0;
+            packetsLost = report.packetsLost || 0;
+            packetsReceived = report.packetsReceived || 0;
+            jitter = report.jitter || 0;
+          } else if (report.type === "candidate-pair" && report.state === "succeeded") {
+            rtt = report.currentRoundTripTime || report.roundTripTime || 0;
+            const localCandidate = stats.get(report.localCandidateId);
+            if (localCandidate) {
+              candidateType = localCandidate.candidateType || "unknown";
+            }
+          }
+        });
+
+        const deltaLost = Math.max(0, packetsLost - lastPacketsLostRef.current);
+        const deltaRecv = Math.max(0, packetsReceived - lastPacketsReceivedRef.current);
+        lastPacketsLostRef.current = packetsLost;
+        lastPacketsReceivedRef.current = packetsReceived;
+
+        const totalDelta = deltaLost + deltaRecv;
+        const lossRate = totalDelta > 0 ? (deltaLost / totalDelta) * 100 : 0;
+
+        if (import.meta.env.DEV) {
+          console.log("[WebRTC Dev Stats (3s)]", {
+            framesPerSecond: fps,
+            packetsLost,
+            lossRate: `${lossRate.toFixed(1)}%`,
+            jitter: `${(jitter * 1000).toFixed(1)}ms`,
+            roundTripTime: `${(rtt * 1000).toFixed(1)}ms`,
+            candidateType,
+            maxBitrate: currentMaxBitrateRef.current,
+          });
+        }
+
+        // If packet loss stays above 8% for two checks, lower maxBitrate to 400000. Raise it back when loss clears.
+        if (lossRate > 8) {
+          lossStreakRef.current += 1;
+          if (lossStreakRef.current >= 2 && currentMaxBitrateRef.current > 400000) {
+            tuneBitrate(pc, 400000);
+          }
+        } else {
+          if (lossStreakRef.current > 0) {
+            lossStreakRef.current = 0;
+            if (currentMaxBitrateRef.current < 800000) {
+              tuneBitrate(pc, 800000);
+            }
+          }
+        }
+      } catch {}
+    }, 3000);
   };
 
   const setupLocalMedia = async (video: boolean, requestedFacing?: "user" | "environment"): Promise<MediaStream | null> => {
     try {
       if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((t) => t.stop());
+        localStreamRef.current.getTracks().forEach((t) => {
+          try { t.stop(); } catch {}
+        });
       }
 
+      // Audio constraints separate with echo cancellation, noise suppression, AGC
       const audioConstraints: MediaTrackConstraints = {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
-        channelCount: 1,
       };
 
-      let stream: MediaStream | null = null;
       const targetFacing = requestedFacing || facingMode;
 
-      if (video) {
-        // High quality, smooth 30fps constraints optimized for mobile & desktop
-        const videoConstraints: MediaTrackConstraints = {
-          facingMode: { ideal: targetFacing },
-          width: { ideal: 960, max: 1280 },
-          height: { ideal: 540, max: 720 },
-          frameRate: { ideal: 30, max: 30, min: 20 },
-        };
+      // Video constraints: ideal 640x480 (max 720p), frameRate ideal 24, max 30, facingMode
+      const videoConstraints: MediaTrackConstraints = {
+        facingMode: { ideal: targetFacing },
+        width: { ideal: 640, max: 1280 },
+        height: { ideal: 480, max: 720 },
+        frameRate: { ideal: 24, max: 30 },
+      };
 
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: audioConstraints,
-            video: videoConstraints,
-          });
-        } catch (vErr) {
-          console.warn("Optimal video constraints failed, trying fallback:", vErr);
-          try {
-            stream = await navigator.mediaDevices.getUserMedia({
-              audio: audioConstraints,
-              video: {
-                facingMode: targetFacing,
-                frameRate: { ideal: 24, max: 30 },
-              },
-            });
-          } catch (vErr2) {
-            console.warn("FacingMode video failed, trying generic video:", vErr2);
-            try {
-              stream = await navigator.mediaDevices.getUserMedia({
-                audio: audioConstraints,
-                video: true,
-              });
-            } catch (vErr3) {
-              console.warn("Video failed entirely, falling back to audio only:", vErr3);
-              stream = await navigator.mediaDevices.getUserMedia({
-                audio: audioConstraints,
-                video: false,
-              });
-            }
-          }
-        }
-      } else {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: audioConstraints,
-          video: false,
-        });
+      let audioStream: MediaStream | null = null;
+      let videoStream: MediaStream | null = null;
+
+      try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+      } catch (aErr) {
+        console.warn("Audio getUserMedia error:", aErr);
       }
 
-      if (stream) {
+      if (video) {
+        try {
+          videoStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
+        } catch (vErr) {
+          console.warn("Optimal video constraints failed, trying basic video:", vErr);
+          try {
+            videoStream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: { facingMode: targetFacing, frameRate: { ideal: 24, max: 30 } },
+            });
+          } catch (vErr2) {
+            console.warn("Fallback video failed:", vErr2);
+          }
+        }
+      }
+
+      const stream = new MediaStream();
+      if (audioStream) audioStream.getAudioTracks().forEach((t) => stream.addTrack(t));
+      if (videoStream) videoStream.getVideoTracks().forEach((t) => stream.addTrack(t));
+
+      if (stream.getTracks().length > 0) {
         localStreamRef.current = stream;
         setLocalStream(stream);
 
@@ -808,11 +971,6 @@ export default function App() {
               peerConnectionRef.current?.addTrack(track, stream!);
             }
           });
-        }
-
-        if (localVideoRef.current && video) {
-          localVideoRef.current.srcObject = stream;
-          localVideoRef.current.play().catch(() => {});
         }
       }
       return stream;
@@ -829,45 +987,36 @@ export default function App() {
     if (!localStreamRef.current) return;
 
     try {
-      // Seamlessly acquire new video track without interrupting audio!
       const newStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: nextFacing },
-          width: { ideal: 960, max: 1280 },
-          height: { ideal: 540, max: 720 },
-          frameRate: { ideal: 30, max: 30 },
+          width: { ideal: 640, max: 1280 },
+          height: { ideal: 480, max: 720 },
+          frameRate: { ideal: 24, max: 30 },
         },
+        audio: false,
       });
 
       const newVideoTrack = newStream.getVideoTracks()[0];
       if (!newVideoTrack) return;
 
-      // Stop previous video track only
       const oldVideoTracks = localStreamRef.current.getVideoTracks();
       oldVideoTracks.forEach((t) => {
         t.stop();
         localStreamRef.current?.removeTrack(t);
       });
 
-      // Add new video track to local stream
       localStreamRef.current.addTrack(newVideoTrack);
       setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
 
-      // Update WebRTC video sender instantly with zero delay
       if (peerConnectionRef.current) {
         const videoSender = peerConnectionRef.current.getSenders().find((s) => s.track && s.track.kind === "video");
         if (videoSender) {
           await videoSender.replaceTrack(newVideoTrack);
         }
       }
-
-      // Update local preview and PIP elements
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current;
-        localVideoRef.current.play().catch(() => {});
-      }
     } catch (err) {
-      console.warn("Seamless camera switch failed, running fallback setup:", err);
+      console.warn("Camera flip fallback setup:", err);
       await setupLocalMedia(true, nextFacing);
     }
   };
@@ -954,17 +1103,34 @@ export default function App() {
         peerConnectionRef.current.close();
       } catch {}
     }
+
+    const turnUrl = import.meta.env.VITE_TURN_URL || "";
+    const turnUsername = import.meta.env.VITE_TURN_USERNAME || "";
+    const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || "";
+
+    const iceServers: RTCIceServer[] = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      { urls: "stun:stun3.l.google.com:19302" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+      { urls: "stun:global.stun.twilio.com:3478" },
+    ];
+
+    if (turnUrl) {
+      const cleanUrl = turnUrl.replace(/^(turn:)/, "").replace(/\?.*$/, "");
+      iceServers.push({
+        urls: [
+          `turn:${cleanUrl}?transport=udp`,
+          `turn:${cleanUrl}?transport=tcp`,
+        ],
+        username: turnUsername,
+        credential: turnCredential,
+      });
+    }
+
     const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun2.l.google.com:19302" },
-        { urls: "stun:stun3.l.google.com:19302" },
-        { urls: "stun:stun4.l.google.com:19302" },
-        { urls: "stun:stun.cloudflare.com:3478" },
-        { urls: "stun:global.stun.twilio.com:3478" },
-        { urls: "stun:stun.services.mozilla.com" },
-      ],
+      iceServers,
       iceCandidatePoolSize: 10,
       bundlePolicy: "max-bundle",
       rtcpMuxPolicy: "require",
@@ -994,16 +1160,41 @@ export default function App() {
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log("[WebRTC] ICE Connection State:", pc.iceConnectionState);
+      if (import.meta.env.DEV) {
+        console.log("[WebRTC] ICE Connection State:", pc.iceConnectionState);
+      }
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
         setActiveCall((prev) => (prev ? { ...prev, status: "connected", statusText: "Connected" } : null));
-        tuneBitrate(pc);
+        iceRestartCountRef.current = 0;
+        tuneBitrate(pc, 800000);
+        startStatsMonitor(pc);
       } else if (pc.iceConnectionState === "disconnected") {
         setActiveCall((prev) => (prev ? { ...prev, statusText: "Reconnecting..." } : null));
+        if (iceRestartCountRef.current === 0) {
+          iceRestartCountRef.current = 1;
+          try {
+            pc.restartIce();
+          } catch {}
+          setTimeout(() => {
+            if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed") {
+              setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Connection lost" } : null));
+              setTimeout(() => cleanupMediaAndCall(), 2000);
+            }
+          }, 7000);
+        }
       } else if (pc.iceConnectionState === "failed") {
-        try {
-          pc.restartIce();
-        } catch {}
+        if (iceRestartCountRef.current === 0) {
+          iceRestartCountRef.current = 1;
+          try {
+            pc.restartIce();
+          } catch {
+            setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Connection lost" } : null));
+            setTimeout(() => cleanupMediaAndCall(), 2000);
+          }
+        } else {
+          setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Connection lost" } : null));
+          setTimeout(() => cleanupMediaAndCall(), 2000);
+        }
       }
     };
 
@@ -1018,15 +1209,7 @@ export default function App() {
       }
       setRemoteStream(rStream);
 
-      // Bind to remote video feed
-      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== rStream) {
-        remoteVideoRef.current.srcObject = rStream;
-      }
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.play().catch(() => {});
-      }
-
-      // Bind to remote audio element for clean, unmuted audio output without video echo
+      // Bind remote audio element for clean, unmuted audio output without video echo
       if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== rStream) {
         remoteAudioRef.current.srcObject = rStream;
       }
@@ -1327,6 +1510,11 @@ export default function App() {
       const pc = createPeerConnection(fromUserId, isVideo);
       try {
         const offer = await pc.createOffer();
+        if (offer.sdp) {
+          offer.sdp = offer.sdp.replace(/(a=fmtp:\d+ .*)/g, (line) =>
+            line.toLowerCase().includes("opus") && !line.includes("usedtx=1") ? `${line};usedtx=1` : line
+          );
+        }
         await pc.setLocalDescription(offer);
         sendCallSignal("webrtc_offer", fromUserId, { sdp: offer, isVideo });
       } catch (err) {
@@ -1436,8 +1624,13 @@ export default function App() {
             } catch {}
           }
           const answer = await pc.createAnswer();
+          if (answer.sdp) {
+            answer.sdp = answer.sdp.replace(/(a=fmtp:\d+ .*)/g, (line) =>
+              line.toLowerCase().includes("opus") && !line.includes("usedtx=1") ? `${line};usedtx=1` : line
+            );
+          }
           await pc.setLocalDescription(answer);
-          tuneBitrate(pc);
+          tuneBitrate(pc, 800000);
           sendCallSignal("webrtc_answer", fromUserId, { sdp: answer, isVideo });
         } catch (err) {
           console.error("Failed to handle offer", err);
@@ -1455,7 +1648,7 @@ export default function App() {
               await pc.addIceCandidate(new RTCIceCandidate(cand));
             } catch {}
           }
-          tuneBitrate(pc);
+          tuneBitrate(pc, 800000);
         } catch (err) {
           console.error("Failed to set remote description answer", err);
         }
@@ -1525,36 +1718,15 @@ export default function App() {
     }
   };
 
-  // Duration counter: only runs when call is CONNECTED
+  // Safe binding for remote audio only (video is managed jitter-free by VideoFeed component)
   useEffect(() => {
-    if (!activeCall || activeCall.status !== "connected") return;
-    const durationTimer = setInterval(() => {
-      setActiveCall((prev) => (prev && prev.status === "connected" ? { ...prev, duration: prev.duration + 1 } : null));
-    }, 1000);
-    return () => clearInterval(durationTimer);
-  }, [activeCall?.status]);
-
-  // Bind video and audio elements on media state update
-  useEffect(() => {
-    if (activeCall?.isVideo && localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
-      localVideoRef.current.play().catch(() => {});
-    }
-    if (activeCall?.isVideo && remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-      remoteVideoRef.current.play().catch(() => {});
-    }
     if (remoteAudioRef.current && remoteStream) {
-      remoteAudioRef.current.srcObject = remoteStream;
+      if (remoteAudioRef.current.srcObject !== remoteStream) {
+        remoteAudioRef.current.srcObject = remoteStream;
+      }
       remoteAudioRef.current.play().catch(() => {});
     }
-  }, [activeCall?.status, activeCall?.isVideo, localStream, remoteStream]);
-
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-  };
+  }, [remoteStream]);
 
   const fetchNotifications = async () => {
     if (!token) return;
@@ -1574,10 +1746,104 @@ export default function App() {
     }
   };
 
+  const registerDevicePushToken = async (authToken: string) => {
+    try {
+      let deviceToken = localStorage.getItem("devnest_device_token");
+      let platform = "web";
+      const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.();
+
+      if (isCapacitor) {
+        platform = (window as any).Capacitor.getPlatform() || "android";
+        if ((window as any).PushNotifications) {
+          try {
+            const perm = await (window as any).PushNotifications.requestPermissions();
+            if (perm.receive === "granted") {
+              await (window as any).PushNotifications.register();
+            }
+          } catch {}
+        }
+      }
+
+      if (!deviceToken) {
+        deviceToken = (isCapacitor ? "mobile_" : "web_") + Math.random().toString(36).substring(2) + "_" + Date.now();
+        localStorage.setItem("devnest_device_token", deviceToken);
+      }
+
+      await fetch(`${API_URL}/api/devices`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          token: deviceToken,
+          platform,
+        }),
+      });
+    } catch (err) {
+      console.warn("Device token registration warning:", err);
+    }
+  };
+
+  const unregisterDevicePushToken = async (authToken: string) => {
+    const deviceToken = localStorage.getItem("devnest_device_token");
+    if (deviceToken && authToken) {
+      try {
+        await fetch(`${API_URL}/api/devices`, {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ token: deviceToken }),
+        });
+      } catch {}
+    }
+  };
+
+  // Register device push token on auth mount
   useEffect(() => {
     if (!token) return;
     fetchNotifications();
+    registerDevicePushToken(token);
   }, [token]);
+
+  // Deep-link / native intent handler when incoming call notification is tapped
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const action = params.get("action");
+    const callId = params.get("callId");
+    const callerIdStr = params.get("callerId");
+    if (action === "answer" && callerIdStr) {
+      setTimeout(() => {
+        acceptIncomingCall();
+      }, 500);
+    } else if (action === "decline" && callerIdStr) {
+      const callerId = parseInt(callerIdStr, 10);
+      if (!isNaN(callerId)) {
+        sendCallSignal("call_declined", callerId, { callId });
+      }
+    }
+
+    if ((window as any).Capacitor?.Plugins?.App) {
+      try {
+        (window as any).Capacitor.Plugins.App.addListener("appUrlOpen", (data: any) => {
+          try {
+            const url = new URL(data.url);
+            const act = url.searchParams.get("action");
+            const cId = url.searchParams.get("callId");
+            const caller = url.searchParams.get("callerId");
+            if (act === "answer") {
+              acceptIncomingCall();
+            } else if (act === "decline" && caller) {
+              const cNum = parseInt(caller, 10);
+              if (!isNaN(cNum)) sendCallSignal("call_declined", cNum, { callId: cId });
+            }
+          } catch {}
+        });
+      } catch {}
+    }
+  }, []);
 
   // -----------------------------
   // WEBSOCKET FOR NOTIFICATIONS & CALL SIGNALING
@@ -2035,6 +2301,9 @@ export default function App() {
 
   const handleLogout = () => {
     if (confirm("Are you sure you want to log out?")) {
+      if (token) {
+        unregisterDevicePushToken(token);
+      }
       localStorage.removeItem("token");
       setToken(null);
       setUser(null);
@@ -4623,7 +4892,9 @@ export default function App() {
                 <div className={`call-status-badge ${activeCall.status === "connected" ? "connected" : ""}`}>
                   {activeCall.status === "calling" && (activeCall.statusText || "Calling...")}
                   {activeCall.status === "ringing" && (activeCall.statusText || "🔔 Ringing...")}
-                  {activeCall.status === "connected" && `Connected • ${formatDuration(activeCall.duration)}`}
+                  {activeCall.status === "connected" && (
+                    <>Connected • <CallDurationTimer isConnected={activeCall.status === "connected"} /></>
+                  )}
                   {activeCall.status === "ended" && (activeCall.statusText || "Call ended")}
                 </div>
               </>
@@ -4645,7 +4916,7 @@ export default function App() {
                       {activeCall.partner.name || activeCall.partner.username}
                     </div>
                     <div style={{ fontSize: "11px", color: "#38bdf8" }}>
-                      Connected • {formatDuration(activeCall.duration)}
+                      Connected • <CallDurationTimer isConnected={activeCall.status === "connected"} />
                     </div>
                   </div>
                 </div>
@@ -4663,28 +4934,17 @@ export default function App() {
             {/* If Video Call: real WebRTC remote video feed + local PIP video */}
             {activeCall.isVideo ? (
               <div className="call-video-grid">
-                <video
-                  ref={(el) => {
-                    remoteVideoRef.current = el;
-                    if (el && remoteStreamRef.current) el.srcObject = remoteStreamRef.current;
-                  }}
-                  autoPlay
-                  playsInline
-                  muted
+                <VideoFeed
+                  stream={remoteStream}
                   className="call-video-element"
                   style={{ display: activeCall.status === "connected" ? "block" : "none" }}
                 />
 
                 {activeCall.status !== "connected" && (
                   <div className="call-calling-preview-container">
-                    <video
-                      ref={(el) => {
-                        localVideoRef.current = el;
-                        if (el && localStreamRef.current) el.srcObject = localStreamRef.current;
-                      }}
-                      autoPlay
-                      playsInline
-                      muted
+                    <VideoFeed
+                      stream={localStream}
+                      isMuted={true}
                       className="call-calling-preview-video"
                       style={{ transform: facingMode === "user" ? "scaleX(-1)" : "none" }}
                     />
@@ -4699,14 +4959,9 @@ export default function App() {
 
                 {activeCall.status === "connected" && (
                   <div className="call-video-pip" onClick={flipCamera} title="Click to flip camera">
-                    <video
-                      ref={(el) => {
-                        localVideoRef.current = el;
-                        if (el && localStreamRef.current) el.srcObject = localStreamRef.current;
-                      }}
-                      autoPlay
-                      playsInline
-                      muted
+                    <VideoFeed
+                      stream={localStream}
+                      isMuted={true}
                       className="call-video-pip-element"
                       style={{ transform: facingMode === "user" ? "scaleX(-1)" : "none" }}
                     />
