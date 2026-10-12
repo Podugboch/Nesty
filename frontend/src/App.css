@@ -909,6 +909,9 @@
   justify-content: flex-end;
   margin-top: -38px;
   margin-bottom: 12px;
+  padding-left: 96px;
+  position: relative;
+  z-index: 5;
 }
 
 .edit-profile-pill-btn {
@@ -2503,7 +2506,8 @@
 .profile-action-buttons {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -2512,14 +2516,15 @@
   color: #ffffff;
   border: none;
   font-weight: 600;
-  font-size: 13.5px;
-  padding: 8px 16px;
+  font-size: 13px;
+  padding: 6px 14px;
   border-radius: 9999px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   transition: all 0.2s ease;
+  white-space: nowrap;
 }
 
 .profile-chat-btn:hover {
@@ -2532,14 +2537,15 @@
   color: #ffffff;
   border: none;
   font-weight: 600;
-  font-size: 13.5px;
-  padding: 8px 16px;
+  font-size: 13px;
+  padding: 6px 14px;
   border-radius: 9999px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   transition: all 0.2s ease;
+  white-space: nowrap;
 }
 
 .profile-call-btn:hover {
@@ -2552,14 +2558,15 @@
   color: #ffffff;
   border: none;
   font-weight: 600;
-  font-size: 13.5px;
-  padding: 8px 16px;
+  font-size: 13px;
+  padding: 6px 14px;
   border-radius: 9999px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   transition: all 0.2s ease;
+  white-space: nowrap;
 }
 
 .profile-videocall-btn:hover {
@@ -2738,11 +2745,180 @@
 }
 
 .chat-drawer-footer {
-  padding: 12px 14px;
+  padding: 10px 14px;
   border-top: 1px solid var(--border);
   display: flex;
+  flex-direction: column;
   gap: 8px;
   background: var(--surface);
+}
+
+.chat-drawer-footer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-attach-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.chat-attach-btn:hover {
+  background: var(--surface-subtle);
+  color: var(--text-h);
+  border-color: var(--text-muted);
+}
+
+.chat-file-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  gap: 10px;
+}
+
+.chat-file-preview-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-file-preview-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.chat-file-preview-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.chat-file-preview-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-file-preview-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-h);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-file-preview-size {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.chat-file-preview-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  padding: 2px 4px;
+}
+
+.chat-file-preview-remove:hover {
+  color: #ef4444;
+}
+
+.chat-msg-media-img {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: 10px;
+  display: block;
+  margin-bottom: 6px;
+  object-fit: cover;
+  cursor: pointer;
+}
+
+.chat-msg-media-video {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: 10px;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.chat-msg-media-audio {
+  width: 100%;
+  max-width: 250px;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.chat-msg-doc-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  text-decoration: none;
+  color: inherit;
+  margin-bottom: 6px;
+  transition: background 0.2s;
+}
+
+.chat-msg-row.outgoing .chat-msg-doc-pill {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.chat-msg-doc-pill:hover {
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.chat-msg-row.outgoing .chat-msg-doc-pill:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.doc-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.doc-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-size {
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.doc-dl-icon {
+  font-size: 14px;
+  opacity: 0.8;
 }
 
 .chat-drawer-input {

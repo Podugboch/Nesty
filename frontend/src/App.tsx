@@ -53,6 +53,10 @@ type ChatMessage = {
   sender_id: number;
   recipient_id: number;
   content: string;
+  media_url?: string;
+  media_type?: string;
+  file_name?: string;
+  file_size?: number;
   created_at?: string;
 };
 
@@ -141,13 +145,14 @@ const VideoFeed = React.memo(({
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
+    el.muted = !!isMuted;
     if (el.srcObject !== stream) {
       el.srcObject = stream;
     }
     if (stream) {
       el.play().catch(() => {});
     }
-  }, [stream]);
+  }, [stream, isMuted]);
 
   return (
     <video
@@ -156,7 +161,10 @@ const VideoFeed = React.memo(({
       playsInline
       muted={isMuted}
       className={className}
-      style={style}
+      style={{
+        ...style,
+        objectFit: "cover",
+      }}
       onClick={onClick}
       title={title}
     />
@@ -259,8 +267,13 @@ export default function App() {
   const [activeChatPartner, setActiveChatPartner] = useState<User | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInputText, setChatInputText] = useState("");
+  const [chatSelectedFile, setChatSelectedFile] = useState<File | null>(null);
+  const [chatFilePreview, setChatFilePreview] = useState<string | null>(null);
+  const [isChatUploading, setIsChatUploading] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const chatFileInputRef = useRef<HTMLInputElement | null>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const activeChatPartnerRef = useRef<User | null>(null);
 
   const [activeCall, setActiveCall] = useState<CallState | null>(null);
   const [incomingCall, setIncomingCall] = useState<IncomingCallState | null>(null);
@@ -499,8 +512,33 @@ export default function App() {
     };
   }, []);
 
+  const handleChatFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setChatSelectedFile(file);
+    if (file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setChatFilePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setChatFilePreview(null);
+    }
+  };
+
+  const removeChatSelectedFile = () => {
+    setChatSelectedFile(null);
+    setChatFilePreview(null);
+    if (chatFileInputRef.current) {
+      chatFileInputRef.current.value = "";
+    }
+  };
+
   const startChatWithUser = async (targetUser: User) => {
     setActiveChatPartner(targetUser);
+    activeChatPartnerRef.current = targetUser;
+    removeChatSelectedFile();
     setIsChatLoading(true);
     try {
       const res = await fetch(`${API_URL}/api/messages/${targetUser.id}`, {
@@ -518,14 +556,67 @@ export default function App() {
   };
 
   const sendChatMessage = async () => {
-    if (!chatInputText.trim() || !activeChatPartner || !token) return;
+    const hasText = !!chatInputText.trim();
+    const hasFile = !!chatSelectedFile;
+    if ((!hasText && !hasFile) || !activeChatPartner || !token || isChatUploading) return;
+
     const content = chatInputText.trim();
+    const fileToSend = chatSelectedFile;
+    const filePreview = chatFilePreview;
+
     setChatInputText("");
+    removeChatSelectedFile();
+
+    let uploadedUrl = "";
+    let mediaType = "";
+    let fileName = "";
+    let fileSize = 0;
+
+    if (fileToSend) {
+      setIsChatUploading(true);
+      fileName = fileToSend.name;
+      fileSize = fileToSend.size;
+
+      // Determine media type
+      if (fileToSend.type.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(fileName)) {
+        mediaType = "image";
+      } else if (fileToSend.type.startsWith("video/") || /\.(mp4|webm|mov|mkv)$/i.test(fileName)) {
+        mediaType = "video";
+      } else if (fileToSend.type.startsWith("audio/") || /\.(mp3|wav|ogg|m4a|aac)$/i.test(fileName)) {
+        mediaType = "audio";
+      } else {
+        mediaType = "document";
+      }
+
+      try {
+        const formData = new FormData();
+        formData.append("file", fileToSend);
+        const uploadRes = await fetch(`${API_URL}/api/upload`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        });
+        if (uploadRes.ok) {
+          const uploadData = await uploadRes.json();
+          uploadedUrl = uploadData.url;
+        } else {
+          console.error("Upload failed in chat");
+        }
+      } catch (upErr) {
+        console.error("Upload exception in chat", upErr);
+      } finally {
+        setIsChatUploading(false);
+      }
+    }
 
     const tempMsg: ChatMessage = {
       sender_id: user?.id || 0,
       recipient_id: activeChatPartner.id,
       content,
+      media_url: uploadedUrl || (filePreview || undefined),
+      media_type: mediaType || undefined,
+      file_name: fileName || undefined,
+      file_size: fileSize || undefined,
       created_at: new Date().toISOString(),
     };
     setChatMessages((prev) => [...prev, tempMsg]);
@@ -540,6 +631,10 @@ export default function App() {
         body: JSON.stringify({
           recipient_id: activeChatPartner.id,
           content,
+          media_url: uploadedUrl,
+          media_type: mediaType,
+          file_name: fileName,
+          file_size: fileSize,
         }),
       });
       if (res.ok) {
@@ -578,6 +673,10 @@ export default function App() {
   }, [activeChatPartner, token]);
 
   // Keep refs in sync with state
+  useEffect(() => {
+    activeChatPartnerRef.current = activeChatPartner;
+  }, [activeChatPartner]);
+
   useEffect(() => {
     activeCallRef.current = activeCall;
   }, [activeCall]);
@@ -919,44 +1018,47 @@ export default function App() {
 
       const targetFacing = requestedFacing || facingMode;
 
-      // Video constraints: ideal 640x480 (max 720p), frameRate ideal 24, max 30, facingMode
+      // Video constraints: ideal 640x480 (max 640x480), frameRate ideal 24, max 30, facingMode
       const videoConstraints: MediaTrackConstraints = {
         facingMode: { ideal: targetFacing },
-        width: { ideal: 640, max: 1280 },
-        height: { ideal: 480, max: 720 },
+        width: { ideal: 640, max: 640 },
+        height: { ideal: 480, max: 480 },
         frameRate: { ideal: 24, max: 30 },
       };
 
-      let audioStream: MediaStream | null = null;
-      let videoStream: MediaStream | null = null;
-
-      try {
-        audioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
-      } catch (aErr) {
-        console.warn("Audio getUserMedia error:", aErr);
-      }
-
+      let stream: MediaStream | null = null;
       if (video) {
         try {
-          videoStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints });
+          // Acquire both audio and video in ONE unified session for hardware synchronization
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints,
+            video: videoConstraints,
+          });
         } catch (vErr) {
-          console.warn("Optimal video constraints failed, trying basic video:", vErr);
+          console.warn("Unified getUserMedia failed, trying relaxed video fallback:", vErr);
           try {
-            videoStream = await navigator.mediaDevices.getUserMedia({
-              audio: false,
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: audioConstraints,
               video: { facingMode: targetFacing, frameRate: { ideal: 24, max: 30 } },
             });
           } catch (vErr2) {
-            console.warn("Fallback video failed:", vErr2);
+            console.warn("Fallback video failed, falling back to audio only:", vErr2);
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+            } catch (aErr) {
+              console.error("Audio getUserMedia failed:", aErr);
+            }
           }
+        }
+      } else {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+        } catch (aErr) {
+          console.error("Audio getUserMedia failed:", aErr);
         }
       }
 
-      const stream = new MediaStream();
-      if (audioStream) audioStream.getAudioTracks().forEach((t) => stream.addTrack(t));
-      if (videoStream) videoStream.getVideoTracks().forEach((t) => stream.addTrack(t));
-
-      if (stream.getTracks().length > 0) {
+      if (stream && stream.getTracks().length > 0) {
         localStreamRef.current = stream;
         setLocalStream(stream);
 
@@ -990,8 +1092,8 @@ export default function App() {
       const newStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: nextFacing },
-          width: { ideal: 640, max: 1280 },
-          height: { ideal: 480, max: 720 },
+          width: { ideal: 640, max: 640 },
+          height: { ideal: 480, max: 480 },
           frameRate: { ideal: 24, max: 30 },
         },
         audio: false,
@@ -1251,64 +1353,34 @@ export default function App() {
     setActiveCall((prev) => (prev ? { ...prev, status: "ringing", statusText: "🔔 Ringing..." } : null));
 
     // Send call invite to callee
-    const res = await sendCallSignal("call_invite", targetUser.id, {
+    await sendCallSignal("call_invite", targetUser.id, {
       isVideo: video,
       callId: `${Date.now()}-${user?.id}`,
     });
 
-    const isOnline = res && res.online;
-
-    if (!isOnline) {
-      // If the callee is not online:
-      // Phone rings for 6.5s, then automatically disconnects with offline notification
-      callDisconnectTimeoutRef.current = setTimeout(() => {
-        if (ringtoneCleanupRef.current) {
-          ringtoneCleanupRef.current();
-          ringtoneCleanupRef.current = null;
-        }
-        playDisconnectTone();
-        sendMissedCallNotification(targetUser.id, video);
-
-        setActiveCall((prev) =>
-          prev
-            ? {
-                ...prev,
-                status: "ended",
-                statusText: "User is offline / unavailable",
-              }
-            : null
-        );
-
-        setTimeout(() => {
-          setActiveCall(null);
-          cleanupMediaAndCall();
-        }, 2500);
-      }, 6500);
-    } else {
-      // If online: wait for callee to accept or decline (32s timeout)
-      callDisconnectTimeoutRef.current = setTimeout(() => {
-        if (ringtoneCleanupRef.current) {
-          ringtoneCleanupRef.current();
-          ringtoneCleanupRef.current = null;
-        }
-        playDisconnectTone();
-        sendCallSignal("call_timeout", targetUser.id);
-        sendMissedCallNotification(targetUser.id, video);
-        setActiveCall((prev) =>
-          prev
-            ? {
-                ...prev,
-                status: "ended",
-                statusText: "No answer",
-              }
-            : null
-        );
-        setTimeout(() => {
-          setActiveCall(null);
-          cleanupMediaAndCall();
-        }, 2000);
-      }, 32000);
-    }
+    // Ring steadily for 45s (gives recipient plenty of time to receive push notification, unlock, and answer)
+    callDisconnectTimeoutRef.current = setTimeout(() => {
+      if (ringtoneCleanupRef.current) {
+        ringtoneCleanupRef.current();
+        ringtoneCleanupRef.current = null;
+      }
+      playDisconnectTone();
+      sendCallSignal("call_timeout", targetUser.id);
+      sendMissedCallNotification(targetUser.id, video);
+      setActiveCall((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "ended",
+              statusText: "No answer",
+            }
+          : null
+      );
+      setTimeout(() => {
+        setActiveCall(null);
+        cleanupMediaAndCall();
+      }, 2000);
+    }, 45000);
   };
 
   const endCall = () => {
@@ -1452,6 +1524,21 @@ export default function App() {
       });
       if (ringtoneCleanupRef.current) ringtoneCleanupRef.current();
       ringtoneCleanupRef.current = startIncomingRingtone();
+
+      if (callRingTimeoutRef.current) clearTimeout(callRingTimeoutRef.current);
+      callRingTimeoutRef.current = setTimeout(() => {
+        if (incomingCallRef.current) {
+          if (ringtoneCleanupRef.current) {
+            ringtoneCleanupRef.current();
+            ringtoneCleanupRef.current = null;
+          }
+          if (incomingCallNotifRef.current) {
+            incomingCallNotifRef.current.close();
+            incomingCallNotifRef.current = null;
+          }
+          setIncomingCall(null);
+        }
+      }, 48000);
 
       // Show system notification when app is backgrounded
       if (typeof window !== "undefined" && "Notification" in window) {
@@ -1879,6 +1966,19 @@ export default function App() {
               fetchCommunityStats();
               return;
             }
+            if (data.event === "message" && data.message) {
+              const incoming = data.message;
+              if (
+                activeChatPartnerRef.current &&
+                (incoming.sender_id === activeChatPartnerRef.current.id || incoming.recipient_id === activeChatPartnerRef.current.id)
+              ) {
+                setChatMessages((prev) => {
+                  if (prev.some((m) => m.id === incoming.id)) return prev;
+                  return [...prev, incoming];
+                });
+              }
+              return;
+            }
             if (data.event === "notification" && data.notification) {
               setNotifications((prev) => [data.notification, ...prev]);
               setUnreadCount((prev) => prev + 1);
@@ -1993,7 +2093,7 @@ export default function App() {
     try {
       const commParam = comm && comm !== "all" ? `&community=${encodeURIComponent(comm)}` : "";
       const res = await fetch(
-        `${API_URL}/api/posts?page=${pageNum}&limit=15${commParam}`,
+        `${API_URL}/api/posts?page=${pageNum}&limit=30${commParam}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
@@ -4737,7 +4837,52 @@ export default function App() {
                 return (
                   <div key={msg.id || i} className={`chat-msg-row ${isMine ? "outgoing" : "incoming"}`}>
                     <div className="chat-msg-bubble">
-                      <div>{msg.content}</div>
+                      {msg.media_url && (
+                        <>
+                          {msg.media_type === "image" ? (
+                            <a href={msg.media_url} target="_blank" rel="noopener noreferrer">
+                              <img
+                                src={msg.media_url}
+                                alt={msg.file_name || "Attachment"}
+                                className="chat-msg-media-img"
+                              />
+                            </a>
+                          ) : msg.media_type === "video" ? (
+                            <video
+                              src={msg.media_url}
+                              controls
+                              playsInline
+                              className="chat-msg-media-video"
+                            />
+                          ) : msg.media_type === "audio" ? (
+                            <audio
+                              src={msg.media_url}
+                              controls
+                              className="chat-msg-media-audio"
+                            />
+                          ) : (
+                            <a
+                              href={msg.media_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              download={msg.file_name}
+                              className="chat-msg-doc-pill"
+                            >
+                              <span className="doc-icon">📄</span>
+                              <div className="doc-info">
+                                <span className="doc-name">{msg.file_name || "Document"}</span>
+                                <span className="doc-size">
+                                  {msg.file_size
+                                    ? `${(msg.file_size / 1024).toFixed(0)} KB`
+                                    : "Download"}
+                                </span>
+                              </div>
+                              <span className="doc-dl-icon">⬇</span>
+                            </a>
+                          )}
+                        </>
+                      )}
+                      {msg.content && <div>{msg.content}</div>}
                       {msg.created_at && (
                         <span className="chat-msg-time">{timeAgo(msg.created_at)}</span>
                       )}
@@ -4756,17 +4901,79 @@ export default function App() {
               sendChatMessage();
             }}
           >
+            {/* Hidden file input for media & docs */}
             <input
-              type="text"
-              className="chat-drawer-input"
-              placeholder={`Message @${activeChatPartner.username}...`}
-              value={chatInputText}
-              onChange={(e) => setChatInputText(e.target.value)}
-              autoFocus
+              type="file"
+              ref={chatFileInputRef}
+              style={{ display: "none" }}
+              accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.csv"
+              onChange={handleChatFileSelect}
             />
-            <button type="submit" className="chat-drawer-send-btn" disabled={!chatInputText.trim()}>
-              Send
-            </button>
+
+            {/* Selected file preview pill */}
+            {chatSelectedFile && (
+              <div className="chat-file-preview">
+                <div className="chat-file-preview-info">
+                  {chatFilePreview ? (
+                    <img src={chatFilePreview} alt="Preview" className="chat-file-preview-thumb" />
+                  ) : (
+                    <span className="chat-file-preview-icon">
+                      {chatSelectedFile.type.startsWith("video/")
+                        ? "🎥"
+                        : chatSelectedFile.type.startsWith("audio/")
+                        ? "🎵"
+                        : "📄"}
+                    </span>
+                  )}
+                  <div className="chat-file-preview-meta">
+                    <span className="chat-file-preview-name">{chatSelectedFile.name}</span>
+                    <span className="chat-file-preview-size">
+                      {(chatSelectedFile.size / 1024).toFixed(0)} KB
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="chat-file-preview-remove"
+                  onClick={removeChatSelectedFile}
+                  title="Remove attachment"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            <div className="chat-drawer-footer-row">
+              <button
+                type="button"
+                className="chat-attach-btn"
+                title="Attach media or document"
+                onClick={() => chatFileInputRef.current?.click()}
+                disabled={isChatUploading}
+              >
+                📎
+              </button>
+              <input
+                type="text"
+                className="chat-drawer-input"
+                placeholder={
+                  isChatUploading
+                    ? "Uploading attachment..."
+                    : `Message @${activeChatPartner.username}...`
+                }
+                value={chatInputText}
+                onChange={(e) => setChatInputText(e.target.value)}
+                autoFocus
+                disabled={isChatUploading}
+              />
+              <button
+                type="submit"
+                className="chat-drawer-send-btn"
+                disabled={(!chatInputText.trim() && !chatSelectedFile) || isChatUploading}
+              >
+                {isChatUploading ? "..." : "Send"}
+              </button>
+            </div>
           </form>
         </div>
       )}
@@ -4936,6 +5143,7 @@ export default function App() {
               <div className="call-video-grid">
                 <VideoFeed
                   stream={remoteStream}
+                  isMuted={true}
                   className="call-video-element"
                   style={{ display: activeCall.status === "connected" ? "block" : "none" }}
                 />

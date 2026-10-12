@@ -215,7 +215,7 @@ func (h *Handler) UploadMedia(c *gin.Context) {
 func (h *Handler) GetPosts(c *gin.Context) {
 	var posts []model.Post
 
-	limit := 10
+	limit := 30
 	page := 1
 
 	if l := c.Query("limit"); l != "" {
@@ -240,11 +240,13 @@ func (h *Handler) GetPosts(c *gin.Context) {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		})
 
-
-	if c.Query("following") == "true" {
-		var followingIDs []uint
+	var followingIDs []uint
+	if userID > 0 {
 		h.DB.Model(&model.Follow{}).Where("follower_id = ?", userID).Pluck("following_id", &followingIDs)
 		followingIDs = append(followingIDs, userID) // include your own posts too
+	}
+
+	if c.Query("following") == "true" {
 		query = query.Where("user_id IN ?", followingIDs)
 	}
 
@@ -257,8 +259,14 @@ func (h *Handler) GetPosts(c *gin.Context) {
 		}
 	}
 
+	if len(followingIDs) > 0 && c.Query("following") != "true" {
+		// Priority on posts from people we follow first, then other users follow
+		query = query.Order(gorm.Expr("CASE WHEN user_id IN (?) THEN 0 ELSE 1 END, created_at desc", followingIDs))
+	} else {
+		query = query.Order("created_at desc")
+	}
+
 	if err := query.
-		Order("created_at desc").
 		Limit(limit).
 		Offset(offset).
 		Find(&posts).Error; err != nil {
@@ -1245,7 +1253,11 @@ func (h *Handler) GetChatHistory(c *gin.Context) {
 func (h *Handler) SendMessage(c *gin.Context) {
 	var input struct {
 		RecipientID uint   `json:"recipient_id" binding:"required"`
-		Content     string `json:"content" binding:"required"`
+		Content     string `json:"content"`
+		MediaURL    string `json:"media_url"`
+		MediaType   string `json:"media_type"`
+		FileName    string `json:"file_name"`
+		FileSize    int64  `json:"file_size"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1253,8 +1265,9 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	}
 
 	content := strings.TrimSpace(input.Content)
-	if content == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "message cannot be empty"})
+	mediaURL := strings.TrimSpace(input.MediaURL)
+	if content == "" && mediaURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "message must contain text or an attachment"})
 		return
 	}
 
@@ -1263,12 +1276,23 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		SenderID:    userID,
 		RecipientID: input.RecipientID,
 		Content:     content,
+		MediaURL:    mediaURL,
+		MediaType:   input.MediaType,
+		FileName:    input.FileName,
+		FileSize:    input.FileSize,
 	}
 
 	if err := h.DB.Create(&msg).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save message"})
 		return
 	}
+
+	// Deliver live message over WebSocket if recipient is online
+	msgJSON, _ := json.Marshal(gin.H{
+		"event":   "message",
+		"message": msg,
+	})
+	h.Hub.SendToUser(input.RecipientID, msgJSON)
 
 	if userID != input.RecipientID {
 		notif := model.Notification{
@@ -1401,8 +1425,8 @@ func (h *Handler) processCallSignal(fromUserID, toUserID uint, signalType, calle
 			})
 		}
 
-		// Ring timeout (about 30 seconds)
-		timer := time.AfterFunc(30*time.Second, func() {
+		// Ring timeout (about 45 seconds)
+		timer := time.AfterFunc(45*time.Second, func() {
 			h.callTimers.Delete(callID)
 
 			// Missed call push notification
