@@ -281,6 +281,7 @@ export default function App() {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const [onlineModalOpen, setOnlineModalOpen] = useState(false);
+  const [apkModalOpen, setApkModalOpen] = useState(false);
 
   // WebRTC & Calling Audio / Video Refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -3347,6 +3348,21 @@ export default function App() {
           </button>
 
           <button
+            data-nav="mobile-apk"
+            className="nav-item-btn"
+            onClick={() => {
+              setApkModalOpen(true);
+              setMobileMenuOpen(false);
+            }}
+          >
+            <span className="nav-item-icon">📱</span>
+            <span>Get Android APK</span>
+            <span className="nav-unread-badge" style={{ background: "#2563eb", marginLeft: "auto", fontSize: "10px", padding: "2px 6px" }}>
+              QR
+            </span>
+          </button>
+
+          <button
             data-nav="logout"
             className="nav-item-btn logout-nav-item"
             onClick={handleLogout}
@@ -3386,19 +3402,21 @@ export default function App() {
           <div className="drawer-accordion-group">
             <div className="mobile-divider" style={{ margin: "12px 0 8px 0" }} />
 
-            {/* ANDROID APP DOWNLOAD */}
-            <a
-              href="/DevNest.apk"
-              download="DevNest.apk"
+            {/* ANDROID APP DOWNLOAD & QR CODE */}
+            <button
+              type="button"
               className="drawer-menu-item-btn"
-              style={{ textDecoration: "none", color: "inherit" }}
+              onClick={() => {
+                setApkModalOpen(true);
+                setMobileMenuOpen(false);
+              }}
             >
               <div className="drawer-menu-item-left">
                 <span className="drawer-menu-icon">📱</span>
-                <span className="drawer-menu-title">Download Android App</span>
+                <span className="drawer-menu-title">Download APK & QR Barcode</span>
               </div>
-              <span className="drawer-menu-chevron" style={{ fontSize: "14px" }}>↓</span>
-            </a>
+              <span className="drawer-menu-chevron" style={{ fontSize: "14px" }}>›</span>
+            </button>
 
             {/* 1. COMMUNITY OVERVIEW */}
             <button
@@ -4582,7 +4600,50 @@ export default function App() {
           </button>
         </div>
 
-        {/* CARD 2: FEATURED CHANNELS */}
+        {/* CARD 2: MOBILE APP BARCODE DOWNLOAD (REPLACES ONLINE NOW) */}
+        <div className="apk-download-widget">
+          <div className="apk-widget-badge">
+            <span>📱</span>
+            <span>Android App</span>
+          </div>
+          <h4 className="apk-widget-title">Get DevNest on Mobile</h4>
+          <p className="apk-widget-desc">
+            Scan this barcode with your phone camera to download the APK directly:
+          </p>
+
+          <div className="apk-qr-container">
+            <div className="apk-qr-frame">
+              <img
+                src="/devnest-apk-qr.png"
+                alt="Scan barcode to download DevNest APK"
+                className="apk-qr-image"
+                onError={(e) => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAXIAAAFyAQAAAADAX2ykAAACtklEQVR4nO2cTYrkMAyFn8aBXjrQB5ijJEdPjtI3sJcDDm8WlpwEZvqHSaXLg7woUuVvIRCSnySnhPjKWn98CQecd975h/JZdM31aYDMti0zANsf7rHH+Yv5QJIkEEmSvwTAVt0N5AGYSJLpLnucv5rX4MwDROSFAAKx/izAOgI1xOcb7XH+IXws+rDKAExvw/G3b7DH+UfwW83PWMdAdfK32uP8P/MkC/SsTYGYEkCmTTR+I8nlRnucv5Lfqjw+/R4oMwKrz1cRERnvssf56/gBiHuLo4DIAIECIO5fb7PH+Wt5kCkQU62PCrjUXBxOH5HElAK5PJv9zr+/hurVdUwg8gCZ3oaqmPd8LVPaBiLfYY/z1/IgU9NX8fwBAIgkJhZ4/HbJ1/xcszITaq+qimggWM7euWez3/kPVu1N8lAV2c5kjrfGJd2/3fGH/KxJGoFWBAdTzrvmejb7nf8MLzICMucXAlHnC1ywicrp2vi4zx7nr+I1fhcE6lM9cLU02uWW5+cueU3NC2BjwMNxfBZZ0f3bH6+n7sSzTAZaEEN3XT/3yKvftIm1e9pci0hL0q6vOuSbdG4VUGydykNr0uvffvn8Qqyj3rXClDax0G3j/jFQb3I8of3Ov7f06hVakk7HctiC2PuTnfLasKrF7V4GRVIrpVja/Tr3b3+8xa85VLWyLY1a49y/vfHWcLYx0a6qbBJsnPcne+QP9zeIPEKmNAqRhwJkAYFQgPxqUuvZ7Hf+g/XngREAjWnTXK6vuuStv0HaJZ3Wem79SWtM+/nbH6/3r+pUsLYhYXL6sILr5/+BD5S55WdN1wVcsPn92D7509sJ+bVglVCgqmoTO4pDkXvscf5a/nz+2qSwTgXt6EV7xdDzc498e38hD8AuqJqw5oLNdp/Rfuf/vsT/n8F557vlfwOGZ2vbLPzC/QAAAABJRU5ErkJggg==";
+                }}
+              />
+            </div>
+            <div className="apk-qr-label">
+              <span className="apk-qr-dot" />
+              <span>Point phone camera to scan • 6.7 MB</span>
+            </div>
+          </div>
+
+          <a
+            href="/DevNest.apk"
+            download="DevNest.apk"
+            className="apk-download-direct-btn"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span>Download APK Directly</span>
+          </a>
+        </div>
+
+        {/* CARD 3: FEATURED CHANNELS */}
         <div className="featured-widget">
           <h4 className="featured-heading">Featured</h4>
           <div className="featured-channels-list">
@@ -4631,49 +4692,6 @@ export default function App() {
               <span className="featured-chevron">›</span>
             </div>
           </div>
-        </div>
-
-        {/* CARD 3: MOBILE APP BARCODE DOWNLOAD (REPLACES ONLINE NOW) */}
-        <div className="apk-download-widget">
-          <div className="apk-widget-badge">
-            <span>📱</span>
-            <span>Android App</span>
-          </div>
-          <h4 className="apk-widget-title">Get DevNest on Mobile</h4>
-          <p className="apk-widget-desc">
-            Scan this barcode with your phone camera to download the APK directly:
-          </p>
-
-          <div className="apk-qr-container">
-            <div className="apk-qr-frame">
-              <img
-                src="/devnest-apk-qr.png"
-                alt="Scan barcode to download DevNest APK"
-                className="apk-qr-image"
-                onError={(e) => {
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAXIAAAFyAQAAAADAX2ykAAACtklEQVR4nO2cTYrkMAyFn8aBXjrQB5ijJEdPjtI3sJcDDm8WlpwEZvqHSaXLg7woUuVvIRCSnySnhPjKWn98CQecd975h/JZdM31aYDMti0zANsf7rHH+Yv5QJIkEEmSvwTAVt0N5AGYSJLpLnucv5rX4MwDROSFAAKx/izAOgI1xOcb7XH+IXws+rDKAExvw/G3b7DH+UfwW83PWMdAdfK32uP8P/MkC/SsTYGYEkCmTTR+I8nlRnucv5Lfqjw+/R4oMwKrz1cRERnvssf56/gBiHuLo4DIAIECIO5fb7PH+Wt5kCkQU62PCrjUXBxOH5HElAK5PJv9zr+/hurVdUwg8gCZ3oaqmPd8LVPaBiLfYY/z1/IgU9NX8fwBAIgkJhZ4/HbJ1/xcszITaq+qimggWM7euWez3/kPVu1N8lAV2c5kjrfGJd2/3fGH/KxJGoFWBAdTzrvmejb7nf8MLzICMucXAlHnC1ywicrp2vi4zx7nr+I1fhcE6lM9cLU02uWW5+cueU3NC2BjwMNxfBZZ0f3bH6+n7sSzTAZaEEN3XT/3yKvftIm1e9pci0hL0q6vOuSbdG4VUGydykNr0uvffvn8Qqyj3rXClDax0G3j/jFQb3I8of3Ov7f06hVakk7HctiC2PuTnfLasKrF7V4GRVIrpVja/Tr3b3+8xa85VLWyLY1a49y/vfHWcLYx0a6qbBJsnPcne+QP9zeIPEKmNAqRhwJkAYFQgPxqUuvZ7Hf+g/XngREAjWnTXK6vuuStv0HaJZ3Wem79SWtM+/nbH6/3r+pUsLYhYXL6sILr5/+BD5S55WdN1wVcsPn92D7509sJ+bVglVCgqmoTO4pDkXvscf5a/nz+2qSwTgXt6EV7xdDzc498e38hD8AuqJqw5oLNdp/Rfuf/vsT/n8F557vlfwOGZ2vbLPzC/QAAAABJRU5ErkJggg==";
-                }}
-              />
-            </div>
-            <div className="apk-qr-label">
-              <span className="apk-qr-dot" />
-              <span>Point phone camera to scan • 6.7 MB</span>
-            </div>
-          </div>
-
-          <a
-            href="/DevNest.apk"
-            download="DevNest.apk"
-            className="apk-download-direct-btn"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            <span>Download APK Directly</span>
-          </a>
         </div>
 
         {/* PERSONAL SCROLL CONTROLS FOR RIGHT SIDEBAR */}
@@ -5554,6 +5572,61 @@ export default function App() {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* GET APK & QR CODE MODAL */}
+      {apkModalOpen && (
+        <div className="modal-overlay-nesty" onClick={() => setApkModalOpen(false)}>
+          <div className="modal-content-card" style={{ maxWidth: "420px", textAlign: "center", padding: "28px 24px" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "22px" }}>📱</span>
+                <h3 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "var(--text-h)" }}>DevNest Android APK</h3>
+              </div>
+              <button
+                className="edit-profile-pill-btn"
+                onClick={() => setApkModalOpen(false)}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 16px 0", lineHeight: "1.5" }}>
+              Scan this QR barcode with your phone's camera to download and install DevNest directly:
+            </p>
+
+            <div className="apk-qr-frame" style={{ width: "200px", height: "200px", margin: "0 auto 16px auto", padding: "10px", background: "#ffffff", borderRadius: "16px", border: "2px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <img
+                src="/devnest-apk-qr.png"
+                alt="Scan barcode to download DevNest APK"
+                style={{ width: "180px", height: "180px", display: "block", objectFit: "contain" }}
+                onError={(e) => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAXIAAAFyAQAAAADAX2ykAAACtklEQVR4nO2cTYrkMAyFn8aBXjrQB5ijJEdPjtI3sJcDDm8WlpwEZvqHSaXLg7woUuVvIRCSnySnhPjKWn98CQecd975h/JZdM31aYDMti0zANsf7rHH+Yv5QJIkEEmSvwTAVt0N5AGYSJLpLnucv5rX4MwDROSFAAKx/izAOgI1xOcb7XH+IXws+rDKAExvw/G3b7DH+UfwW83PWMdAdfK32uP8P/MkC/SsTYGYEkCmTTR+I8nlRnucv5Lfqjw+/R4oMwKrz1cRERnvssf56/gBiHuLo4DIAIECIO5fb7PH+Wt5kCkQU62PCrjUXBxOH5HElAK5PJv9zr+/hurVdUwg8gCZ3oaqmPd8LVPaBiLfYY/z1/IgU9NX8fwBAIgkJhZ4/HbJ1/xcszITaq+qimggWM7euWez3/kPVu1N8lAV2c5kjrfGJd2/3fGH/KxJGoFWBAdTzrvmejb7nf8MLzICMucXAlHnC1ywicrp2vi4zx7nr+I1fhcE6lM9cLU02uWW5+cueU3NC2BjwMNxfBZZ0f3bH6+n7sSzTAZaEEN3XT/3yKvftIm1e9pci0hL0q6vOuSbdG4VUGydykNr0uvffvn8Qqyj3rXClDax0G3j/jFQb3I8of3Ov7f06hVakk7HctiC2PuTnfLasKrF7V4GRVIrpVja/Tr3b3+8xa85VLWyLY1a49y/vfHWcLYx0a6qbBJsnPcne+QP9zeIPEKmNAqRhwJkAYFQgPxqUuvZ7Hf+g/XngREAjWnTXK6vuuStv0HaJZ3Wem79SWtM+/nbH6/3r+pUsLYhYXL6sILr5/+BD5S55WdN1wVcsPn92D7509sJ+bVglVCgqmoTO4pDkXvscf5a/nz+2qSwTgXt6EV7xdDzc498e38hD8AuqJqw5oLNdp/Rfuf/vsT/n8F557vlfwOGZ2vbLPzC/QAAAABJRU5ErkJggg==";
+                }}
+              />
+            </div>
+
+            <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "18px" }}>
+              Point camera to scan • 6.7 MB APK
+            </div>
+
+            <a
+              href="/DevNest.apk"
+              download="DevNest.apk"
+              className="apk-download-direct-btn"
+              style={{ width: "100%", justifyContent: "center" }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <span>Download DevNest.apk Directly</span>
+            </a>
           </div>
         </div>
       )}
