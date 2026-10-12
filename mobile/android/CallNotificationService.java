@@ -20,8 +20,13 @@ public class CallNotificationService extends Service {
     public static final String CHANNEL_ID = "nesty_incoming_calls";
     public static final int NOTIFICATION_ID = 20261;
 
+    public static final String LISTENER_CHANNEL_ID = "nesty_calling_listener";
+    public static final int LISTENER_NOTIFICATION_ID = 20260;
+
     public static final String ACTION_INCOMING_CALL = "com.devnest.app.INCOMING_CALL";
     public static final String ACTION_STOP_CALL = "com.devnest.app.STOP_CALL";
+    public static final String ACTION_START_LISTENER = "com.devnest.app.START_LISTENER";
+    public static final String ACTION_STOP_LISTENER = "com.devnest.app.STOP_LISTENER";
 
     private Ringtone ringtone;
     private Vibrator vibrator;
@@ -38,11 +43,24 @@ public class CallNotificationService extends Service {
         if (intent == null) return START_NOT_STICKY;
 
         String action = intent.getAction();
-        if (ACTION_STOP_CALL.equals(action)) {
+        if (ACTION_STOP_LISTENER.equals(action)) {
             stopCallAlerts();
             stopForeground(true);
             stopSelf();
             return START_NOT_STICKY;
+        }
+
+        if (ACTION_STOP_CALL.equals(action)) {
+            stopCallAlerts();
+            Notification listenerNotification = buildListenerNotification();
+            startForeground(LISTENER_NOTIFICATION_ID, listenerNotification);
+            return START_NOT_STICKY;
+        }
+
+        if (ACTION_START_LISTENER.equals(action)) {
+            Notification listenerNotification = buildListenerNotification();
+            startForeground(LISTENER_NOTIFICATION_ID, listenerNotification);
+            return START_STICKY;
         }
 
         String callId = intent.getStringExtra("callId");
@@ -183,19 +201,50 @@ public class CallNotificationService extends Service {
                 .build();
     }
 
+    private Notification buildListenerNotification() {
+        Intent launchIntent = new Intent();
+        launchIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
+        launchIntent.setAction(Intent.ACTION_MAIN);
+        launchIntent.addCategory(Intent.CATEGORY_LAUNCHER);
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this, 0, launchIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        return new NotificationCompat.Builder(this, LISTENER_CHANNEL_ID)
+                .setContentTitle("DevNest Calling Service")
+                .setContentText("Active in background • Ready for incoming calls")
+                .setSmallIcon(android.R.drawable.sym_call_incoming)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setOngoing(true)
+                .setContentIntent(pendingIntent)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .build();
+    }
+
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "DevNest Incoming Calls",
-                    NotificationManager.IMPORTANCE_HIGH
-            );
-            channel.setDescription("High-priority full-screen incoming call alerts");
-            channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-            channel.setBypassDnd(true);
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
-                manager.createNotificationChannel(channel);
+                NotificationChannel callChannel = new NotificationChannel(
+                        CHANNEL_ID,
+                        "DevNest Incoming Calls",
+                        NotificationManager.IMPORTANCE_HIGH
+                );
+                callChannel.setDescription("High-priority full-screen incoming call alerts");
+                callChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+                callChannel.setBypassDnd(true);
+                manager.createNotificationChannel(callChannel);
+
+                NotificationChannel listenerChannel = new NotificationChannel(
+                        LISTENER_CHANNEL_ID,
+                        "DevNest Background Service",
+                        NotificationManager.IMPORTANCE_LOW
+                );
+                listenerChannel.setDescription("Keeps DevNest connected for unrestricted call delivery");
+                listenerChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+                manager.createNotificationChannel(listenerChannel);
             }
         }
     }

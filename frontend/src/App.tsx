@@ -1204,8 +1204,8 @@ export default function App() {
       }
     }
 
-    // Call REST endpoint for invites (or if WS delivery failed)
-    if (!wsDelivered || type === "call_invite") {
+    // Call REST endpoint only if WS delivery failed
+    if (!wsDelivered) {
       try {
         const res = await fetch(`${API_URL}/api/call/signal`, {
           method: "POST",
@@ -1421,7 +1421,7 @@ export default function App() {
     cleanupMediaAndCall();
     requestMobileScreenTakeover();
 
-    setActiveCall({
+    const callingCall: CallState = {
       partner: targetUser,
       status: "calling",
       statusText: "Calling...",
@@ -1430,7 +1430,9 @@ export default function App() {
       isMuted: false,
       isSpeaker: true,
       isCaller: true,
-    });
+    };
+    activeCallRef.current = callingCall;
+    setActiveCall(callingCall);
 
     // Start outgoing telephone ring tone
     ringtoneCleanupRef.current = startCallerRingtone();
@@ -1443,7 +1445,13 @@ export default function App() {
     }
 
     // Set ringing status
-    setActiveCall((prev) => (prev ? { ...prev, status: "ringing", statusText: "🔔 Ringing..." } : null));
+    const ringingCall: CallState = {
+      ...callingCall,
+      status: "ringing",
+      statusText: "🔔 Ringing...",
+    };
+    activeCallRef.current = ringingCall;
+    setActiveCall(ringingCall);
 
     // Send call invite to callee
     await sendCallSignal("call_invite", targetUser.id, {
@@ -1460,16 +1468,15 @@ export default function App() {
       playDisconnectTone();
       sendCallSignal("call_timeout", targetUser.id);
       sendMissedCallNotification(targetUser.id, video);
-      setActiveCall((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: "ended",
-              statusText: "No answer",
-            }
-          : null
-      );
+      const endedState: CallState = {
+        ...ringingCall,
+        status: "ended",
+        statusText: "No answer",
+      };
+      activeCallRef.current = endedState;
+      setActiveCall(endedState);
       setTimeout(() => {
+        activeCallRef.current = null;
         setActiveCall(null);
         cleanupMediaAndCall();
       }, 2000);
@@ -1483,8 +1490,11 @@ export default function App() {
       }
       sendCallSignal("call_ended", activeCall.partner.id);
       playDisconnectTone();
-      setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Call ended" } : null));
+      const endedState: CallState = { ...activeCall, status: "ended", statusText: "Call ended" };
+      activeCallRef.current = endedState;
+      setActiveCall(endedState);
       setTimeout(() => {
+        activeCallRef.current = null;
         setActiveCall(null);
         cleanupMediaAndCall();
       }, 600);
@@ -1492,12 +1502,14 @@ export default function App() {
   };
 
   const declineIncomingCall = () => {
-    if (!incomingCall) return;
+    const inc = incomingCallRef.current || incomingCall;
+    if (!inc) return;
     stopAllCallAlerts();
-    sendCallSignal("call_declined", incomingCall.caller.id);
+    sendCallSignal("call_declined", inc.caller.id);
 
-    const caller = incomingCall.caller;
-    const isVid = incomingCall.isVideo;
+    const caller = inc.caller;
+    const isVid = inc.isVideo;
+    incomingCallRef.current = null;
     setIncomingCall(null);
 
     // Record as missed call locally so user sees immediate history
@@ -1515,18 +1527,19 @@ export default function App() {
   };
 
   const acceptIncomingCall = async () => {
-    if (!incomingCall) return;
+    const inc = incomingCallRef.current || incomingCall;
+    if (!inc) return;
     stopAllCallAlerts();
     incomingCallRef.current = null;
     requestMobileScreenTakeover();
 
-    const partner = incomingCall.caller;
-    const isVideo = incomingCall.isVideo;
-    const callId = incomingCall.callId;
+    const partner = inc.caller;
+    const isVideo = inc.isVideo;
+    const callId = inc.callId;
     setIncomingCall(null);
 
     // Picked up! Now set call as connected and start duration
-    setActiveCall({
+    const connectedCall: CallState = {
       partner,
       status: "connected",
       statusText: "Connected",
@@ -1535,7 +1548,9 @@ export default function App() {
       isMuted: false,
       isSpeaker: true,
       isCaller: false,
-    });
+    };
+    activeCallRef.current = connectedCall;
+    setActiveCall(connectedCall);
 
     // Automatically turn device camera on if it's a video call!
     await setupLocalMedia(isVideo, "user");
@@ -1588,22 +1603,40 @@ export default function App() {
     const fromUserId = signal.from_user_id;
 
     if (signal.type === "call_invite") {
-      if ((currentActiveCall && currentActiveCall.status !== "ended") || incomingCallRef.current) {
-        sendCallSignal("call_busy", fromUserId);
+      const incoming = incomingCallRef.current;
+      const active = activeCallRef.current;
+      const newCallId = signal.data?.callId;
+
+      // 1. Ignore duplicate invites if already ringing for this call or from this caller
+      if (incoming && (incoming.caller.id === fromUserId || (newCallId && incoming.callId === newCallId))) {
         return;
       }
+
+      // 2. Ignore duplicate invites if already in an active call with this caller
+      if (active && active.partner.id === fromUserId && active.status !== "ended") {
+        return;
+      }
+
+      // 3. Only reject with call_busy if currently in an active, connected call with a DIFFERENT user
+      if (active && active.partner.id !== fromUserId && active.status === "connected") {
+        sendCallSignal("call_busy", fromUserId, { callId: newCallId });
+        return;
+      }
+
       const callerUser: User = signal.caller || {
         id: fromUserId,
         username: `User_${fromUserId}`,
         email: "",
       };
       const isVideo = !!signal.data?.isVideo;
-      const callId = signal.data?.callId || `call_${Date.now()}_${fromUserId}`;
-      setIncomingCall({
+      const callId = newCallId || `call_${Date.now()}_${fromUserId}`;
+      const incomingObj: IncomingCallState = {
         caller: callerUser,
         isVideo,
         callId,
-      });
+      };
+      incomingCallRef.current = incomingObj;
+      setIncomingCall(incomingObj);
 
       // 1. Acquire screen wake lock so display does not turn off
       try {
@@ -1676,23 +1709,26 @@ export default function App() {
       callRingTimeoutRef.current = setTimeout(() => {
         if (incomingCallRef.current) {
           stopAllCallAlerts();
+          incomingCallRef.current = null;
           setIncomingCall(null);
         }
       }, 48000);
     } else if (signal.type === "call_accepted") {
+      const active = activeCallRef.current;
+      if (!active || active.partner.id !== fromUserId) {
+        return;
+      }
       stopAllCallAlerts();
       clearTimeout(callDisconnectTimeoutRef.current);
 
-      setActiveCall((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: "connected",
-              statusText: "Connected",
-              duration: 0,
-            }
-          : null
-      );
+      const connState: CallState = {
+        ...active,
+        status: "connected",
+        statusText: "Connected",
+        duration: 0,
+      };
+      activeCallRef.current = connState;
+      setActiveCall(connState);
 
       // Caller sets up media and creates WebRTC Offer
       const isVideo = !!signal.data?.isVideo || !!currentActiveCall?.isVideo;
@@ -1726,23 +1762,31 @@ export default function App() {
           : null
       );
       setTimeout(() => {
+        activeCallRef.current = null;
         setActiveCall(null);
         cleanupMediaAndCall();
       }, 2000);
     } else if (signal.type === "call_busy") {
+      const active = activeCallRef.current;
+      if (!active || active.partner.id !== fromUserId) {
+        return;
+      }
+      if (active.status === "connected") {
+        // We are already connected; ignore spurious busy signals
+        return;
+      }
       stopAllCallAlerts();
       clearTimeout(callDisconnectTimeoutRef.current);
       playDisconnectTone();
-      setActiveCall((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: "ended",
-              statusText: "User is busy on another call",
-            }
-          : null
-      );
+      const endedState: CallState = {
+        ...active,
+        status: "ended",
+        statusText: "User is busy on another call",
+      };
+      activeCallRef.current = endedState;
+      setActiveCall(endedState);
       setTimeout(() => {
+        activeCallRef.current = null;
         setActiveCall(null);
         cleanupMediaAndCall();
       }, 2500);
@@ -1853,6 +1897,12 @@ export default function App() {
         }
       }
     } else if (signal.type === "call_ended") {
+      const active = activeCallRef.current;
+      const incoming = incomingCallRef.current;
+      // Guard against cross-user ended signals: only process if server timeout (fromUserId === 0) or matches active partner or incoming caller
+      if (!incoming && (!active || (fromUserId !== 0 && active.partner.id !== fromUserId))) {
+        return;
+      }
       stopAllCallAlerts();
       playDisconnectTone();
       if (incomingCallRef.current) {
@@ -1881,16 +1931,18 @@ export default function App() {
         }
       }
       setIncomingCall(null);
-      setActiveCall((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: "ended",
-              statusText: "Call ended",
-            }
-          : null
-      );
+      incomingCallRef.current = null;
+      if (active) {
+        const endedState: CallState = {
+          ...active,
+          status: "ended",
+          statusText: "Call ended",
+        };
+        activeCallRef.current = endedState;
+        setActiveCall(endedState);
+      }
       setTimeout(() => {
+        activeCallRef.current = null;
         setActiveCall(null);
         cleanupMediaAndCall();
       }, 1500);
@@ -2080,6 +2132,13 @@ export default function App() {
         return new Promise<void>(() => {});
       }).catch(() => {});
     }
+
+    // Start Android native background calling listener if running inside APK
+    try {
+      if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.startBackgroundListener) {
+        (window as any).AndroidCallBridge.startBackgroundListener();
+      }
+    } catch {}
 
     const connectWs = () => {
       if (!isSubscribed) return;
@@ -2616,6 +2675,11 @@ export default function App() {
       setPage("feed");
       setMobileMenuOpen(false);
       cleanupMediaAndCall();
+      try {
+        if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.stopBackgroundListener) {
+          (window as any).AndroidCallBridge.stopBackgroundListener();
+        }
+      } catch {}
     }
   };
   (window as any).handleLogout = handleLogout;
@@ -4518,45 +4582,6 @@ export default function App() {
           </button>
         </div>
 
-        {/* CARD: MOBILE APP BARCODE DOWNLOAD */}
-        <div className="apk-download-widget">
-          <div className="apk-widget-badge">
-            <span>📱</span>
-            <span>Android App</span>
-          </div>
-          <h4 className="apk-widget-title">Get DevNest on Mobile</h4>
-          <p className="apk-widget-desc">
-            Scan this barcode with your phone camera to download the APK directly:
-          </p>
-
-          <div className="apk-qr-container">
-            <div className="apk-qr-frame">
-              <img
-                src="/devnest-apk-qr.png"
-                alt="Scan barcode to download DevNest APK"
-                className="apk-qr-image"
-              />
-            </div>
-            <div className="apk-qr-label">
-              <span className="apk-qr-dot" />
-              <span>Point phone camera to scan • 6.5 MB</span>
-            </div>
-          </div>
-
-          <a
-            href="/DevNest.apk"
-            download="DevNest.apk"
-            className="apk-download-direct-btn"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            <span>Download APK Directly</span>
-          </a>
-        </div>
-
         {/* CARD 2: FEATURED CHANNELS */}
         <div className="featured-widget">
           <h4 className="featured-heading">Featured</h4>
@@ -4608,83 +4633,47 @@ export default function App() {
           </div>
         </div>
 
-        {/* CARD 3: ONLINE NOW */}
-        <div className="online-widget">
-          <div className="online-widget-header">
-            <span className="online-widget-title">Online now</span>
-            <span
-              className="online-widget-seeall"
-              onClick={() => setOnlineModalOpen(true)}
-            >
-              See all
-            </span>
+        {/* CARD 3: MOBILE APP BARCODE DOWNLOAD (REPLACES ONLINE NOW) */}
+        <div className="apk-download-widget">
+          <div className="apk-widget-badge">
+            <span>📱</span>
+            <span>Android App</span>
+          </div>
+          <h4 className="apk-widget-title">Get DevNest on Mobile</h4>
+          <p className="apk-widget-desc">
+            Scan this barcode with your phone camera to download the APK directly:
+          </p>
+
+          <div className="apk-qr-container">
+            <div className="apk-qr-frame">
+              <img
+                src="/devnest-apk-qr.png"
+                alt="Scan barcode to download DevNest APK"
+                className="apk-qr-image"
+                onError={(e) => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAXIAAAFyAQAAAADAX2ykAAACtklEQVR4nO2cTYrkMAyFn8aBXjrQB5ijJEdPjtI3sJcDDm8WlpwEZvqHSaXLg7woUuVvIRCSnySnhPjKWn98CQecd975h/JZdM31aYDMti0zANsf7rHH+Yv5QJIkEEmSvwTAVt0N5AGYSJLpLnucv5rX4MwDROSFAAKx/izAOgI1xOcb7XH+IXws+rDKAExvw/G3b7DH+UfwW83PWMdAdfK32uP8P/MkC/SsTYGYEkCmTTR+I8nlRnucv5Lfqjw+/R4oMwKrz1cRERnvssf56/gBiHuLo4DIAIECIO5fb7PH+Wt5kCkQU62PCrjUXBxOH5HElAK5PJv9zr+/hurVdUwg8gCZ3oaqmPd8LVPaBiLfYY/z1/IgU9NX8fwBAIgkJhZ4/HbJ1/xcszITaq+qimggWM7euWez3/kPVu1N8lAV2c5kjrfGJd2/3fGH/KxJGoFWBAdTzrvmejb7nf8MLzICMucXAlHnC1ywicrp2vi4zx7nr+I1fhcE6lM9cLU02uWW5+cueU3NC2BjwMNxfBZZ0f3bH6+n7sSzTAZaEEN3XT/3yKvftIm1e9pci0hL0q6vOuSbdG4VUGydykNr0uvffvn8Qqyj3rXClDax0G3j/jFQb3I8of3Ov7f06hVakk7HctiC2PuTnfLasKrF7V4GRVIrpVja/Tr3b3+8xa85VLWyLY1a49y/vfHWcLYx0a6qbBJsnPcne+QP9zeIPEKmNAqRhwJkAYFQgPxqUuvZ7Hf+g/XngREAjWnTXK6vuuStv0HaJZ3Wem79SWtM+/nbH6/3r+pUsLYhYXL6sILr5/+BD5S55WdN1wVcsPn92D7509sJ+bVglVCgqmoTO4pDkXvscf5a/nz+2qSwTgXt6EV7xdDzc498e38hD8AuqJqw5oLNdp/Rfuf/vsT/n8F557vlfwOGZ2vbLPzC/QAAAABJRU5ErkJggg==";
+                }}
+              />
+            </div>
+            <div className="apk-qr-label">
+              <span className="apk-qr-dot" />
+              <span>Point phone camera to scan • 6.7 MB</span>
+            </div>
           </div>
 
-          <div className="online-users-list">
-            {communityStats.online_users.length === 0 ? (
-              <div style={{ padding: "16px 12px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
-                No nesters online right now
-              </div>
-            ) : (
-              communityStats.online_users.map((u, i) => {
-                const bgColors = ["#134e40", "#78350f", "#b45309", "#334155", "#047857"];
-                const bgColor = bgColors[i % bgColors.length];
-
-                return (
-                  <div
-                    key={u.id || i}
-                    className="online-user-item"
-                    onClick={() => u.id && openProfile(u.id)}
-                  >
-                    <div
-                      className="online-user-avatar"
-                      style={{ background: bgColor }}
-                    >
-                      {u.avatar_url ? (
-                        <img src={u.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
-                      ) : (
-                        u.username.charAt(0).toUpperCase()
-                      )}
-                      <span className="online-user-dot" />
-                    </div>
-                    <div className="online-user-info" style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
-                      <span className="online-user-name" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>
-                        {u.name || u.username} {u.id === user?.id ? " (You)" : ""}
-                      </span>
-                    </div>
-                    {u.id && u.id !== user?.id && (
-                      <div style={{ display: "flex", gap: "4px" }} onClick={(e) => e.stopPropagation()}>
-                        <button
-                          className="scroll-ctrl-btn"
-                          style={{ padding: "3px 8px", fontSize: "11px" }}
-                          title={`Chat with ${u.username}`}
-                          onClick={() => startChatWithUser({ id: u.id!, username: u.username, email: "" })}
-                        >
-                          💬
-                        </button>
-                        <button
-                          className="scroll-ctrl-btn"
-                          style={{ padding: "3px 8px", fontSize: "11px" }}
-                          title={`Call ${u.username}`}
-                          onClick={() => startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false)}
-                        >
-                          📞
-                        </button>
-                        <button
-                          className="scroll-ctrl-btn"
-                          style={{ padding: "3px 8px", fontSize: "11px" }}
-                          title={`Video call ${u.username}`}
-                          onClick={() => startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true)}
-                        >
-                          📹
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
+          <a
+            href="/DevNest.apk"
+            download="DevNest.apk"
+            className="apk-download-direct-btn"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span>Download APK Directly</span>
+          </a>
         </div>
 
         {/* PERSONAL SCROLL CONTROLS FOR RIGHT SIDEBAR */}

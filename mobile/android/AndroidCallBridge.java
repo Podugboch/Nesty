@@ -64,6 +64,42 @@ public class AndroidCallBridge {
     }
 
     @JavascriptInterface
+    public void startBackgroundListener() {
+        try {
+            Intent serviceIntent = new Intent(context, CallNotificationService.class);
+            serviceIntent.setAction(CallNotificationService.ACTION_START_LISTENER);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent);
+            } else {
+                context.startService(serviceIntent);
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                if (pm != null && !pm.isIgnoringBatteryOptimizations(context.getPackageName())) {
+                    Intent req = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                    req.setData(Uri.parse("package:" + context.getPackageName()));
+                    req.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(req);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    @JavascriptInterface
+    public void stopBackgroundListener() {
+        try {
+            Intent stopIntent = new Intent(context, CallNotificationService.class);
+            stopIntent.setAction(CallNotificationService.ACTION_STOP_LISTENER);
+            context.startService(stopIntent);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    @JavascriptInterface
     public boolean isNativeApp() {
         return true;
     }
