@@ -713,47 +713,72 @@ export default function App() {
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
   };
 
+  const tuneBitrate = (pc: RTCPeerConnection) => {
+    try {
+      const senders = pc.getSenders();
+      const videoSender = senders.find((s) => s.track && s.track.kind === "video");
+      if (videoSender && videoSender.getParameters) {
+        const params = videoSender.getParameters();
+        if (params.encodings && params.encodings.length > 0) {
+          params.encodings[0].maxBitrate = 1200000; // 1.2 Mbps peak, smooth 30fps
+          params.encodings[0].maxFramerate = 30;
+          params.encodings[0].priority = "high";
+          params.encodings[0].networkPriority = "high";
+          videoSender.setParameters(params).catch(() => {});
+        }
+      }
+    } catch {}
+  };
+
   const setupLocalMedia = async (video: boolean, requestedFacing?: "user" | "environment"): Promise<MediaStream | null> => {
     try {
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
       }
 
-      const audioConstraints = {
+      const audioConstraints: MediaTrackConstraints = {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+        channelCount: 1,
       };
 
       let stream: MediaStream | null = null;
       const targetFacing = requestedFacing || facingMode;
 
       if (video) {
+        // High quality, smooth 30fps constraints optimized for mobile & desktop
+        const videoConstraints: MediaTrackConstraints = {
+          facingMode: { ideal: targetFacing },
+          width: { ideal: 960, max: 1280 },
+          height: { ideal: 540, max: 720 },
+          frameRate: { ideal: 30, max: 30, min: 20 },
+        };
+
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             audio: audioConstraints,
-            video: {
-              facingMode: { ideal: targetFacing },
-              width: { ideal: 1280, max: 1920 },
-              height: { ideal: 720, max: 1080 },
-            },
+            video: videoConstraints,
           });
         } catch (vErr) {
-          console.warn("High-res video failed, trying standard video:", vErr);
+          console.warn("Optimal video constraints failed, trying fallback:", vErr);
           try {
             stream = await navigator.mediaDevices.getUserMedia({
               audio: audioConstraints,
-              video: { facingMode: targetFacing },
+              video: {
+                facingMode: targetFacing,
+                frameRate: { ideal: 24, max: 30 },
+              },
             });
           } catch (vErr2) {
-            console.warn("FacingMode failed, trying generic video:", vErr2);
+            console.warn("FacingMode video failed, trying generic video:", vErr2);
             try {
               stream = await navigator.mediaDevices.getUserMedia({
                 audio: audioConstraints,
                 video: true,
               });
             } catch (vErr3) {
-              console.warn("All video failed, falling back to audio only:", vErr3);
+              console.warn("Video failed entirely, falling back to audio only:", vErr3);
               stream = await navigator.mediaDevices.getUserMedia({
                 audio: audioConstraints,
                 video: false,
@@ -800,7 +825,49 @@ export default function App() {
   const flipCamera = async () => {
     const nextFacing = facingMode === "user" ? "environment" : "user";
     setFacingMode(nextFacing);
-    if (activeCall && activeCall.isVideo) {
+
+    if (!localStreamRef.current) return;
+
+    try {
+      // Seamlessly acquire new video track without interrupting audio!
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: nextFacing },
+          width: { ideal: 960, max: 1280 },
+          height: { ideal: 540, max: 720 },
+          frameRate: { ideal: 30, max: 30 },
+        },
+      });
+
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      if (!newVideoTrack) return;
+
+      // Stop previous video track only
+      const oldVideoTracks = localStreamRef.current.getVideoTracks();
+      oldVideoTracks.forEach((t) => {
+        t.stop();
+        localStreamRef.current?.removeTrack(t);
+      });
+
+      // Add new video track to local stream
+      localStreamRef.current.addTrack(newVideoTrack);
+      setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+
+      // Update WebRTC video sender instantly with zero delay
+      if (peerConnectionRef.current) {
+        const videoSender = peerConnectionRef.current.getSenders().find((s) => s.track && s.track.kind === "video");
+        if (videoSender) {
+          await videoSender.replaceTrack(newVideoTrack);
+        }
+      }
+
+      // Update local preview and PIP elements
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+        localVideoRef.current.play().catch(() => {});
+      }
+    } catch (err) {
+      console.warn("Seamless camera switch failed, running fallback setup:", err);
       await setupLocalMedia(true, nextFacing);
     }
   };
@@ -896,7 +963,11 @@ export default function App() {
         { urls: "stun:stun4.l.google.com:19302" },
         { urls: "stun:stun.cloudflare.com:3478" },
         { urls: "stun:global.stun.twilio.com:3478" },
+        { urls: "stun:stun.services.mozilla.com" },
       ],
+      iceCandidatePoolSize: 10,
+      bundlePolicy: "max-bundle",
+      rtcpMuxPolicy: "require",
     });
 
     if (localStreamRef.current) {
@@ -905,7 +976,7 @@ export default function App() {
       });
     }
 
-    // Ensure audio and video transceivers are configured
+    // Ensure audio and video transceivers are configured with proper direction
     const senders = pc.getSenders();
     const hasAudio = senders.some((s) => s.track && s.track.kind === "audio");
     const hasVideo = senders.some((s) => s.track && s.track.kind === "video");
@@ -922,6 +993,20 @@ export default function App() {
       }
     };
 
+    pc.oniceconnectionstatechange = () => {
+      console.log("[WebRTC] ICE Connection State:", pc.iceConnectionState);
+      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        setActiveCall((prev) => (prev ? { ...prev, status: "connected", statusText: "Connected" } : null));
+        tuneBitrate(pc);
+      } else if (pc.iceConnectionState === "disconnected") {
+        setActiveCall((prev) => (prev ? { ...prev, statusText: "Reconnecting..." } : null));
+      } else if (pc.iceConnectionState === "failed") {
+        try {
+          pc.restartIce();
+        } catch {}
+      }
+    };
+
     pc.ontrack = (event) => {
       let rStream = remoteStreamRef.current;
       if (!rStream) {
@@ -933,12 +1018,15 @@ export default function App() {
       }
       setRemoteStream(rStream);
 
+      // Bind to remote video feed
       if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== rStream) {
         remoteVideoRef.current.srcObject = rStream;
       }
       if (remoteVideoRef.current) {
         remoteVideoRef.current.play().catch(() => {});
       }
+
+      // Bind to remote audio element for clean, unmuted audio output without video echo
       if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== rStream) {
         remoteAudioRef.current.srcObject = rStream;
       }
@@ -1349,6 +1437,7 @@ export default function App() {
           }
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
+          tuneBitrate(pc);
           sendCallSignal("webrtc_answer", fromUserId, { sdp: answer, isVideo });
         } catch (err) {
           console.error("Failed to handle offer", err);
@@ -1366,6 +1455,7 @@ export default function App() {
               await pc.addIceCandidate(new RTCIceCandidate(cand));
             } catch {}
           }
+          tuneBitrate(pc);
         } catch (err) {
           console.error("Failed to set remote description answer", err);
         }
@@ -2836,9 +2926,6 @@ export default function App() {
                               <span className="online-user-name" style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
                                 {u.name || u.username} {u.id === user?.id ? " (You)" : ""}
                               </span>
-                              <span className="online-user-status" style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                                {u.status || "Active now"}
-                              </span>
                             </div>
                           </div>
                           {u.id && u.id !== user?.id && (
@@ -3985,11 +4072,10 @@ export default function App() {
                       )}
                       <span className="online-user-dot" />
                     </div>
-                    <div className="online-user-info" style={{ flex: 1 }}>
-                      <span className="online-user-name">
+                    <div className="online-user-info" style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+                      <span className="online-user-name" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>
                         {u.name || u.username} {u.id === user?.id ? " (You)" : ""}
                       </span>
-                      <span className="online-user-status">{u.status || "Active now"}</span>
                     </div>
                     {u.id && u.id !== user?.id && (
                       <div style={{ display: "flex", gap: "4px" }} onClick={(e) => e.stopPropagation()}>
@@ -4584,6 +4670,7 @@ export default function App() {
                   }}
                   autoPlay
                   playsInline
+                  muted
                   className="call-video-element"
                   style={{ display: activeCall.status === "connected" ? "block" : "none" }}
                 />
@@ -4599,6 +4686,7 @@ export default function App() {
                       playsInline
                       muted
                       className="call-calling-preview-video"
+                      style={{ transform: facingMode === "user" ? "scaleX(-1)" : "none" }}
                     />
                     <div className="call-calling-preview-overlay">
                       <span className="call-calling-tag">
@@ -4620,6 +4708,7 @@ export default function App() {
                       playsInline
                       muted
                       className="call-video-pip-element"
+                      style={{ transform: facingMode === "user" ? "scaleX(-1)" : "none" }}
                     />
                     <span className="pip-flip-badge" title="Flip camera">🔄</span>
                   </div>
@@ -4732,8 +4821,6 @@ export default function App() {
                         <span className="online-user-name">
                           {u.name || u.username} {u.id === user?.id ? " (You)" : ""}
                         </span>
-                        <span className="online-user-handle">@{u.username}</span>
-                        <span className="online-user-status">{u.status || "Active now"}</span>
                       </div>
                     </div>
 

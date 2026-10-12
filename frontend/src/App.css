@@ -3772,12 +3772,32 @@
   cursor: pointer;
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+}
+
+.online-user-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.online-modal-user-card .online-user-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text-h);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
 }
 
 .online-modal-user-actions {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 .online-action-btn {
