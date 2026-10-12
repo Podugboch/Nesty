@@ -1150,9 +1150,6 @@ func (h *Handler) GetCommunityStats(c *gin.Context) {
 	var totalUsers int64
 	h.DB.Model(&model.User{}).Count(&totalUsers)
 
-	var users []model.User
-	h.DB.Select("id", "username", "name", "avatar_url", "bio").Order("id asc").Limit(20).Find(&users)
-
 	type OnlineUser struct {
 		ID        uint   `json:"id"`
 		Username  string `json:"username"`
@@ -1161,28 +1158,43 @@ func (h *Handler) GetCommunityStats(c *gin.Context) {
 		Status    string `json:"status"`
 	}
 
-	statuses := []string{
-		"Working on DevNest",
-		"Building something great",
-		"Learning Go",
-		"Active now",
-		"Reviewing PRs",
-		"Exploring Rust",
+	onlineList := []OnlineUser{}
+
+	var onlineIDs []uint
+	if h.Hub != nil {
+		onlineIDs = h.Hub.GetOnlineUserIDs()
 	}
 
-	var onlineList []OnlineUser
-	for i, u := range users {
-		status := statuses[i%len(statuses)]
-		if u.Bio != "" && len(u.Bio) < 35 {
-			status = u.Bio
+	if len(onlineIDs) > 0 {
+		var users []model.User
+		h.DB.Select("id", "username", "name", "avatar_url", "bio").
+			Where("id IN ?", onlineIDs).
+			Order("id asc").
+			Limit(100).
+			Find(&users)
+
+		statuses := []string{
+			"Working on DevNest",
+			"Building something great",
+			"Learning Go",
+			"Active now",
+			"Reviewing PRs",
+			"Exploring Rust",
 		}
-		onlineList = append(onlineList, OnlineUser{
-			ID:        u.ID,
-			Username:  u.Username,
-			Name:      u.Name,
-			AvatarURL: u.AvatarURL,
-			Status:    status,
-		})
+
+		for i, u := range users {
+			status := statuses[i%len(statuses)]
+			if u.Bio != "" && len(u.Bio) < 35 {
+				status = u.Bio
+			}
+			onlineList = append(onlineList, OnlineUser{
+				ID:        u.ID,
+				Username:  u.Username,
+				Name:      u.Name,
+				AvatarURL: u.AvatarURL,
+				Status:    status,
+			})
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

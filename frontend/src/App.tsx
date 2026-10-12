@@ -178,19 +178,15 @@ export default function App() {
   // -----------------------------
   // COMMUNITY STATS & ONLINE USERS
   // -----------------------------
-  const [liveUserCount, setLiveUserCount] = useState<number>(3);
+  const [liveUserCount, setLiveUserCount] = useState<number>(0);
   const [communityStats, setCommunityStats] = useState<{
     user_count?: number;
     total_users?: number;
     member_count?: number;
     online_users: Array<{ id?: number; username: string; name?: string; avatar_url?: string; status?: string }>;
   }>({
-    user_count: 3,
-    online_users: [
-      { id: 3, username: "Jaytricks", name: "Patrick Sean Odugboche", status: "Active now" },
-      { id: 4, username: "Snowball", name: "Snowball", status: "Active now" },
-      { id: 12, username: "abwonder", name: "abwonder", status: "Active now" },
-    ],
+    user_count: 0,
+    online_users: [],
   });
 
   // -----------------------------
@@ -408,7 +404,7 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setCommunityStats(data);
-        const count = data.user_count ?? data.total_users ?? data.member_count ?? (data.online_users?.length || 1);
+        const count = data.user_count ?? data.total_users ?? data.member_count ?? (data.online_users?.length || 0);
         setLiveUserCount(count);
       }
     } catch (err) {
@@ -419,7 +415,18 @@ export default function App() {
   useEffect(() => {
     fetchCommunityStats();
     const interval = setInterval(fetchCommunityStats, 8000);
-    return () => clearInterval(interval);
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        fetchCommunityStats();
+      }
+    };
+    window.addEventListener("focus", handleVisibility);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", handleVisibility);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, []);
 
   const startChatWithUser = async (targetUser: User) => {
@@ -1505,12 +1512,17 @@ export default function App() {
               ws.send(JSON.stringify({ type: "ping" }));
             }
           }, 20000);
+          fetchCommunityStats();
         };
 
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
             if (data.type === "pong") return;
+            if (data.event === "presence" || data.type === "presence") {
+              fetchCommunityStats();
+              return;
+            }
             if (data.event === "notification" && data.notification) {
               setNotifications((prev) => [data.notification, ...prev]);
               setUnreadCount((prev) => prev + 1);
@@ -2787,86 +2799,92 @@ export default function App() {
             {showOnline && (
               <div className="drawer-accordion-content online-drawer-accordion-content">
                 <div className="online-users-list mobile-online-list">
-                  {communityStats.online_users.map((u, i) => {
-                    const bgColors = ["#134e40", "#78350f", "#b45309", "#334155", "#047857"];
-                    const bgColor = bgColors[i % bgColors.length];
-                    return (
-                      <div key={u.id || i} className="online-user-item">
-                        <div
-                          className="online-user-item-left"
-                          style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0, cursor: "pointer", overflow: "hidden" }}
-                          onClick={() => {
-                            if (u.id) {
-                              openProfile(u.id);
-                              setMobileMenuOpen(false);
-                            }
-                          }}
-                        >
-                          <div className="online-user-avatar" style={{ background: bgColor }}>
-                            {u.avatar_url ? (
-                              <img
-                                src={u.avatar_url}
-                                alt={u.username}
-                                className="online-avatar-img"
-                                style={{ width: "40px", height: "40px", borderRadius: "50%", objectFit: "cover", flexShrink: 0, maxWidth: "100%" }}
-                              />
-                            ) : (
-                              <span className="online-avatar-initial">{u.username.charAt(0).toUpperCase()}</span>
-                            )}
-                            <span className="online-dot-badge" />
+                  {communityStats.online_users.length === 0 ? (
+                    <div style={{ padding: "16px 12px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
+                      No nesters online right now
+                    </div>
+                  ) : (
+                    communityStats.online_users.map((u, i) => {
+                      const bgColors = ["#134e40", "#78350f", "#b45309", "#334155", "#047857"];
+                      const bgColor = bgColors[i % bgColors.length];
+                      return (
+                        <div key={u.id || i} className="online-user-item">
+                          <div
+                            className="online-user-item-left"
+                            style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0, cursor: "pointer", overflow: "hidden" }}
+                            onClick={() => {
+                              if (u.id) {
+                                openProfile(u.id);
+                                setMobileMenuOpen(false);
+                              }
+                            }}
+                          >
+                            <div className="online-user-avatar" style={{ background: bgColor }}>
+                              {u.avatar_url ? (
+                                <img
+                                  src={u.avatar_url}
+                                  alt={u.username}
+                                  className="online-avatar-img"
+                                  style={{ width: "40px", height: "40px", borderRadius: "50%", objectFit: "cover", flexShrink: 0, maxWidth: "100%" }}
+                                />
+                              ) : (
+                                <span className="online-avatar-initial">{u.username.charAt(0).toUpperCase()}</span>
+                              )}
+                              <span className="online-dot-badge" />
+                            </div>
+                            <div className="online-user-meta" style={{ minWidth: 0, flex: 1, overflow: "hidden" }}>
+                              <span className="online-user-name" style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                                {u.name || u.username} {u.id === user?.id ? " (You)" : ""}
+                              </span>
+                              <span className="online-user-status" style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                                {u.status || "Active now"}
+                              </span>
+                            </div>
                           </div>
-                          <div className="online-user-meta" style={{ minWidth: 0, flex: 1, overflow: "hidden" }}>
-                            <span className="online-user-name" style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                              {u.name || u.username}
-                            </span>
-                            <span className="online-user-status" style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                              {u.status || "Active now"}
-                            </span>
-                          </div>
+                          {u.id && u.id !== user?.id && (
+                            <div className="online-user-item-actions" style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                              <button
+                                className="scroll-ctrl-btn"
+                                style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                                title={`Chat with ${u.username}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  startChatWithUser({ id: u.id!, username: u.username, email: "" });
+                                  setMobileMenuOpen(false);
+                                }}
+                              >
+                                💬
+                              </button>
+                              <button
+                                className="scroll-ctrl-btn"
+                                style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                                title={`Call ${u.username}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false);
+                                  setMobileMenuOpen(false);
+                                }}
+                              >
+                                📞
+                              </button>
+                              <button
+                                className="scroll-ctrl-btn"
+                                style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                                title={`Video call ${u.username}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true);
+                                  setMobileMenuOpen(false);
+                                }}
+                              >
+                                📹
+                              </button>
+                            </div>
+                          )}
                         </div>
-                        {u.id && u.id !== user?.id && (
-                          <div className="online-user-item-actions" style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                            <button
-                              className="scroll-ctrl-btn"
-                              style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-                              title={`Chat with ${u.username}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                startChatWithUser({ id: u.id!, username: u.username, email: "" });
-                                setMobileMenuOpen(false);
-                              }}
-                            >
-                              💬
-                            </button>
-                            <button
-                              className="scroll-ctrl-btn"
-                              style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-                              title={`Call ${u.username}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false);
-                                setMobileMenuOpen(false);
-                              }}
-                            >
-                              📞
-                            </button>
-                            <button
-                              className="scroll-ctrl-btn"
-                              style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-                              title={`Video call ${u.username}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true);
-                                setMobileMenuOpen(false);
-                              }}
-                            >
-                              📹
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                    })
+                  )}
                 </div>
               </div>
             )}
@@ -3934,69 +3952,77 @@ export default function App() {
             <span className="online-widget-title">Online now</span>
             <span
               className="online-widget-seeall"
-              onClick={() => alert("Showing all active Nesters")}
+              onClick={() => setOnlineModalOpen(true)}
             >
               See all
             </span>
           </div>
 
           <div className="online-users-list">
-            {communityStats.online_users.map((u, i) => {
-              const bgColors = ["#134e40", "#78350f", "#b45309", "#334155", "#047857"];
-              const bgColor = bgColors[i % bgColors.length];
+            {communityStats.online_users.length === 0 ? (
+              <div style={{ padding: "16px 12px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
+                No nesters online right now
+              </div>
+            ) : (
+              communityStats.online_users.map((u, i) => {
+                const bgColors = ["#134e40", "#78350f", "#b45309", "#334155", "#047857"];
+                const bgColor = bgColors[i % bgColors.length];
 
-              return (
-                <div
-                  key={u.id || i}
-                  className="online-user-item"
-                  onClick={() => u.id && openProfile(u.id)}
-                >
+                return (
                   <div
-                    className="online-user-avatar"
-                    style={{ background: bgColor }}
+                    key={u.id || i}
+                    className="online-user-item"
+                    onClick={() => u.id && openProfile(u.id)}
                   >
-                    {u.avatar_url ? (
-                      <img src={u.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
-                    ) : (
-                      u.username.charAt(0).toUpperCase()
-                    )}
-                    <span className="online-user-dot" />
-                  </div>
-                  <div className="online-user-info" style={{ flex: 1 }}>
-                    <span className="online-user-name">{u.name || u.username}</span>
-                    <span className="online-user-status">{u.status || "Building something great"}</span>
-                  </div>
-                  {u.id && u.id !== user?.id && (
-                    <div style={{ display: "flex", gap: "4px" }} onClick={(e) => e.stopPropagation()}>
-                      <button
-                        className="scroll-ctrl-btn"
-                        style={{ padding: "3px 8px", fontSize: "11px" }}
-                        title={`Chat with ${u.username}`}
-                        onClick={() => startChatWithUser({ id: u.id!, username: u.username, email: "" })}
-                      >
-                        💬
-                      </button>
-                      <button
-                        className="scroll-ctrl-btn"
-                        style={{ padding: "3px 8px", fontSize: "11px" }}
-                        title={`Call ${u.username}`}
-                        onClick={() => startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false)}
-                      >
-                        📞
-                      </button>
-                      <button
-                        className="scroll-ctrl-btn"
-                        style={{ padding: "3px 8px", fontSize: "11px" }}
-                        title={`Video call ${u.username}`}
-                        onClick={() => startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true)}
-                      >
-                        📹
-                      </button>
+                    <div
+                      className="online-user-avatar"
+                      style={{ background: bgColor }}
+                    >
+                      {u.avatar_url ? (
+                        <img src={u.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                      ) : (
+                        u.username.charAt(0).toUpperCase()
+                      )}
+                      <span className="online-user-dot" />
                     </div>
-                  )}
-                </div>
-              );
-            })}
+                    <div className="online-user-info" style={{ flex: 1 }}>
+                      <span className="online-user-name">
+                        {u.name || u.username} {u.id === user?.id ? " (You)" : ""}
+                      </span>
+                      <span className="online-user-status">{u.status || "Active now"}</span>
+                    </div>
+                    {u.id && u.id !== user?.id && (
+                      <div style={{ display: "flex", gap: "4px" }} onClick={(e) => e.stopPropagation()}>
+                        <button
+                          className="scroll-ctrl-btn"
+                          style={{ padding: "3px 8px", fontSize: "11px" }}
+                          title={`Chat with ${u.username}`}
+                          onClick={() => startChatWithUser({ id: u.id!, username: u.username, email: "" })}
+                        >
+                          💬
+                        </button>
+                        <button
+                          className="scroll-ctrl-btn"
+                          style={{ padding: "3px 8px", fontSize: "11px" }}
+                          title={`Call ${u.username}`}
+                          onClick={() => startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false)}
+                        >
+                          📞
+                        </button>
+                        <button
+                          className="scroll-ctrl-btn"
+                          style={{ padding: "3px 8px", fontSize: "11px" }}
+                          title={`Video call ${u.username}`}
+                          onClick={() => startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true)}
+                        >
+                          📹
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -4673,73 +4699,81 @@ export default function App() {
             </div>
 
             <div className="online-modal-list">
-              {communityStats.online_users.map((u, i) => (
-                <div key={u.id || i} className="online-modal-user-card">
-                  <div
-                    className="online-modal-user-left"
-                    onClick={() => {
-                      if (u.id) {
-                        openProfile(u.id);
-                        setOnlineModalOpen(false);
-                      }
-                    }}
-                  >
-                    <div className="online-user-avatar" style={{ background: "#047857" }}>
-                      {u.avatar_url ? (
-                        <img
-                          src={u.avatar_url}
-                          alt={u.username}
-                          className="online-avatar-img"
-                          style={{ width: "40px", height: "40px", borderRadius: "50%", objectFit: "cover", flexShrink: 0, maxWidth: "100%" }}
-                        />
-                      ) : (
-                        <span className="online-avatar-initial">{u.username.charAt(0).toUpperCase()}</span>
-                      )}
-                      <span className="online-dot-badge" />
-                    </div>
-                    <div className="online-user-meta">
-                      <span className="online-user-name">{u.name || u.username}</span>
-                      <span className="online-user-handle">@{u.username}</span>
-                      <span className="online-user-status">{u.status || "Active now"}</span>
-                    </div>
-                  </div>
-
-                  {u.id && u.id !== user?.id && (
-                    <div className="online-modal-user-actions">
-                      <button
-                        className="online-action-btn chat"
-                        title={`Chat with ${u.username}`}
-                        onClick={() => {
-                          startChatWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name });
-                          setOnlineModalOpen(false);
-                        }}
-                      >
-                        💬 Chat
-                      </button>
-                      <button
-                        className="online-action-btn voice"
-                        title={`Voice Call ${u.username}`}
-                        onClick={() => {
-                          startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false);
-                          setOnlineModalOpen(false);
-                        }}
-                      >
-                        📞 Voice
-                      </button>
-                      <button
-                        className="online-action-btn video"
-                        title={`Video Call ${u.username}`}
-                        onClick={() => {
-                          startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true);
-                          setOnlineModalOpen(false);
-                        }}
-                      >
-                        📹 Video
-                      </button>
-                    </div>
-                  )}
+              {communityStats.online_users.length === 0 ? (
+                <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-muted)", fontSize: "14px" }}>
+                  No nesters online right now
                 </div>
-              ))}
+              ) : (
+                communityStats.online_users.map((u, i) => (
+                  <div key={u.id || i} className="online-modal-user-card">
+                    <div
+                      className="online-modal-user-left"
+                      onClick={() => {
+                        if (u.id) {
+                          openProfile(u.id);
+                          setOnlineModalOpen(false);
+                        }
+                      }}
+                    >
+                      <div className="online-user-avatar" style={{ background: "#047857" }}>
+                        {u.avatar_url ? (
+                          <img
+                            src={u.avatar_url}
+                            alt={u.username}
+                            className="online-avatar-img"
+                            style={{ width: "40px", height: "40px", borderRadius: "50%", objectFit: "cover", flexShrink: 0, maxWidth: "100%" }}
+                          />
+                        ) : (
+                          <span className="online-avatar-initial">{u.username.charAt(0).toUpperCase()}</span>
+                        )}
+                        <span className="online-dot-badge" />
+                      </div>
+                      <div className="online-user-meta">
+                        <span className="online-user-name">
+                          {u.name || u.username} {u.id === user?.id ? " (You)" : ""}
+                        </span>
+                        <span className="online-user-handle">@{u.username}</span>
+                        <span className="online-user-status">{u.status || "Active now"}</span>
+                      </div>
+                    </div>
+
+                    {u.id && u.id !== user?.id && (
+                      <div className="online-modal-user-actions">
+                        <button
+                          className="online-action-btn chat"
+                          title={`Chat with ${u.username}`}
+                          onClick={() => {
+                            startChatWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name });
+                            setOnlineModalOpen(false);
+                          }}
+                        >
+                          💬 Chat
+                        </button>
+                        <button
+                          className="online-action-btn voice"
+                          title={`Voice Call ${u.username}`}
+                          onClick={() => {
+                            startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false);
+                            setOnlineModalOpen(false);
+                          }}
+                        >
+                          📞 Voice
+                        </button>
+                        <button
+                          className="online-action-btn video"
+                          title={`Video Call ${u.username}`}
+                          onClick={() => {
+                            startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true);
+                            setOnlineModalOpen(false);
+                          }}
+                        >
+                          📹 Video
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

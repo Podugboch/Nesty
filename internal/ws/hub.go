@@ -71,6 +71,7 @@ func (h *Hub) Run() {
 		select {
 		case reg := <-h.Register:
 			h.mu.Lock()
+			isFirst := len(h.UserConns[reg.userID]) == 0
 			h.Clients[reg.conn] = reg.userID
 			if h.UserConns[reg.userID] == nil {
 				h.UserConns[reg.userID] = make(map[*SafeConn]bool)
@@ -78,21 +79,31 @@ func (h *Hub) Run() {
 			h.UserConns[reg.userID][reg.conn] = true
 			h.mu.Unlock()
 			log.Println("client registered, user:", reg.userID)
+			if isFirst {
+				go h.BroadcastPresence(reg.userID, true)
+			}
 
 		case sc := <-h.Unregister:
 			h.mu.Lock()
+			var unregUID uint
+			var isLast bool
 			if uid, ok := h.Clients[sc]; ok {
+				unregUID = uid
 				delete(h.Clients, sc)
 				if conns, exists := h.UserConns[uid]; exists {
 					delete(conns, sc)
 					if len(conns) == 0 {
 						delete(h.UserConns, uid)
+						isLast = true
 					}
 				}
 				sc.Close()
 				log.Println("client unregistered, user:", uid)
 			}
 			h.mu.Unlock()
+			if isLast && unregUID > 0 {
+				go h.BroadcastPresence(unregUID, false)
+			}
 
 		case message := <-h.BroadcastC:
 			h.mu.RLock()
@@ -237,4 +248,26 @@ func (h *Hub) GetOnlineUserIDs() []uint {
 		}
 	}
 	return ids
+}
+
+// BroadcastPresence sends a presence notification to all connected clients
+func (h *Hub) BroadcastPresence(userID uint, online bool) {
+	msg, err := json.Marshal(map[string]interface{}{
+		"event":   "presence",
+		"user_id": userID,
+		"online":  online,
+	})
+	if err != nil {
+		return
+	}
+	h.mu.RLock()
+	conns := make([]*SafeConn, 0, len(h.Clients))
+	for sc := range h.Clients {
+		conns = append(conns, sc)
+	}
+	h.mu.RUnlock()
+
+	for _, sc := range conns {
+		go sc.WriteMessage(websocket.TextMessage, msg)
+	}
 }
