@@ -305,6 +305,10 @@ export default function App() {
   const lastPacketsLostRef = useRef<number>(0);
   const lastPacketsReceivedRef = useRef<number>(0);
   const iceRestartCountRef = useRef<number>(0);
+  const connectionFailureTimeoutRef = useRef<any>(null);
+  const screenWakeLockRef = useRef<any>(null);
+  const titleFlashIntervalRef = useRef<any>(null);
+  const originalTitleRef = useRef<string>("DevNest");
 
   // Hamburger drawer accordion state
   const [showOverview, setShowOverview] = useState(false);
@@ -866,20 +870,54 @@ export default function App() {
     } catch {}
   };
 
+  const stopAllCallAlerts = () => {
+    if (ringtoneCleanupRef.current) {
+      ringtoneCleanupRef.current();
+      ringtoneCleanupRef.current = null;
+    }
+    if (incomingCallNotifRef.current) {
+      incomingCallNotifRef.current.close();
+      incomingCallNotifRef.current = null;
+    }
+    if (titleFlashIntervalRef.current) {
+      clearInterval(titleFlashIntervalRef.current);
+      titleFlashIntervalRef.current = null;
+      if (originalTitleRef.current) {
+        document.title = originalTitleRef.current;
+      }
+    }
+    if (callRingTimeoutRef.current) {
+      clearTimeout(callRingTimeoutRef.current);
+      callRingTimeoutRef.current = null;
+    }
+    if (screenWakeLockRef.current) {
+      try {
+        screenWakeLockRef.current.release();
+      } catch {}
+      screenWakeLockRef.current = null;
+    }
+    try {
+      if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.stopCallAlerts) {
+        (window as any).AndroidCallBridge.stopCallAlerts();
+      }
+    } catch {}
+  };
+
   // WebRTC media & peer connection setup
   const cleanupMediaAndCall = () => {
+    stopAllCallAlerts();
     if (statsIntervalRef.current) {
       clearInterval(statsIntervalRef.current);
       statsIntervalRef.current = null;
     }
     lossStreakRef.current = 0;
     iceRestartCountRef.current = 0;
-    if (ringtoneCleanupRef.current) {
-      ringtoneCleanupRef.current();
-      ringtoneCleanupRef.current = null;
-    }
     clearTimeout(callDisconnectTimeoutRef.current);
     clearTimeout(callRingTimeoutRef.current);
+    if (connectionFailureTimeoutRef.current) {
+      clearTimeout(connectionFailureTimeoutRef.current);
+      connectionFailureTimeoutRef.current = null;
+    }
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
@@ -1229,8 +1267,11 @@ export default function App() {
       { urls: "stun:stun1.l.google.com:19302" },
       { urls: "stun:stun2.l.google.com:19302" },
       { urls: "stun:stun3.l.google.com:19302" },
+      { urls: "stun:stun4.l.google.com:19302" },
       { urls: "stun:stun.cloudflare.com:3478" },
       { urls: "stun:global.stun.twilio.com:3478" },
+      { urls: "stun:stun.services.mozilla.com" },
+      { urls: "stun:stun.nextcloud.com:443" },
     ];
 
     if (turnUrl) {
@@ -1247,8 +1288,7 @@ export default function App() {
 
     const pc = new RTCPeerConnection({
       iceServers,
-      iceCandidatePoolSize: 10,
-      bundlePolicy: "max-bundle",
+      bundlePolicy: "balanced",
       rtcpMuxPolicy: "require",
     });
 
@@ -1275,44 +1315,83 @@ export default function App() {
       }
     };
 
+    const handleConnectionHealthy = () => {
+      if (connectionFailureTimeoutRef.current) {
+        clearTimeout(connectionFailureTimeoutRef.current);
+        connectionFailureTimeoutRef.current = null;
+      }
+      setActiveCall((prev) => (prev ? { ...prev, status: "connected", statusText: "Connected" } : null));
+      iceRestartCountRef.current = 0;
+      tuneBitrate(pc, 800000);
+      startStatsMonitor(pc);
+    };
+
+    const handleConnectionDegraded = (_reason: string) => {
+      if (import.meta.env.DEV) {
+        console.log("[WebRTC] Connection degraded:", _reason);
+      }
+      // The call can only be terminated by either party or terminated by a huge network issue (35s+)
+      setActiveCall((prev) => (prev && prev.status !== "ended" ? { ...prev, statusText: "Reconnecting..." } : prev));
+
+      // Attempt background ICE renegotiation
+      if (activeCallRef.current?.isCaller) {
+        if (iceRestartCountRef.current < 4) {
+          iceRestartCountRef.current += 1;
+          try {
+            pc.restartIce();
+            pc.createOffer({ iceRestart: true }).then((newOffer) => {
+              pc.setLocalDescription(newOffer).then(() => {
+                sendCallSignal("webrtc_offer", targetUserId, {
+                  sdp: newOffer,
+                  isVideo: activeCallRef.current?.isVideo,
+                });
+              });
+            }).catch(() => {});
+          } catch {}
+        }
+      } else {
+        // If receiver: ask caller to renegotiate ICE
+        sendCallSignal("ice_restart_request", targetUserId);
+      }
+
+      // Prolonged network failure timer (35 seconds of continuous complete failure)
+      if (!connectionFailureTimeoutRef.current) {
+        connectionFailureTimeoutRef.current = setTimeout(() => {
+          if (pc.connectionState === "failed" || pc.iceConnectionState === "failed") {
+            setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Network disconnected" } : null));
+            setTimeout(() => cleanupMediaAndCall(), 2500);
+          }
+        }, 35000);
+      }
+    };
+
     pc.oniceconnectionstatechange = () => {
       if (import.meta.env.DEV) {
         console.log("[WebRTC] ICE Connection State:", pc.iceConnectionState);
       }
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
-        setActiveCall((prev) => (prev ? { ...prev, status: "connected", statusText: "Connected" } : null));
-        iceRestartCountRef.current = 0;
-        tuneBitrate(pc, 800000);
-        startStatsMonitor(pc);
+        handleConnectionHealthy();
       } else if (pc.iceConnectionState === "disconnected") {
-        setActiveCall((prev) => (prev ? { ...prev, statusText: "Reconnecting..." } : null));
-        if (iceRestartCountRef.current === 0) {
-          iceRestartCountRef.current = 1;
-          try {
-            pc.restartIce();
-          } catch {}
-          setTimeout(() => {
-            if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed") {
-              setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Connection lost" } : null));
-              setTimeout(() => cleanupMediaAndCall(), 2000);
-            }
-          }, 7000);
-        }
+        handleConnectionDegraded("ice_disconnected");
       } else if (pc.iceConnectionState === "failed") {
-        if (iceRestartCountRef.current === 0) {
-          iceRestartCountRef.current = 1;
-          try {
-            pc.restartIce();
-          } catch {
-            setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Connection lost" } : null));
-            setTimeout(() => cleanupMediaAndCall(), 2000);
-          }
-        } else {
-          setActiveCall((prev) => (prev ? { ...prev, status: "ended", statusText: "Connection lost" } : null));
-          setTimeout(() => cleanupMediaAndCall(), 2000);
-        }
+        handleConnectionDegraded("ice_failed");
       }
     };
+
+    if ("onconnectionstatechange" in pc) {
+      pc.onconnectionstatechange = () => {
+        if (import.meta.env.DEV) {
+          console.log("[WebRTC] Peer Connection State:", pc.connectionState);
+        }
+        if (pc.connectionState === "connected") {
+          handleConnectionHealthy();
+        } else if (pc.connectionState === "disconnected") {
+          handleConnectionDegraded("conn_disconnected");
+        } else if (pc.connectionState === "failed") {
+          handleConnectionDegraded("conn_failed");
+        }
+      };
+    }
 
     pc.ontrack = (event) => {
       let rStream = remoteStreamRef.current;
@@ -1414,14 +1493,7 @@ export default function App() {
 
   const declineIncomingCall = () => {
     if (!incomingCall) return;
-    if (ringtoneCleanupRef.current) {
-      ringtoneCleanupRef.current();
-      ringtoneCleanupRef.current = null;
-    }
-    if (incomingCallNotifRef.current) {
-      incomingCallNotifRef.current.close();
-      incomingCallNotifRef.current = null;
-    }
+    stopAllCallAlerts();
     sendCallSignal("call_declined", incomingCall.caller.id);
 
     const caller = incomingCall.caller;
@@ -1444,18 +1516,13 @@ export default function App() {
 
   const acceptIncomingCall = async () => {
     if (!incomingCall) return;
-    if (ringtoneCleanupRef.current) {
-      ringtoneCleanupRef.current();
-      ringtoneCleanupRef.current = null;
-    }
-    if (incomingCallNotifRef.current) {
-      incomingCallNotifRef.current.close();
-      incomingCallNotifRef.current = null;
-    }
+    stopAllCallAlerts();
+    incomingCallRef.current = null;
     requestMobileScreenTakeover();
 
     const partner = incomingCall.caller;
     const isVideo = incomingCall.isVideo;
+    const callId = incomingCall.callId;
     setIncomingCall(null);
 
     // Picked up! Now set call as connected and start duration
@@ -1473,7 +1540,7 @@ export default function App() {
     // Automatically turn device camera on if it's a video call!
     await setupLocalMedia(isVideo, "user");
     createPeerConnection(partner.id, isVideo);
-    sendCallSignal("call_accepted", partner.id, { isVideo });
+    sendCallSignal("call_accepted", partner.id, { isVideo, callId });
   };
 
   const toggleMute = () => {
@@ -1531,30 +1598,51 @@ export default function App() {
         email: "",
       };
       const isVideo = !!signal.data?.isVideo;
+      const callId = signal.data?.callId || `call_${Date.now()}_${fromUserId}`;
       setIncomingCall({
         caller: callerUser,
         isVideo,
-        callId: signal.data?.callId,
+        callId,
       });
+
+      // 1. Acquire screen wake lock so display does not turn off
+      try {
+        if ("wakeLock" in navigator && (navigator as any).wakeLock) {
+          (navigator as any).wakeLock.request("screen").then((lock: any) => {
+            screenWakeLockRef.current = lock;
+          }).catch(() => {});
+        }
+      } catch {}
+
+      // 2. Disturb Android screen natively (PowerManager WakeLock + foreground call alert)
+      try {
+        if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.onIncomingCall) {
+          (window as any).AndroidCallBridge.onIncomingCall(callId, String(fromUserId), callerUser.name || callerUser.username, isVideo ? "video" : "audio");
+        } else {
+          const ifr = document.createElement("iframe");
+          ifr.style.display = "none";
+          ifr.src = `devnest://call?action=incoming&callId=${encodeURIComponent(callId)}&callerId=${fromUserId}&callType=${isVideo ? "video" : "audio"}`;
+          document.body.appendChild(ifr);
+          setTimeout(() => ifr.remove(), 1000);
+        }
+      } catch {}
+
+      // 3. Audio ringtone synthesizer
       if (ringtoneCleanupRef.current) ringtoneCleanupRef.current();
       ringtoneCleanupRef.current = startIncomingRingtone();
 
-      if (callRingTimeoutRef.current) clearTimeout(callRingTimeoutRef.current);
-      callRingTimeoutRef.current = setTimeout(() => {
-        if (incomingCallRef.current) {
-          if (ringtoneCleanupRef.current) {
-            ringtoneCleanupRef.current();
-            ringtoneCleanupRef.current = null;
-          }
-          if (incomingCallNotifRef.current) {
-            incomingCallNotifRef.current.close();
-            incomingCallNotifRef.current = null;
-          }
-          setIncomingCall(null);
-        }
-      }, 48000);
+      // 4. Tab title visual disturbance (flashing title)
+      if (titleFlashIntervalRef.current) clearInterval(titleFlashIntervalRef.current);
+      let flashState = false;
+      originalTitleRef.current = document.title;
+      titleFlashIntervalRef.current = setInterval(() => {
+        flashState = !flashState;
+        document.title = flashState
+          ? `🚨 INCOMING CALL FROM @${callerUser.username}!`
+          : `📞 TAP TO ANSWER NOW!`;
+      }, 500);
 
-      // Show system notification when app is backgrounded
+      // 5. System Notification (requireInteraction: true forces it to disturb and stay on screen)
       if (typeof window !== "undefined" && "Notification" in window) {
         if (Notification.permission === "granted") {
           try {
@@ -1566,7 +1654,8 @@ export default function App() {
               icon: callerUser.avatar_url || "/favicon.ico",
               tag: "devnest-incoming-call",
               requireInteraction: true,
-              vibrate: [600, 300, 600, 300, 600, 300, 1000],
+              renotify: true,
+              vibrate: [800, 400, 800, 400, 800, 400, 1200],
             } as any);
             sysNotif.onclick = () => {
               window.focus();
@@ -1581,15 +1670,17 @@ export default function App() {
           Notification.requestPermission().catch(() => {});
         }
       }
+
+      // 6. Ring timeout 48s
+      if (callRingTimeoutRef.current) clearTimeout(callRingTimeoutRef.current);
+      callRingTimeoutRef.current = setTimeout(() => {
+        if (incomingCallRef.current) {
+          stopAllCallAlerts();
+          setIncomingCall(null);
+        }
+      }, 48000);
     } else if (signal.type === "call_accepted") {
-      if (ringtoneCleanupRef.current) {
-        ringtoneCleanupRef.current();
-        ringtoneCleanupRef.current = null;
-      }
-      if (incomingCallNotifRef.current) {
-        incomingCallNotifRef.current.close();
-        incomingCallNotifRef.current = null;
-      }
+      stopAllCallAlerts();
       clearTimeout(callDisconnectTimeoutRef.current);
 
       setActiveCall((prev) =>
@@ -1622,14 +1713,7 @@ export default function App() {
         console.error("Failed to create offer", err);
       }
     } else if (signal.type === "call_declined") {
-      if (ringtoneCleanupRef.current) {
-        ringtoneCleanupRef.current();
-        ringtoneCleanupRef.current = null;
-      }
-      if (incomingCallNotifRef.current) {
-        incomingCallNotifRef.current.close();
-        incomingCallNotifRef.current = null;
-      }
+      stopAllCallAlerts();
       clearTimeout(callDisconnectTimeoutRef.current);
       playDisconnectTone();
       setActiveCall((prev) =>
@@ -1646,14 +1730,7 @@ export default function App() {
         cleanupMediaAndCall();
       }, 2000);
     } else if (signal.type === "call_busy") {
-      if (ringtoneCleanupRef.current) {
-        ringtoneCleanupRef.current();
-        ringtoneCleanupRef.current = null;
-      }
-      if (incomingCallNotifRef.current) {
-        incomingCallNotifRef.current.close();
-        incomingCallNotifRef.current = null;
-      }
+      stopAllCallAlerts();
       clearTimeout(callDisconnectTimeoutRef.current);
       playDisconnectTone();
       setActiveCall((prev) =>
@@ -1670,14 +1747,7 @@ export default function App() {
         cleanupMediaAndCall();
       }, 2500);
     } else if (signal.type === "call_timeout") {
-      if (ringtoneCleanupRef.current) {
-        ringtoneCleanupRef.current();
-        ringtoneCleanupRef.current = null;
-      }
-      if (incomingCallNotifRef.current) {
-        incomingCallNotifRef.current.close();
-        incomingCallNotifRef.current = null;
-      }
+      stopAllCallAlerts();
       playDisconnectTone();
       if (incomingCallRef.current) {
         const caller = incomingCallRef.current.caller;
@@ -1754,6 +1824,21 @@ export default function App() {
           console.error("Failed to set remote description answer", err);
         }
       }
+    } else if (signal.type === "ice_restart_request") {
+      const pc = peerConnectionRef.current;
+      if (pc && pc.signalingState !== "closed") {
+        try {
+          pc.restartIce();
+          const newOffer = await pc.createOffer({ iceRestart: true });
+          await pc.setLocalDescription(newOffer);
+          sendCallSignal("webrtc_offer", fromUserId, {
+            sdp: newOffer,
+            isVideo: activeCallRef.current?.isVideo,
+          });
+        } catch (err) {
+          console.warn("ICE restart renegotiation error:", err);
+        }
+      }
     } else if (signal.type === "ice_candidate") {
       const pc = peerConnectionRef.current;
       if (signal.data?.candidate) {
@@ -1768,14 +1853,7 @@ export default function App() {
         }
       }
     } else if (signal.type === "call_ended") {
-      if (ringtoneCleanupRef.current) {
-        ringtoneCleanupRef.current();
-        ringtoneCleanupRef.current = null;
-      }
-      if (incomingCallNotifRef.current) {
-        incomingCallNotifRef.current.close();
-        incomingCallNotifRef.current = null;
-      }
+      stopAllCallAlerts();
       playDisconnectTone();
       if (incomingCallRef.current) {
         const caller = incomingCallRef.current.caller;
@@ -1911,6 +1989,18 @@ export default function App() {
 
   // Deep-link / native intent handler when incoming call notification is tapped
   useEffect(() => {
+    (window as any).handleNativeCallAction = (action: string, cId: string, callerIdStr: string) => {
+      if (action === "answer") {
+        acceptIncomingCall();
+      } else if (action === "decline") {
+        declineIncomingCall();
+        if (callerIdStr) {
+          const cNum = parseInt(callerIdStr, 10);
+          if (!isNaN(cNum)) sendCallSignal("call_declined", cNum, { callId: cId });
+        }
+      }
+    };
+
     const params = new URLSearchParams(window.location.search);
     const action = params.get("action");
     const callId = params.get("callId");
@@ -1944,16 +2034,52 @@ export default function App() {
         });
       } catch {}
     }
+
+    return () => {
+      delete (window as any).handleNativeCallAction;
+    };
   }, []);
 
+  // Request notification permissions early so incoming call alerts can disturb the screen
+  useEffect(() => {
+    if (token && typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "default") {
+        Notification.requestPermission().catch(() => {});
+      }
+    }
+  }, [token]);
+
   // -----------------------------
-  // WEBSOCKET FOR NOTIFICATIONS & CALL SIGNALING
+  // PERSISTENT WEBSOCKET & BACKGROUND KEEPALIVE
+  // Keeps the user online even when the web app or APK is minimized!
   // -----------------------------
   useEffect(() => {
     if (!token) return;
     let isSubscribed = true;
     let reconnectTimeout: any = null;
-    let pingInterval: any = null;
+    let worker: Worker | null = null;
+    let lastHttpHeartbeat = 0;
+
+    const sendHttpHeartbeat = () => {
+      if (!tokenRef.current) return;
+      try {
+        fetch(`${API_URL}/api/heartbeat`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${tokenRef.current}`,
+            "Content-Type": "application/json",
+          },
+          keepalive: true,
+        }).catch(() => {});
+      } catch {}
+    };
+
+    // Hold Web Lock to prevent browser from aggressively terminating background execution
+    if (typeof navigator !== "undefined" && "locks" in navigator) {
+      navigator.locks.request("devnest_presence_lock", () => {
+        return new Promise<void>(() => {});
+      }).catch(() => {});
+    }
 
     const connectWs = () => {
       if (!isSubscribed) return;
@@ -1962,13 +2088,10 @@ export default function App() {
         wsRef.current = ws;
 
         ws.onopen = () => {
-          // Heartbeat keepalive every 20s
-          if (pingInterval) clearInterval(pingInterval);
-          pingInterval = setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "ping" }));
-            }
-          }, 20000);
+          try {
+            ws.send(JSON.stringify({ type: "ping" }));
+          } catch {}
+          sendHttpHeartbeat();
           fetchCommunityStats();
         };
 
@@ -2022,8 +2145,8 @@ export default function App() {
         };
 
         ws.onclose = () => {
-          clearInterval(pingInterval);
           if (isSubscribed) {
+            clearTimeout(reconnectTimeout);
             reconnectTimeout = setTimeout(connectWs, 2000);
           }
         };
@@ -2034,17 +2157,86 @@ export default function App() {
         };
       } catch (e) {
         if (isSubscribed) {
+          clearTimeout(reconnectTimeout);
           reconnectTimeout = setTimeout(connectWs, 3000);
         }
       }
     };
 
     connectWs();
+    sendHttpHeartbeat();
+
+    // Spawn an inline Web Worker keepalive timer.
+    // Unlike window.setInterval, Web Workers are not throttled when tabs/apps are minimized!
+    try {
+      const workerBlob = new Blob([
+        `let timer = null;
+         self.onmessage = function(e) {
+           if (e.data === 'start') {
+             if (timer) clearInterval(timer);
+             timer = setInterval(function() { self.postMessage('tick'); }, 10000);
+           } else if (e.data === 'stop') {
+             if (timer) clearInterval(timer);
+             timer = null;
+           }
+         };`
+      ], { type: "application/javascript" });
+      const workerUrl = URL.createObjectURL(workerBlob);
+      worker = new Worker(workerUrl);
+      worker.onmessage = () => {
+        if (!isSubscribed) return;
+        const now = Date.now();
+        // Ping active WebSocket
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          try {
+            wsRef.current.send(JSON.stringify({ type: "ping" }));
+          } catch {}
+        } else if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+          connectWs();
+        }
+
+        // Send HTTP heartbeat every 20 seconds
+        if (now - lastHttpHeartbeat >= 20000) {
+          lastHttpHeartbeat = now;
+          sendHttpHeartbeat();
+        }
+      };
+      worker.postMessage("start");
+    } catch {
+      // Fallback timer if Web Workers unavailable
+      const fallbackTimer = setInterval(() => {
+        if (!isSubscribed) return;
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          try { wsRef.current.send(JSON.stringify({ type: "ping" })); } catch {}
+        } else if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+          connectWs();
+        }
+        sendHttpHeartbeat();
+      }, 15000);
+      reconnectTimeout = fallbackTimer;
+    }
+
+    // Immediately restore connection and heartbeat whenever app/tab gains focus or changes visibility
+    const handleVisibilityOrFocus = () => {
+      sendHttpHeartbeat();
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        connectWs();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    window.addEventListener("pageshow", handleVisibilityOrFocus);
 
     return () => {
       isSubscribed = false;
       clearTimeout(reconnectTimeout);
-      clearInterval(pingInterval);
+      if (worker) {
+        worker.postMessage("stop");
+        worker.terminate();
+      }
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      window.removeEventListener("pageshow", handleVisibilityOrFocus);
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -5072,7 +5264,7 @@ export default function App() {
           ACTIVE CALL OVERLAY & REAL WEBRTC VIDEO / VOICE CALL MODAL
           ===================================================================== */}
       {activeCall && (
-        <div className="call-overlay" onClick={endCall}>
+        <div className="call-overlay">
           {/* Real Audio playback element */}
           <audio ref={remoteAudioRef} autoPlay playsInline />
 

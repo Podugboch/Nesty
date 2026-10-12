@@ -112,12 +112,19 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.POST("/devices", h.RegisterDevice)
 		protected.DELETE("/devices", h.UnregisterDevice)
 		protected.POST("/logout", h.Logout)
+
+		// HEARTBEAT & PRESENCE
+		protected.POST("/heartbeat", h.Heartbeat)
+		protected.GET("/heartbeat", h.Heartbeat)
+		protected.POST("/users/heartbeat", h.Heartbeat)
 	}
 
 	// Direct root fallbacks for mobile / devices
 	r.POST("/devices", utils.JWTMiddleware(), h.RegisterDevice)
 	r.DELETE("/devices", utils.JWTMiddleware(), h.UnregisterDevice)
 	r.POST("/logout", utils.JWTMiddleware(), h.Logout)
+	r.POST("/heartbeat", utils.JWTMiddleware(), h.Heartbeat)
+	r.GET("/heartbeat", utils.JWTMiddleware(), h.Heartbeat)
 
 	// WebSocket
 	r.GET("/ws", func(c *gin.Context) {
@@ -1475,20 +1482,45 @@ func (h *Handler) processCallSignal(fromUserID, toUserID uint, signalType, calle
 		h.callTimers.Store(callID, timer)
 
 	case "call_accepted":
-		if t, ok := h.callTimers.Load(callID); ok {
-			if timer, isTimer := t.(*time.Timer); isTimer {
-				timer.Stop()
+		if callID != "" {
+			if t, ok := h.callTimers.Load(callID); ok {
+				if timer, isTimer := t.(*time.Timer); isTimer {
+					timer.Stop()
+				}
+				h.callTimers.Delete(callID)
 			}
-			h.callTimers.Delete(callID)
 		}
+		// Also stop any lingering timer between these two users
+		h.callTimers.Range(func(key, value interface{}) bool {
+			kStr, isStr := key.(string)
+			if isStr && (strings.Contains(kStr, fmt.Sprintf("%d", toUserID)) || strings.Contains(kStr, fmt.Sprintf("%d", fromUserID))) {
+				if timer, isTimer := value.(*time.Timer); isTimer {
+					timer.Stop()
+				}
+				h.callTimers.Delete(key)
+			}
+			return true
+		})
 
 	case "call_ended", "call_declined", "call_busy", "call_cancelled":
-		if t, ok := h.callTimers.Load(callID); ok {
-			if timer, isTimer := t.(*time.Timer); isTimer {
-				timer.Stop()
+		if callID != "" {
+			if t, ok := h.callTimers.Load(callID); ok {
+				if timer, isTimer := t.(*time.Timer); isTimer {
+					timer.Stop()
+				}
+				h.callTimers.Delete(callID)
 			}
-			h.callTimers.Delete(callID)
 		}
+		h.callTimers.Range(func(key, value interface{}) bool {
+			kStr, isStr := key.(string)
+			if isStr && (strings.Contains(kStr, fmt.Sprintf("%d", toUserID)) || strings.Contains(kStr, fmt.Sprintf("%d", fromUserID))) {
+				if timer, isTimer := value.(*time.Timer); isTimer {
+					timer.Stop()
+				}
+				h.callTimers.Delete(key)
+			}
+			return true
+		})
 		// When caller cancels, send cancel push so callee ringing stops
 		if h.Push != nil && callID != "" {
 			go h.Push.SendCallCancel(toUserID, callID)
@@ -1565,6 +1597,10 @@ func (h *Handler) UnregisterDevice(c *gin.Context) {
 
 func (h *Handler) Logout(c *gin.Context) {
 	userID := c.GetUint("user_id")
+	if userID > 0 && h.Hub != nil {
+		h.Hub.RemoveUserPresence(userID)
+	}
+
 	var input struct {
 		Token string `json:"token"`
 	}
@@ -1574,4 +1610,17 @@ func (h *Handler) Logout(c *gin.Context) {
 		h.DB.Where("token = ? AND user_id = ?", input.Token, userID).Delete(&model.Device{})
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
+}
+
+// Heartbeat refreshes online presence even if the web app or APK is minimized
+func (h *Handler) Heartbeat(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	if userID > 0 && h.Hub != nil {
+		h.Hub.TouchUser(userID)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"online":  true,
+		"user_id": userID,
+	})
 }

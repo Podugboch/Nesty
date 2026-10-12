@@ -25,6 +25,7 @@ public class CallNotificationService extends Service {
 
     private Ringtone ringtone;
     private Vibrator vibrator;
+    private android.os.PowerManager.WakeLock wakeLock;
 
     @Override
     public void onCreate() {
@@ -50,11 +51,42 @@ public class CallNotificationService extends Service {
         String callType = intent.getStringExtra("callType");
         if (callerName == null || callerName.isEmpty()) callerName = "DevNest User";
 
+        acquireScreenWakeLock();
         startRingtoneAndVibration();
         Notification notification = buildIncomingCallNotification(callId, callerId, callerName, callType);
         startForeground(NOTIFICATION_ID, notification);
 
+        // Disturb screen by bringing DevNest call interface to front
+        try {
+            Intent bringToFront = new Intent();
+            bringToFront.setClassName(this, "io.github.webviewtemplate.MainActivity");
+            bringToFront.setAction(Intent.ACTION_VIEW);
+            bringToFront.setData(Uri.parse("devnest://call?action=incoming&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType));
+            bringToFront.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            startActivity(bringToFront);
+        } catch (Exception ignored) {}
+
         return START_NOT_STICKY;
+    }
+
+    private void acquireScreenWakeLock() {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                if (wakeLock != null && wakeLock.isHeld()) {
+                    try { wakeLock.release(); } catch (Exception ignored) {}
+                }
+                wakeLock = pm.newWakeLock(
+                        android.os.PowerManager.FULL_WAKE_LOCK |
+                        android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP |
+                        android.os.PowerManager.ON_AFTER_RELEASE,
+                        "DevNest:IncomingCallWakeLock"
+                );
+                wakeLock.acquire(45000);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private void startRingtoneAndVibration() {
@@ -83,6 +115,12 @@ public class CallNotificationService extends Service {
     }
 
     private void stopCallAlerts() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+                wakeLock = null;
+            }
+        } catch (Exception ignored) {}
         try {
             if (ringtone != null && ringtone.isPlaying()) {
                 ringtone.stop();

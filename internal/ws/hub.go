@@ -53,6 +53,7 @@ type Hub struct {
 	mu           sync.RWMutex
 	Clients      map[*SafeConn]uint
 	UserConns    map[uint]map[*SafeConn]bool
+	UserLastSeen map[uint]time.Time
 	BroadcastC   chan []byte
 	Register     chan registration
 	Unregister   chan *SafeConn
@@ -62,12 +63,13 @@ type Hub struct {
 
 func NewHub() *Hub {
 	return &Hub{
-		Clients:     make(map[*SafeConn]uint),
-		UserConns:   make(map[uint]map[*SafeConn]bool),
-		BroadcastC:  make(chan []byte, 256),
-		Register:    make(chan registration),
-		Unregister:  make(chan *SafeConn),
-		SendToUserC: make(chan userMessage, 256),
+		Clients:      make(map[*SafeConn]uint),
+		UserConns:    make(map[uint]map[*SafeConn]bool),
+		UserLastSeen: make(map[uint]time.Time),
+		BroadcastC:   make(chan []byte, 256),
+		Register:     make(chan registration),
+		Unregister:   make(chan *SafeConn),
+		SendToUserC:  make(chan userMessage, 256),
 	}
 }
 
@@ -82,6 +84,10 @@ func (h *Hub) Run() {
 				h.UserConns[reg.userID] = make(map[*SafeConn]bool)
 			}
 			h.UserConns[reg.userID][reg.conn] = true
+			if h.UserLastSeen == nil {
+				h.UserLastSeen = make(map[uint]time.Time)
+			}
+			h.UserLastSeen[reg.userID] = time.Now()
 			h.mu.Unlock()
 			log.Println("client registered, user:", reg.userID)
 			if isFirst {
@@ -107,7 +113,14 @@ func (h *Hub) Run() {
 			}
 			h.mu.Unlock()
 			if isLast && unregUID > 0 {
-				go h.BroadcastPresence(unregUID, false)
+				h.mu.RLock()
+				lastSeen, hasLast := h.UserLastSeen[unregUID]
+				isRecent := hasLast && time.Since(lastSeen) < 2*time.Minute
+				h.mu.RUnlock()
+				// Keep user marked online if recently active (e.g. app minimized or reconnecting)
+				if !isRecent {
+					go h.BroadcastPresence(unregUID, false)
+				}
 			}
 
 		case message := <-h.BroadcastC:
@@ -173,9 +186,10 @@ func (h *Hub) HandleConnections(w http.ResponseWriter, r *http.Request, userID u
 			break
 		}
 
-		// Handle client-side heartbeat ping
+		// Handle client-side heartbeat ping & touch presence
 		var raw map[string]interface{}
 		if err := json.Unmarshal(msg, &raw); err == nil {
+			h.TouchUser(userID)
 			if msgType, ok := raw["type"].(string); ok && msgType == "ping" {
 				sc.WriteMessage(websocket.TextMessage, []byte(`{"type":"pong"}`))
 				continue
@@ -265,21 +279,61 @@ func (h *Hub) SendToUser(userID uint, msg []byte) bool {
 	return sentCount > 0
 }
 
-// IsUserOnline returns true if the user currently has at least one active WebSocket connection
+// TouchUser updates the user's last active timestamp so presence is maintained even if app is minimized
+func (h *Hub) TouchUser(userID uint) {
+	if userID == 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.UserLastSeen == nil {
+		h.UserLastSeen = make(map[uint]time.Time)
+	}
+	h.UserLastSeen[userID] = time.Now()
+}
+
+// RemoveUserPresence completely clears presence on explicit logout
+func (h *Hub) RemoveUserPresence(userID uint) {
+	if userID == 0 {
+		return
+	}
+	h.mu.Lock()
+	if h.UserLastSeen != nil {
+		delete(h.UserLastSeen, userID)
+	}
+	delete(h.UserConns, userID)
+	h.mu.Unlock()
+	go h.BroadcastPresence(userID, false)
+}
+
+// IsUserOnline returns true if user has active connections or was active within 2 minutes (e.g. minimized)
 func (h *Hub) IsUserOnline(userID uint) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	conns, exists := h.UserConns[userID]
-	return exists && len(conns) > 0
+	if conns, exists := h.UserConns[userID]; exists && len(conns) > 0 {
+		return true
+	}
+	if lastSeen, ok := h.UserLastSeen[userID]; ok {
+		return time.Since(lastSeen) < 2*time.Minute
+	}
+	return false
 }
 
-// GetOnlineUserIDs returns a slice of all user IDs with active connections
+// GetOnlineUserIDs returns a slice of all user IDs with active connections or recent activity
 func (h *Hub) GetOnlineUserIDs() []uint {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	ids := make([]uint, 0, len(h.UserConns))
+	seen := make(map[uint]bool)
+	ids := make([]uint, 0)
 	for uid, conns := range h.UserConns {
 		if len(conns) > 0 {
+			seen[uid] = true
+			ids = append(ids, uid)
+		}
+	}
+	for uid, lastSeen := range h.UserLastSeen {
+		if !seen[uid] && time.Since(lastSeen) < 2*time.Minute {
+			seen[uid] = true
 			ids = append(ids, uid)
 		}
 	}
