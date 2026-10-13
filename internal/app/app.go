@@ -74,17 +74,23 @@ func Run() error {
 	h.RegisterRoutes(r)
 
 	// Direct robust static routes for APK and QR code
-	r.GET("/DevNest.apk", func(c *gin.Context) {
-		candidates := []string{"./frontend/dist/DevNest.apk", "./frontend/public/DevNest.apk", "./DevNest.apk"}
+	serveAPK := func(c *gin.Context, filename string) {
+		candidates := []string{
+			"./frontend/dist/Nesty.apk", "./frontend/public/Nesty.apk", "./Nesty.apk",
+			"./frontend/dist/DevNest.apk", "./frontend/public/DevNest.apk", "./DevNest.apk",
+		}
 		for _, p := range candidates {
 			if _, err := os.Stat(p); err == nil {
-				c.Header("Content-Disposition", "attachment; filename=\"DevNest.apk\"")
+				c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
 				c.File(p)
 				return
 			}
 		}
-		c.JSON(http.StatusNotFound, gin.H{"error": "DevNest.apk not found"})
-	})
+		c.JSON(http.StatusNotFound, gin.H{"error": "APK not found"})
+	}
+
+	r.GET("/Nesty.apk", func(c *gin.Context) { serveAPK(c, "Nesty.apk") })
+	r.GET("/DevNest.apk", func(c *gin.Context) { serveAPK(c, "Nesty.apk") })
 
 	r.GET("/devnest-apk-qr.png", func(c *gin.Context) {
 		candidates := []string{"./frontend/dist/devnest-apk-qr.png", "./frontend/public/devnest-apk-qr.png", "./devnest-apk-qr.png"}
@@ -95,6 +101,16 @@ func Run() error {
 			}
 		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "devnest-apk-qr.png not found"})
+	})
+	r.GET("/nesty-apk-qr.png", func(c *gin.Context) {
+		candidates := []string{"./frontend/dist/nesty-apk-qr.png", "./frontend/public/nesty-apk-qr.png", "./nesty-apk-qr.png", "./frontend/dist/devnest-apk-qr.png"}
+		for _, p := range candidates {
+			if _, err := os.Stat(p); err == nil {
+				c.File(p)
+				return
+			}
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "nesty-apk-qr.png not found"})
 	})
 
 	// Serve static frontend if dist exists (e.g. production deployment on Render)

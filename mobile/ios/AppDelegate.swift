@@ -20,7 +20,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
 
     // MARK: - CallKit Setup
     private func setupCallKit() {
-        let configuration = CXProviderConfiguration(localizedName: "DevNest")
+        let configuration = CXProviderConfiguration(localizedName: "Nesty")
         configuration.supportsVideo = true
         configuration.maximumCallsPerCallGroup = 1
         configuration.supportedHandleTypes = [.generic]
@@ -29,7 +29,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
 
         callKitProvider = CXProvider(configuration: configuration)
         callKitProvider?.setDelegate(self, queue: nil)
-        print("[CallLog] [iOS] CXProvider initialized with localizedName: DevNest")
+        print("[CallLog] [iOS] CXProvider initialized with localizedName: Nesty")
     }
 
     // MARK: - PushKit VoIP Registration
@@ -61,7 +61,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
 
         let action = dict["action"] as? String ?? ""
         let callId = dict["callId"] as? String ?? UUID().uuidString
-        let callerName = dict["callerName"] as? String ?? "DevNest User"
+        let callerName = dict["callerName"] as? String ?? "Nesty User"
         let callType = dict["callType"] as? String ?? "audio"
 
         print("[CallLog] [iOS] PushKit push received: action=\(action), callId=\(callId), caller=\(callerName), type=\(callType)")
@@ -140,7 +140,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
 
         URLSession.shared.dataTask(with: request) { _, response, error in
             if let httpResp = response as? HTTPURLResponse {
-                print("[CallLog] [iOS] Synced VoIP token to DevNest backend: HTTP \(httpResp.statusCode)")
+                print("[CallLog] [iOS] Synced VoIP token to Nesty backend: HTTP \(httpResp.statusCode)")
             } else if let error = error {
                 print("[CallLog] [iOS] Error syncing VoIP token: \(error.localizedDescription)")
             }

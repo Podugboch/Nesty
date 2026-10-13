@@ -82,7 +82,7 @@ public class CallNotificationService extends Service {
                 // Channel 1: incoming_calls_v3 (IMPORTANCE_HIGH, looping ringtone, DND bypass, repeating vibration)
                 NotificationChannel incomingChannel = new NotificationChannel(
                         CHANNEL_INCOMING_CALLS_V3,
-                        "DevNest Incoming Calls",
+                        "Nesty Incoming Calls",
                         NotificationManager.IMPORTANCE_HIGH
                 );
                 incomingChannel.setDescription("High-priority full-screen incoming call alerts with looping ringtone");
@@ -107,7 +107,7 @@ public class CallNotificationService extends Service {
                 // Channel 2: ongoing_calls (IMPORTANCE_LOW, silent foreground service)
                 NotificationChannel ongoingChannel = new NotificationChannel(
                         CHANNEL_ONGOING_CALLS,
-                        "DevNest Ongoing Call",
+                        "Nesty Ongoing Call",
                         NotificationManager.IMPORTANCE_LOW
                 );
                 ongoingChannel.setDescription("Foreground service status during an active call or background connection");
@@ -119,7 +119,7 @@ public class CallNotificationService extends Service {
                 // Channel 3: missed_calls (IMPORTANCE_DEFAULT)
                 NotificationChannel missedChannel = new NotificationChannel(
                         CHANNEL_MISSED_CALLS,
-                        "DevNest Missed Calls",
+                        "Nesty Missed Calls",
                         NotificationManager.IMPORTANCE_DEFAULT
                 );
                 missedChannel.setDescription("Notifications for missed calls");
@@ -204,7 +204,7 @@ public class CallNotificationService extends Service {
             String callId = intent.getStringExtra("callId");
             String callerName = intent.getStringExtra("callerName");
             String callType = intent.getStringExtra("callType");
-            if (callerName == null || callerName.isEmpty()) callerName = "DevNest User";
+            if (callerName == null || callerName.isEmpty()) callerName = "Nesty User";
             boolean isVideo = "video".equalsIgnoreCase(callType);
 
             stopCallAlerts();
@@ -256,7 +256,7 @@ public class CallNotificationService extends Service {
         String callerId = intent.getStringExtra("callerId");
         String callType = intent.getStringExtra("callType");
         String callerAvatarUrl = intent.getStringExtra("callerAvatarUrl");
-        if (callerName == null || callerName.isEmpty()) callerName = "DevNest User";
+        if (callerName == null || callerName.isEmpty()) callerName = "Nesty User";
 
         int notificationId = getNotificationId(callId);
         Log.d(TAG, "[CallLog] Incoming call received: callId=" + callId + ", caller=" + callerName + ", type=" + callType + ", notifId=" + notificationId);
@@ -286,7 +286,7 @@ public class CallNotificationService extends Service {
                         PowerManager.FULL_WAKE_LOCK |
                         PowerManager.ACQUIRE_CAUSES_WAKEUP |
                         PowerManager.ON_AFTER_RELEASE,
-                        "DevNest:IncomingCallWakeLock"
+                        "Nesty:IncomingCallWakeLock"
                 );
                 wakeLock.acquire(30000);
                 Log.d(TAG, "[CallLog] Acquired FULL_WAKE_LOCK for 30 seconds");
@@ -529,7 +529,7 @@ public class CallNotificationService extends Service {
         );
 
         return new NotificationCompat.Builder(this, CHANNEL_ONGOING_CALLS)
-                .setContentTitle("DevNest Calling Service")
+                .setContentTitle("Nesty Calling Service")
                 .setContentText("Active in background • Ready for calls")
                 .setSmallIcon(android.R.drawable.sym_call_incoming)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -614,7 +614,7 @@ public class CallNotificationService extends Service {
                 }
             }
             Log.d(TAG, "[CallLog] Native background call event listener thread terminated");
-        }, "DevNest-NativeListener");
+        }, "Nesty-NativeListener");
         sNativeListenerThread.setDaemon(true);
         sNativeListenerThread.start();
     }
@@ -642,11 +642,11 @@ public class CallNotificationService extends Service {
                 String callType = isVideo ? "video" : "audio";
 
                 String fromUserId = String.valueOf(obj.opt("from_user_id"));
-                String callerName = "DevNest User";
+                String callerName = "Nesty User";
                 String callerAvatarUrl = "";
                 JSONObject caller = obj.optJSONObject("caller");
                 if (caller != null) {
-                    callerName = caller.optString("name", caller.optString("username", "DevNest User"));
+                    callerName = caller.optString("name", caller.optString("username", "Nesty User"));
                     callerAvatarUrl = caller.optString("avatar_url", "");
                 }
 

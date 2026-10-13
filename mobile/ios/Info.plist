@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>DevNest</string>
+	<string>Nesty</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -25,9 +25,9 @@
 
 	<!-- Hardware Permissions for WebRTC Calling -->
 	<key>NSCameraUsageDescription</key>
-	<string>DevNest requires access to your camera for real-time video calls.</string>
+	<string>Nesty requires access to your camera for real-time video calls.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>DevNest requires access to your microphone for crystal clear audio calling.</string>
+	<string>Nesty requires access to your microphone for crystal clear audio calling.</string>
 
 	<!-- Background Modes for Native VoIP CallKit & Audio Playback -->
 	<key>UIBackgroundModes</key>

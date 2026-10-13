@@ -347,7 +347,7 @@ export default function App() {
   const connectionFailureTimeoutRef = useRef<any>(null);
   const screenWakeLockRef = useRef<any>(null);
   const titleFlashIntervalRef = useRef<any>(null);
-  const originalTitleRef = useRef<string>("DevNest");
+  const originalTitleRef = useRef<string>("Nesty");
 
   // Hamburger drawer accordion state
   const [showOverview, setShowOverview] = useState(false);
@@ -1770,7 +1770,7 @@ export default function App() {
               ? `📹 Incoming Video Call from ${callerUser.name || callerUser.username}`
               : `📞 Incoming Voice Call from ${callerUser.name || callerUser.username}`;
             const sysNotif = new Notification(notifTitle, {
-              body: "DevNest • Tap to answer immediately",
+              body: "Nesty • Tap to answer immediately",
               icon: callerUser.avatar_url || "/nesty-logo.png",
               tag: "devnest-incoming-call",
               requireInteraction: true,
@@ -2152,7 +2152,7 @@ export default function App() {
         handleIncomingCallSignal({
           type: "call_invite",
           from_user_id: callerNum,
-          caller: { id: callerNum, username: callerName || `User_${callerNum}`, email: "", name: callerName || "DevNest User" },
+          caller: { id: callerNum, username: callerName || `User_${callerNum}`, email: "", name: callerName || "Nesty User" },
           data: { isVideo: callType !== "audio", callId: cId },
         });
       } else if (action === "answer") {
@@ -2160,7 +2160,7 @@ export default function App() {
           acceptIncomingCall();
         } else {
           const callerNum = parseInt(callerIdStr || "0", 10) || 0;
-          const callerUser: User = { id: callerNum, username: callerName || `User_${callerNum}`, email: "", name: callerName || "DevNest User" };
+          const callerUser: User = { id: callerNum, username: callerName || `User_${callerNum}`, email: "", name: callerName || "Nesty User" };
           const isVideo = callType !== "audio";
           const incObj = { caller: callerUser, isVideo, callId: cId };
           incomingCallRef.current = incObj;
@@ -2255,13 +2255,13 @@ export default function App() {
     (window as any).__triggerTestIncomingCall = (callType: "audio" | "video" = "video", delaySeconds: number = 5) => {
       console.log(`[CallLog] Triggering test incoming call (delay: ${delaySeconds}s, type: ${callType})`);
       if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.testIncomingCall) {
-        (window as any).AndroidCallBridge.testIncomingCall("DevNest Test Caller", callType, delaySeconds);
+        (window as any).AndroidCallBridge.testIncomingCall("Nesty Test Caller", callType, delaySeconds);
       } else {
         setTimeout(() => {
           handleIncomingCallSignal({
             type: "call_invite",
             from_user_id: 999,
-            caller: { id: 999, username: "test_caller", email: "", name: "DevNest Test Caller" },
+            caller: { id: 999, username: "test_caller", email: "", name: "Nesty Test Caller" },
             data: { isVideo: callType !== "audio", callId: `test_call_${Date.now()}` },
           });
         }, delaySeconds * 1000);
@@ -2390,7 +2390,7 @@ export default function App() {
                   const callerName = data.notification.actor?.name || data.notification.actor?.username || "Someone";
                   try {
                     new Notification(isVid ? "📹❌ Missed Video Call" : "📵 Missed Audio Call", {
-                      body: `Missed call from ${callerName}. Tap to open DevNest.`,
+                      body: `Missed call from ${callerName}. Tap to open Nesty.`,
                       icon: data.notification.actor?.avatar_url || "/nesty-logo.png",
                       tag: `missed-call-${data.notification.id || Date.now()}`,
                     });
@@ -4879,7 +4879,7 @@ export default function App() {
             <span>📱</span>
             <span>Android App</span>
           </div>
-          <h4 className="apk-widget-title">Get DevNest on Mobile</h4>
+          <h4 className="apk-widget-title">Get Nesty on Mobile</h4>
           <p className="apk-widget-desc">
             Scan this barcode with your phone camera to download the APK directly:
           </p>
@@ -4888,7 +4888,7 @@ export default function App() {
             <div className="apk-qr-frame">
               <img
                 src="/devnest-apk-qr.png"
-                alt="Scan barcode to download DevNest APK"
+                alt="Scan barcode to download Nesty APK"
                 className="apk-qr-image"
                 onError={(e) => {
                   e.currentTarget.onerror = null;
@@ -4903,8 +4903,8 @@ export default function App() {
           </div>
 
           <a
-            href="/DevNest.apk"
-            download="DevNest.apk"
+            href="/Nesty.apk"
+            download="Nesty.apk"
             className="apk-download-direct-btn"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -5867,7 +5867,7 @@ export default function App() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <span style={{ fontSize: "22px" }}>📱</span>
-                <h3 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "var(--text-h)" }}>DevNest Android APK</h3>
+                <h3 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "var(--text-h)" }}>Nesty Android APK</h3>
               </div>
               <button
                 className="edit-profile-pill-btn"
@@ -5879,13 +5879,13 @@ export default function App() {
             </div>
 
             <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 16px 0", lineHeight: "1.5" }}>
-              Scan this QR barcode with your phone's camera to download and install DevNest directly:
+              Scan this QR barcode with your phone's camera to download and install Nesty directly:
             </p>
 
             <div className="apk-qr-frame" style={{ width: "200px", height: "200px", margin: "0 auto 16px auto", padding: "10px", background: "#ffffff", borderRadius: "16px", border: "2px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <img
                 src="/devnest-apk-qr.png"
-                alt="Scan barcode to download DevNest APK"
+                alt="Scan barcode to download Nesty APK"
                 style={{ width: "180px", height: "180px", display: "block", objectFit: "contain" }}
                 onError={(e) => {
                   e.currentTarget.onerror = null;
@@ -5899,8 +5899,8 @@ export default function App() {
             </div>
 
             <a
-              href="/DevNest.apk"
-              download="DevNest.apk"
+              href="/Nesty.apk"
+              download="Nesty.apk"
               className="apk-download-direct-btn"
               style={{ width: "100%", justifyContent: "center" }}
             >
@@ -5909,7 +5909,7 @@ export default function App() {
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
-              <span>Download DevNest.apk Directly</span>
+              <span>Download Nesty.apk Directly</span>
             </a>
           </div>
         </div>
@@ -6281,7 +6281,7 @@ export default function App() {
                 <div>
                   <div style={{ fontSize: "13px", fontWeight: 600 }}>Background Activity & Battery</div>
                   <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                    {callPermissionsStatus?.isIgnoringBatteryOptimizations ? "✅ Unrestricted background activity" : "Prevent phone from killing DevNest in background"}
+                    {callPermissionsStatus?.isIgnoringBatteryOptimizations ? "✅ Unrestricted background activity" : "Prevent phone from killing Nesty in background"}
                   </div>
                 </div>
                 <button
@@ -6308,7 +6308,7 @@ export default function App() {
                   setCallDiagModalOpen(false);
                 }}
               >
-                Continue to DevNest
+                Continue to Nesty
               </button>
             </div>
           </div>

@@ -40,7 +40,7 @@ public class DevNestFirebaseMessagingService extends FirebaseMessagingService {
             serviceIntent.setAction(CallNotificationService.ACTION_INCOMING_CALL);
             serviceIntent.putExtra("callId", callId != null ? callId : "");
             serviceIntent.putExtra("callerId", callerId != null ? callerId : "");
-            serviceIntent.putExtra("callerName", callerName != null ? callerName : "DevNest User");
+            serviceIntent.putExtra("callerName", callerName != null ? callerName : "Nesty User");
             serviceIntent.putExtra("callerAvatarUrl", callerAvatarUrl != null ? callerAvatarUrl : "");
             serviceIntent.putExtra("callType", callType != null ? callType : "audio");
 

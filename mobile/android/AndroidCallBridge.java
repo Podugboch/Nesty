@@ -126,7 +126,7 @@ public class AndroidCallBridge {
             if (callId == null) callId = "";
             if (callerId == null) callerId = "";
             if (callType == null) callType = "video";
-            if (callerName == null) callerName = "DevNest User";
+            if (callerName == null) callerName = "Nesty User";
 
             sPendingCallActionJson = "{" +
                     "\"action\":\"" + action + "\"," +
@@ -380,7 +380,7 @@ public class AndroidCallBridge {
 
     @JavascriptInterface
     public void testIncomingCall(String callerName, String callType, int delaySeconds) {
-        final String name = (callerName != null && !callerName.isEmpty()) ? callerName : "DevNest Test Caller";
+        final String name = (callerName != null && !callerName.isEmpty()) ? callerName : "Nesty Test Caller";
         final String type = (callType != null && !callType.isEmpty()) ? callType : "video";
         final int delay = Math.max(0, delaySeconds);
         final String testCallId = "test_call_" + System.currentTimeMillis();
@@ -431,7 +431,7 @@ public class AndroidCallBridge {
             serviceIntent.setAction(CallNotificationService.ACTION_INCOMING_CALL);
             serviceIntent.putExtra("callId", callId != null ? callId : "");
             serviceIntent.putExtra("callerId", callerId != null ? callerId : "");
-            serviceIntent.putExtra("callerName", callerName != null ? callerName : "DevNest User");
+            serviceIntent.putExtra("callerName", callerName != null ? callerName : "Nesty User");
             serviceIntent.putExtra("callType", callType != null ? callType : "audio");
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.devnest.app',
-  appName: 'DevNest',
+  appName: 'Nesty',
   webDir: 'frontend/dist',
   server: {
     androidScheme: 'https',

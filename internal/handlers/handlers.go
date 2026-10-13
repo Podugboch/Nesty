@@ -1209,7 +1209,7 @@ func (h *Handler) GetCommunityStats(c *gin.Context) {
 			Find(&users)
 
 		statuses := []string{
-			"Working on DevNest",
+			"Working on Nesty",
 			"Building something great",
 			"Learning Go",
 			"Active now",
