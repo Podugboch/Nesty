@@ -283,6 +283,18 @@ export default function App() {
   const [onlineModalOpen, setOnlineModalOpen] = useState(false);
   const [apkModalOpen, setApkModalOpen] = useState(false);
   const [callDiagModalOpen, setCallDiagModalOpen] = useState(false);
+  const [permissionsModalOpen, setPermissionsModalOpen] = useState(false);
+  const [messagesInboxOpen, setMessagesInboxOpen] = useState(false);
+  const [conversationsList, setConversationsList] = useState<Array<{
+    partner: User;
+    last_message: string;
+    last_time: string;
+    media_type?: string;
+    is_sender?: boolean;
+  }>>([]);
+  const [allUsersList, setAllUsersList] = useState<User[]>([]);
+  const [messagesSearchQuery, setMessagesSearchQuery] = useState("");
+  const [isMessagesInboxLoading, setIsMessagesInboxLoading] = useState(false);
   const [callPermissionsStatus, setCallPermissionsStatus] = useState<{
     notificationsEnabled: boolean;
     channelImportance: number;
@@ -308,7 +320,6 @@ export default function App() {
     }
   });
   const [devClicks, setDevClicks] = useState<number>(0);
-  const [testCallCountdown, setTestCallCountdown] = useState<number | null>(null);
 
   // WebRTC & Calling Audio / Video Refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -585,6 +596,31 @@ export default function App() {
       console.error("Failed to load messages:", err);
     } finally {
       setIsChatLoading(false);
+    }
+  };
+
+  const openMessagesInbox = async () => {
+    setMessagesInboxOpen(true);
+    setIsMessagesInboxLoading(true);
+    try {
+      if (token) {
+        const [convRes, usersRes] = await Promise.all([
+          fetch(`${API_URL}/api/conversations`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
+          fetch(`${API_URL}/api/users`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
+        ]);
+        if (convRes && convRes.ok) {
+          const data = await convRes.json();
+          setConversationsList(Array.isArray(data) ? data : []);
+        }
+        if (usersRes && usersRes.ok) {
+          const uData = await usersRes.json();
+          setAllUsersList(Array.isArray(uData) ? uData.filter((u: User) => u.id !== user?.id) : []);
+        }
+      }
+    } catch (err) {
+      console.error("Error opening messages inbox:", err);
+    } finally {
+      setIsMessagesInboxLoading(false);
     }
   };
 
@@ -934,6 +970,11 @@ export default function App() {
   // WebRTC media & peer connection setup
   const cleanupMediaAndCall = () => {
     stopAllCallAlerts();
+    try {
+      if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.onCallEnded) {
+        (window as any).AndroidCallBridge.onCallEnded();
+      }
+    } catch {}
     if (statsIntervalRef.current) {
       clearInterval(statsIntervalRef.current);
       statsIntervalRef.current = null;
@@ -1448,6 +1489,11 @@ export default function App() {
   const startCallWithUser = async (targetUser: User, video: boolean = false) => {
     cleanupMediaAndCall();
     requestMobileScreenTakeover();
+    try {
+      if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.takeOverLockScreen) {
+        (window as any).AndroidCallBridge.takeOverLockScreen();
+      }
+    } catch {}
 
     const callingCall: CallState = {
       partner: targetUser,
@@ -1533,6 +1579,11 @@ export default function App() {
     const inc = incomingCallRef.current || incomingCall;
     if (!inc) return;
     stopAllCallAlerts();
+    try {
+      if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.onCallEnded) {
+        (window as any).AndroidCallBridge.onCallEnded();
+      }
+    } catch {}
     sendCallSignal("call_declined", inc.caller.id);
 
     const caller = inc.caller;
@@ -1560,6 +1611,11 @@ export default function App() {
     stopAllCallAlerts();
     incomingCallRef.current = null;
     requestMobileScreenTakeover();
+    try {
+      if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.takeOverLockScreen) {
+        (window as any).AndroidCallBridge.takeOverLockScreen();
+      }
+    } catch {}
 
     const partner = inc.caller;
     const isVideo = inc.isVideo;
@@ -1677,14 +1733,17 @@ export default function App() {
 
       // 2. Disturb Android screen natively (PowerManager WakeLock + foreground call alert)
       try {
+        const isFg = !document.hidden && document.visibilityState === "visible";
         if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.onIncomingCall) {
-          (window as any).AndroidCallBridge.onIncomingCall(callId, String(fromUserId), callerUser.name || callerUser.username, isVideo ? "video" : "audio");
+          (window as any).AndroidCallBridge.onIncomingCall(callId, String(fromUserId), callerUser.name || callerUser.username, isVideo ? "video" : "audio", isFg);
         } else {
-          const ifr = document.createElement("iframe");
-          ifr.style.display = "none";
-          ifr.src = `devnest://call?action=incoming&callId=${encodeURIComponent(callId)}&callerId=${fromUserId}&callType=${isVideo ? "video" : "audio"}`;
-          document.body.appendChild(ifr);
-          setTimeout(() => ifr.remove(), 1000);
+          if (!isFg) {
+            const ifr = document.createElement("iframe");
+            ifr.style.display = "none";
+            ifr.src = `devnest://call?action=incoming&callId=${encodeURIComponent(callId)}&callerId=${fromUserId}&callType=${isVideo ? "video" : "audio"}`;
+            document.body.appendChild(ifr);
+            setTimeout(() => ifr.remove(), 1000);
+          }
         }
       } catch {}
 
@@ -2069,9 +2128,30 @@ export default function App() {
 
   // Deep-link / native intent handler when incoming call notification is tapped
   useEffect(() => {
-    (window as any).handleNativeCallAction = (action: string, cId: string, callerIdStr: string) => {
-      if (action === "answer") {
-        acceptIncomingCall();
+    const processCallAction = (action: string, cId: string, callerIdStr: string, callType?: string, callerName?: string) => {
+      console.log("[CallLog] Processing native call action:", action, cId, callerIdStr, callType, callerName);
+      if (action === "incoming") {
+        const callerNum = parseInt(callerIdStr || "0", 10) || 0;
+        handleIncomingCallSignal({
+          type: "call_invite",
+          from_user_id: callerNum,
+          caller: { id: callerNum, username: callerName || `User_${callerNum}`, email: "", name: callerName || "DevNest User" },
+          data: { isVideo: callType !== "audio", callId: cId },
+        });
+      } else if (action === "answer") {
+        if (incomingCallRef.current || incomingCall) {
+          acceptIncomingCall();
+        } else {
+          const callerNum = parseInt(callerIdStr || "0", 10) || 0;
+          const callerUser: User = { id: callerNum, username: callerName || `User_${callerNum}`, email: "", name: callerName || "DevNest User" };
+          const isVideo = callType !== "audio";
+          const incObj = { caller: callerUser, isVideo, callId: cId };
+          incomingCallRef.current = incObj;
+          setIncomingCall(incObj);
+          setTimeout(() => {
+            acceptIncomingCall();
+          }, 400);
+        }
       } else if (action === "decline") {
         declineIncomingCall();
         if (callerIdStr) {
@@ -2081,19 +2161,31 @@ export default function App() {
       }
     };
 
+    (window as any).handleNativeCallAction = (action: string, cId: string, callerIdStr: string, callType?: string, callerName?: string) => {
+      processCallAction(action, cId, callerIdStr, callType, callerName);
+    };
+
+    // Check if Android bridge has any pending call from lock-screen takeover
+    try {
+      if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.getPendingCallAction) {
+        const pendingStr = (window as any).AndroidCallBridge.getPendingCallAction();
+        if (pendingStr) {
+          const pending = JSON.parse(pendingStr);
+          if (pending.action) {
+            processCallAction(pending.action, pending.callId, pending.callerId, pending.callType, pending.callerName);
+          }
+        }
+      }
+    } catch {}
+
     const params = new URLSearchParams(window.location.search);
     const action = params.get("action");
     const callId = params.get("callId");
     const callerIdStr = params.get("callerId");
-    if (action === "answer" && callerIdStr) {
-      setTimeout(() => {
-        acceptIncomingCall();
-      }, 500);
-    } else if (action === "decline" && callerIdStr) {
-      const callerId = parseInt(callerIdStr, 10);
-      if (!isNaN(callerId)) {
-        sendCallSignal("call_declined", callerId, { callId });
-      }
+    const callType = params.get("callType");
+    const callerName = params.get("callerName");
+    if (action && (callId || callerIdStr)) {
+      processCallAction(action, callId || "", callerIdStr || "", callType || undefined, callerName || undefined);
     }
 
     if ((window as any).Capacitor?.Plugins?.App) {
@@ -2104,16 +2196,21 @@ export default function App() {
             const act = url.searchParams.get("action");
             const cId = url.searchParams.get("callId");
             const caller = url.searchParams.get("callerId");
-            if (act === "answer") {
-              acceptIncomingCall();
-            } else if (act === "decline" && caller) {
-              const cNum = parseInt(caller, 10);
-              if (!isNaN(cNum)) sendCallSignal("call_declined", cNum, { callId: cId });
-            }
+            const cType = url.searchParams.get("callType");
+            const cName = url.searchParams.get("callerName");
+            if (act) processCallAction(act, cId || "", caller || "", cType || undefined, cName || undefined);
           } catch {}
         });
       } catch {}
     }
+
+    // Check if permissions onboarding modal should be displayed on first run
+    try {
+      const onboarded = localStorage.getItem("devnest_permissions_onboarded");
+      if (!onboarded && token) {
+        setPermissionsModalOpen(true);
+      }
+    } catch {}
 
     return () => {
       delete (window as any).handleNativeCallAction;
@@ -2137,34 +2234,26 @@ export default function App() {
     return null;
   };
 
-  const triggerTestIncomingCall = (callType: "audio" | "video" = "video", delaySeconds: number = 5) => {
-    console.log(`[CallLog] Triggering dev test incoming call (delay: ${delaySeconds}s, type: ${callType})`);
-    setTestCallCountdown(delaySeconds);
-    let remaining = delaySeconds;
-    const interval = setInterval(() => {
-      remaining -= 1;
-      if (remaining <= 0) {
-        clearInterval(interval);
-        setTestCallCountdown(null);
+  useEffect(() => {
+    (window as any).__triggerTestIncomingCall = (callType: "audio" | "video" = "video", delaySeconds: number = 5) => {
+      console.log(`[CallLog] Triggering test incoming call (delay: ${delaySeconds}s, type: ${callType})`);
+      if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.testIncomingCall) {
+        (window as any).AndroidCallBridge.testIncomingCall("DevNest Test Caller", callType, delaySeconds);
       } else {
-        setTestCallCountdown(remaining);
+        setTimeout(() => {
+          handleIncomingCallSignal({
+            type: "call_invite",
+            from_user_id: 999,
+            caller: { id: 999, username: "test_caller", email: "", name: "DevNest Test Caller" },
+            data: { isVideo: callType !== "audio", callId: `test_call_${Date.now()}` },
+          });
+        }, delaySeconds * 1000);
       }
-    }, 1000);
-
-    if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.testIncomingCall) {
-      (window as any).AndroidCallBridge.testIncomingCall("DevNest Test Caller", callType, delaySeconds);
-    } else {
-      setTimeout(() => {
-        handleIncomingCallSignal({
-          callId: `test_call_${Date.now()}`,
-          callerId: 999,
-          callerName: "DevNest Test Caller",
-          callerAvatarUrl: "/nesty-logo.png",
-          callType: callType,
-        });
-      }, delaySeconds * 1000);
-    }
-  };
+    };
+    return () => {
+      delete (window as any).__triggerTestIncomingCall;
+    };
+  }, []);
 
   const handleBrandLogoClick = () => {
     const next = devClicks + 1;
@@ -3238,14 +3327,7 @@ export default function App() {
           <button
             className="mobile-bar-icon-btn"
             title="Messages"
-            onClick={() => {
-              const partner = communityStats.online_users.find((u) => u.id && u.id !== user?.id);
-              if (partner && partner.id) {
-                startChatWithUser({ id: partner.id, username: partner.username, email: "" });
-              } else {
-                setMobileMenuOpen(true);
-              }
-            }}
+            onClick={() => openMessagesInbox()}
           >
             💬
           </button>
@@ -3287,11 +3369,6 @@ export default function App() {
           <div className="brand-text-col">
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <span className="brand-title">Nesty</span>
-              {isDevMode && (
-                <span style={{ fontSize: "10px", background: "#7c3aed", color: "#fff", padding: "1px 5px", borderRadius: "4px", fontWeight: 700 }}>
-                  DEV
-                </span>
-              )}
             </div>
             <span className="brand-subtitle">Build · Learn · Grow</span>
           </div>
@@ -3410,12 +3487,7 @@ export default function App() {
             data-nav="messages"
             className="nav-item-btn"
             onClick={() => {
-              const partner = communityStats.online_users.find((u) => u.id && u.id !== user?.id);
-              if (partner && partner.id) {
-                startChatWithUser({ id: partner.id, username: partner.username, email: "", avatar_url: partner.avatar_url, name: partner.name });
-              } else {
-                setOnlineModalOpen(true);
-              }
+              openMessagesInbox();
               setMobileMenuOpen(false);
             }}
           >
@@ -3473,17 +3545,12 @@ export default function App() {
             className="nav-item-btn"
             onClick={() => {
               checkCallPermissions();
-              setCallDiagModalOpen(true);
+              setPermissionsModalOpen(true);
               setMobileMenuOpen(false);
             }}
           >
             <span className="nav-item-icon">⚙️</span>
-            <span>Call Diagnostics</span>
-            {isDevMode && (
-              <span className="nav-unread-badge" style={{ background: "#7c3aed", marginLeft: "auto", fontSize: "10px", padding: "2px 6px" }}>
-                DEV
-              </span>
-            )}
+            <span>App Permissions</span>
           </button>
 
           <button
@@ -4165,7 +4232,6 @@ export default function App() {
                         >
                           {displayName}
                         </span>
-                        <span className="verified-dot-green" title="Verified" />
                         <span
                           className="author-handle"
                           onClick={() => post.user?.id && openProfile(post.user.id)}
@@ -4557,7 +4623,6 @@ export default function App() {
                             >
                               {postDisplayName}
                             </span>
-                            <span className="verified-dot-green" />
                             <span
                               className="author-handle"
                               style={{ cursor: "pointer" }}
@@ -5178,6 +5243,17 @@ export default function App() {
       {activeChatPartner && (
         <div className="chat-drawer-overlay">
           <div className="chat-drawer-header">
+            <button
+              className="chat-header-icon-btn"
+              title="All Messages"
+              style={{ marginRight: "6px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}
+              onClick={() => {
+                setActiveChatPartner(null);
+                openMessagesInbox();
+              }}
+            >
+              ←
+            </button>
             <div
               className="chat-partner-info"
               style={{ cursor: "pointer" }}
@@ -5822,18 +5898,265 @@ export default function App() {
         </div>
       )}
 
-      {/* INCOMING CALL SETUP & DIAGNOSTICS MODAL */}
-      {callDiagModalOpen && (
-        <div className="modal-overlay-nesty" onClick={() => setCallDiagModalOpen(false)}>
-          <div className="modal-content-card" style={{ maxWidth: "480px", textAlign: "left", padding: "26px 24px" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ fontSize: "22px" }}>📞</span>
-                <h3 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "var(--text-h)" }}>Call Setup & Diagnostics</h3>
+      {/* =====================================================================
+          MESSAGES OVERVIEW & CONVERSATIONS INBOX MODAL
+          ===================================================================== */}
+      {messagesInboxOpen && (
+        <div className="modal-overlay-nesty" onClick={() => setMessagesInboxOpen(false)}>
+          <div
+            className="modal-content-card"
+            style={{
+              maxWidth: "520px",
+              width: "100%",
+              padding: "0",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+              maxHeight: "82vh",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: "1px solid var(--border)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "20px" }}>💬</span>
+                <h3 style={{ margin: 0, fontSize: "17px", fontWeight: 700, color: "var(--text-h)" }}>Messages</h3>
               </div>
               <button
                 className="edit-profile-pill-btn"
-                onClick={() => setCallDiagModalOpen(false)}
+                style={{ fontSize: "14px", padding: "4px 10px", background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)" }}
+                onClick={() => setMessagesInboxOpen(false)}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Search filter input */}
+            <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)", background: "var(--surface-subtle, rgba(255,255,255,0.02))" }}>
+              <input
+                type="text"
+                placeholder="Search conversations or users..."
+                value={messagesSearchQuery}
+                onChange={(e) => setMessagesSearchQuery(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "9px 14px",
+                  borderRadius: "10px",
+                  border: "1px solid var(--border)",
+                  background: "var(--surface, #1e293b)",
+                  color: "var(--text, #f8fafc)",
+                  fontSize: "13.5px",
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+
+            {/* Conversations & Users List */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: "16px" }}>
+              {isMessagesInboxLoading ? (
+                <div style={{ textAlign: "center", padding: "30px", color: "var(--text-muted)", fontSize: "13px" }}>
+                  Loading conversations & users...
+                </div>
+              ) : (
+                <>
+                  {/* Recent Conversations */}
+                  {conversationsList.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: "8px", paddingLeft: "4px" }}>
+                        Recent Conversations
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                        {conversationsList
+                          .filter((conv) => {
+                            if (!messagesSearchQuery.trim()) return true;
+                            const q = messagesSearchQuery.toLowerCase();
+                            const p = conv.partner;
+                            return (
+                              (p.name && p.name.toLowerCase().includes(q)) ||
+                              (p.username && p.username.toLowerCase().includes(q)) ||
+                              (conv.last_message && conv.last_message.toLowerCase().includes(q))
+                            );
+                          })
+                          .map((conv) => {
+                            const p = conv.partner;
+                            const isOnline = communityStats.online_users.some((ou) => ou.id === p.id);
+                            return (
+                              <div
+                                key={p.id}
+                                onClick={() => {
+                                  setMessagesInboxOpen(false);
+                                  startChatWithUser(p);
+                                }}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "12px",
+                                  padding: "10px 12px",
+                                  borderRadius: "10px",
+                                  cursor: "pointer",
+                                  transition: "background 0.15s ease",
+                                  background: "var(--surface-subtle, rgba(255,255,255,0.03))",
+                                  border: "1px solid var(--border)",
+                                }}
+                              >
+                                {/* Avatar with online dot */}
+                                <div style={{ position: "relative", width: "42px", height: "42px", flexShrink: 0 }}>
+                                  {p.avatar_url ? (
+                                    <img src={p.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                                  ) : (
+                                    <div style={{ width: "100%", height: "100%", borderRadius: "50%", background: "#047857", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: "16px" }}>
+                                      {(p.username || "U").charAt(0).toUpperCase()}
+                                    </div>
+                                  )}
+                                  {isOnline && (
+                                    <span
+                                      style={{
+                                        position: "absolute",
+                                        bottom: 0,
+                                        right: 0,
+                                        width: "11px",
+                                        height: "11px",
+                                        borderRadius: "50%",
+                                        background: "#10b981",
+                                        border: "2px solid var(--surface, #1e293b)",
+                                      }}
+                                    />
+                                  )}
+                                </div>
+
+                                {/* Text info */}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                                    <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-h)" }} className="truncate">
+                                      {p.name || p.username}
+                                    </span>
+                                    <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                                      {conv.last_time ? timeAgo(conv.last_time) : ""}
+                                    </span>
+                                  </div>
+                                  <div style={{ fontSize: "12.5px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {conv.is_sender ? "You: " : ""}{conv.last_message || (conv.media_type ? `[${conv.media_type}]` : "Active chat")}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* All Users / Start a Conversation */}
+                  <div>
+                    <div style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: "8px", paddingLeft: "4px" }}>
+                      {conversationsList.length > 0 ? "All Members" : "Select someone to chat with"}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                      {allUsersList
+                        .filter((u) => {
+                          if (!messagesSearchQuery.trim()) return true;
+                          const q = messagesSearchQuery.toLowerCase();
+                          return (
+                            (u.name && u.name.toLowerCase().includes(q)) ||
+                            (u.username && u.username.toLowerCase().includes(q))
+                          );
+                        })
+                        .sort((a, b) => {
+                          const aOnline = communityStats.online_users.some((ou) => ou.id === a.id);
+                          const bOnline = communityStats.online_users.some((ou) => ou.id === b.id);
+                          if (aOnline && !bOnline) return -1;
+                          if (!aOnline && bOnline) return 1;
+                          return 0;
+                        })
+                        .map((u) => {
+                          const isOnline = communityStats.online_users.some((ou) => ou.id === u.id);
+                          return (
+                            <div
+                              key={u.id}
+                              onClick={() => {
+                                setMessagesInboxOpen(false);
+                                startChatWithUser(u);
+                              }}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "12px",
+                                padding: "8px 12px",
+                                borderRadius: "10px",
+                                cursor: "pointer",
+                                transition: "background 0.15s ease",
+                                background: "transparent",
+                              }}
+                              className="chat-conversation-item"
+                            >
+                              <div style={{ position: "relative", width: "38px", height: "38px", flexShrink: 0 }}>
+                                {u.avatar_url ? (
+                                  <img src={u.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                                ) : (
+                                  <div style={{ width: "100%", height: "100%", borderRadius: "50%", background: "#2563eb", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: "15px" }}>
+                                    {(u.username || "U").charAt(0).toUpperCase()}
+                                  </div>
+                                )}
+                                {isOnline && (
+                                  <span
+                                    style={{
+                                      position: "absolute",
+                                      bottom: 0,
+                                      right: 0,
+                                      width: "10px",
+                                      height: "10px",
+                                      borderRadius: "50%",
+                                      background: "#10b981",
+                                      border: "2px solid var(--surface, #1e293b)",
+                                    }}
+                                  />
+                                )}
+                              </div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: "13.5px", fontWeight: 600, color: "var(--text-h)" }} className="truncate">
+                                  {u.name || u.username}
+                                </div>
+                                <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                                  @{u.username} {isOnline ? "• Online now" : ""}
+                                </div>
+                              </div>
+                              <button
+                                className="edit-profile-pill-btn"
+                                style={{ fontSize: "11px", padding: "4px 10px", background: "#059669", color: "#fff", border: "none" }}
+                              >
+                                Chat
+                              </button>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          APP & CALLING PERMISSIONS SETUP (ONBOARDING & SETTINGS)
+          ===================================================================== */}
+      {(permissionsModalOpen || callDiagModalOpen) && (
+        <div className="modal-overlay-nesty" onClick={() => { setPermissionsModalOpen(false); setCallDiagModalOpen(false); }}>
+          <div className="modal-content-card" style={{ maxWidth: "480px", textAlign: "left", padding: "26px 24px" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "22px" }}>🔔</span>
+                <h3 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "var(--text-h)" }}>App & Calling Permissions</h3>
+              </div>
+              <button
+                className="edit-profile-pill-btn"
+                onClick={() => {
+                  try { localStorage.setItem("devnest_permissions_onboarded", "true"); } catch {}
+                  setPermissionsModalOpen(false);
+                  setCallDiagModalOpen(false);
+                }}
                 title="Close"
               >
                 ✕
@@ -5841,7 +6164,7 @@ export default function App() {
             </div>
 
             <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 16px 0", lineHeight: "1.5" }}>
-              Ensure your device permissions allow Nesty to ring and show full-screen caller controls when your screen is locked or the app is killed.
+              Please allow these permissions so voice & video calls, messages, and notifications work reliably — even when your phone is locked or the app is closed.
             </p>
 
             {/* STATUS LIST */}
@@ -5851,25 +6174,50 @@ export default function App() {
                 <div>
                   <div style={{ fontSize: "13px", fontWeight: 600 }}>System Notifications</div>
                   <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                    {callPermissionsStatus?.notificationsEnabled ? "✅ Allowed" : "❌ Disabled — cannot post alerts"}
+                    {callPermissionsStatus?.notificationsEnabled ? "✅ Allowed" : "Receive incoming call alerts & chat notifications"}
                   </div>
                 </div>
-                {(!callPermissionsStatus || !callPermissionsStatus.notificationsEnabled) && (
-                  <button
-                    className="edit-profile-pill-btn"
-                    style={{ fontSize: "11px", padding: "4px 10px", background: "#2563eb", color: "#fff", border: "none" }}
-                    onClick={() => {
-                      if ((window as any).AndroidCallBridge?.openNotificationSettings) {
-                        (window as any).AndroidCallBridge.openNotificationSettings();
-                      }
-                    }}
-                  >
-                    Enable
-                  </button>
-                )}
+                <button
+                  className="edit-profile-pill-btn"
+                  style={{ fontSize: "11px", padding: "5px 12px", background: "#2563eb", color: "#fff", border: "none", fontWeight: 600 }}
+                  onClick={() => {
+                    if ((window as any).AndroidCallBridge?.openNotificationSettings) {
+                      (window as any).AndroidCallBridge.openNotificationSettings();
+                    } else if (typeof window !== "undefined" && "Notification" in window) {
+                      Notification.requestPermission();
+                    }
+                  }}
+                >
+                  {callPermissionsStatus?.notificationsEnabled ? "Settings" : "Allow"}
+                </button>
               </div>
 
-              {/* 2. High-Priority Call Ring Channel */}
+              {/* 2. Microphone & Camera */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "var(--bg-subtle, rgba(255,255,255,0.03))", borderRadius: "10px", border: "1px solid var(--border-color, #334155)" }}>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600 }}>Microphone & Camera</div>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                    Required for talking and appearing on video calls
+                  </div>
+                </div>
+                <button
+                  className="edit-profile-pill-btn"
+                  style={{ fontSize: "11px", padding: "5px 12px", background: "#059669", color: "#fff", border: "none", fontWeight: 600 }}
+                  onClick={async () => {
+                    try {
+                      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                      stream.getTracks().forEach((t) => t.stop());
+                      alert("Microphone and Camera permissions granted!");
+                    } catch (e: any) {
+                      alert("Please grant Microphone & Camera permissions in device settings.");
+                    }
+                  }}
+                >
+                  Allow
+                </button>
+              </div>
+
+              {/* 3. High-Priority Call Ring Channel */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "var(--bg-subtle, rgba(255,255,255,0.03))", borderRadius: "10px", border: "1px solid var(--border-color, #334155)" }}>
                 <div>
                   <div style={{ fontSize: "13px", fontWeight: 600 }}>Ringtone & Vibration Channel</div>
@@ -5879,7 +6227,7 @@ export default function App() {
                 </div>
                 <button
                   className="edit-profile-pill-btn"
-                  style={{ fontSize: "11px", padding: "4px 10px" }}
+                  style={{ fontSize: "11px", padding: "5px 12px" }}
                   onClick={() => {
                     if ((window as any).AndroidCallBridge?.openChannelSettings) {
                       (window as any).AndroidCallBridge.openChannelSettings("incoming_calls_v2");
@@ -5890,40 +6238,38 @@ export default function App() {
                 </button>
               </div>
 
-              {/* 3. Full-Screen Intent (Android 14+) */}
+              {/* 4. Full-Screen Intent (Android 14+) */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "var(--bg-subtle, rgba(255,255,255,0.03))", borderRadius: "10px", border: "1px solid var(--border-color, #334155)" }}>
                 <div>
                   <div style={{ fontSize: "13px", fontWeight: 600 }}>Full-Screen Lock Takeover</div>
                   <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                    {callPermissionsStatus?.canUseFullScreenIntent ? "✅ Screen wake & lock takeover allowed" : "❌ Blocked by Android 14 full-screen policy"}
-                  </div>
-                </div>
-                {callPermissionsStatus && !callPermissionsStatus.canUseFullScreenIntent && (
-                  <button
-                    className="edit-profile-pill-btn"
-                    style={{ fontSize: "11px", padding: "4px 10px", background: "#f59e0b", color: "#000", border: "none", fontWeight: 700 }}
-                    onClick={() => {
-                      if ((window as any).AndroidCallBridge?.openFullScreenIntentSettings) {
-                        (window as any).AndroidCallBridge.openFullScreenIntentSettings();
-                      }
-                    }}
-                  >
-                    Grant
-                  </button>
-                )}
-              </div>
-
-              {/* 4. Battery Optimization */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "var(--bg-subtle, rgba(255,255,255,0.03))", borderRadius: "10px", border: "1px solid var(--border-color, #334155)" }}>
-                <div>
-                  <div style={{ fontSize: "13px", fontWeight: 600 }}>Background Battery Activity</div>
-                  <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                    {callPermissionsStatus?.isIgnoringBatteryOptimizations ? "✅ Unrestricted background activity" : "⚠️ Optimizations active (may kill background calls)"}
+                    {callPermissionsStatus?.canUseFullScreenIntent ? "✅ Screen wake & lock takeover allowed" : "Wake screen on incoming calls"}
                   </div>
                 </div>
                 <button
                   className="edit-profile-pill-btn"
-                  style={{ fontSize: "11px", padding: "4px 10px" }}
+                  style={{ fontSize: "11px", padding: "5px 12px", background: "#7c3aed", color: "#fff", border: "none", fontWeight: 600 }}
+                  onClick={() => {
+                    if ((window as any).AndroidCallBridge?.openFullScreenIntentSettings) {
+                      (window as any).AndroidCallBridge.openFullScreenIntentSettings();
+                    }
+                  }}
+                >
+                  Configure
+                </button>
+              </div>
+
+              {/* 5. Battery Optimization */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "var(--bg-subtle, rgba(255,255,255,0.03))", borderRadius: "10px", border: "1px solid var(--border-color, #334155)" }}>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600 }}>Background Activity & Battery</div>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                    {callPermissionsStatus?.isIgnoringBatteryOptimizations ? "✅ Unrestricted background activity" : "Prevent phone from killing DevNest in background"}
+                  </div>
+                </div>
+                <button
+                  className="edit-profile-pill-btn"
+                  style={{ fontSize: "11px", padding: "5px 12px", background: "#f59e0b", color: "#000", border: "none", fontWeight: 700 }}
                   onClick={() => {
                     if ((window as any).AndroidCallBridge?.openBatteryOptimizationSettings) {
                       (window as any).AndroidCallBridge.openBatteryOptimizationSettings();
@@ -5935,73 +6281,20 @@ export default function App() {
               </div>
             </div>
 
-            {/* TEST INCOMING CALL TRIGGER */}
-            <div style={{ borderTop: "1px solid var(--border-color, #334155)", paddingTop: "16px" }}>
-              <div style={{ fontSize: "13px", fontWeight: 700, marginBottom: "4px", color: "var(--text-h)" }}>
-                🧪 Dev Tool: Test Lock-Screen Incoming Call
-              </div>
-              <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: "0 0 12px 0", lineHeight: "1.4" }}>
-                Fires a local incoming call alert after 5 seconds so you can lock your screen or close the app and verify the full-screen takeover interface.
-              </p>
-
-              {testCallCountdown !== null ? (
-                <div style={{ padding: "10px", background: "#7c3aed22", border: "1px solid #7c3aed", borderRadius: "8px", textAlign: "center", color: "#c4b5fd", fontWeight: 700, fontSize: "13px" }}>
-                  ⏱️ Incoming call ringing in {testCallCountdown} seconds... Lock your phone now!
-                </div>
-              ) : (
-                <div style={{ display: "flex", gap: "10px" }}>
-                  <button
-                    className="edit-profile-pill-btn"
-                    style={{ flex: 1, padding: "8px", background: "#7c3aed", color: "#fff", border: "none", fontWeight: 600 }}
-                    onClick={() => triggerTestIncomingCall("video", 5)}
-                  >
-                    📹 Test Video Call (5s)
-                  </button>
-                  <button
-                    className="edit-profile-pill-btn"
-                    style={{ flex: 1, padding: "8px", background: "#059669", color: "#fff", border: "none", fontWeight: 600 }}
-                    onClick={() => triggerTestIncomingCall("audio", 5)}
-                  >
-                    📞 Test Voice Call (5s)
-                  </button>
-                </div>
-              )}
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                className="edit-profile-pill-btn"
+                style={{ width: "100%", padding: "10px", background: "#2563eb", color: "#fff", border: "none", fontWeight: 700, borderRadius: "10px", fontSize: "14px" }}
+                onClick={() => {
+                  try { localStorage.setItem("devnest_permissions_onboarded", "true"); } catch {}
+                  setPermissionsModalOpen(false);
+                  setCallDiagModalOpen(false);
+                }}
+              >
+                Continue to DevNest
+              </button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* DEV MODE FLOATING QUICK-TRIGGER */}
-      {isDevMode && (
-        <div style={{
-          position: "fixed",
-          bottom: "16px",
-          right: "16px",
-          zIndex: 99998,
-          background: "var(--bg-card, #1e293b)",
-          border: "1px solid #7c3aed",
-          borderRadius: "12px",
-          padding: "8px 12px",
-          boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px"
-        }}>
-          <span style={{ fontSize: "12px", fontWeight: 700, color: "#c4b5fd" }}>🧪 Dev:</span>
-          <button
-            className="edit-profile-pill-btn"
-            style={{ fontSize: "11px", padding: "4px 8px", background: "#7c3aed", color: "#fff", border: "none" }}
-            onClick={() => triggerTestIncomingCall("video", 5)}
-          >
-            {testCallCountdown !== null ? `Ringing in ${testCallCountdown}s...` : "Test Call (5s)"}
-          </button>
-          <button
-            className="edit-profile-pill-btn"
-            style={{ fontSize: "11px", padding: "4px 8px" }}
-            onClick={() => setCallDiagModalOpen(true)}
-          >
-            Diagnostics
-          </button>
         </div>
       )}
     </div>

@@ -102,6 +102,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// MESSAGES & CHAT
 		protected.GET("/messages/:partner_id", h.GetChatHistory)
+		protected.GET("/conversations", h.GetConversations)
 		protected.POST("/messages", h.SendMessage)
 
 		// CALL & WEBRTC SIGNALING
@@ -1255,6 +1256,50 @@ func (h *Handler) GetChatHistory(c *gin.Context) {
 		Find(&messages)
 
 	c.JSON(http.StatusOK, messages)
+}
+
+func (h *Handler) GetConversations(c *gin.Context) {
+	userID := c.GetUint("user_id")
+
+	var messages []model.Message
+	h.DB.Where("sender_id = ? OR recipient_id = ?", userID, userID).
+		Order("id DESC").
+		Find(&messages)
+
+	type ConversationItem struct {
+		Partner     model.User `json:"partner"`
+		LastMessage string     `json:"last_message"`
+		LastTime    time.Time  `json:"last_time"`
+		MediaType   string     `json:"media_type"`
+		IsSender    bool       `json:"is_sender"`
+	}
+
+	seen := make(map[uint]bool)
+	conversations := make([]ConversationItem, 0)
+
+	for _, msg := range messages {
+		partnerID := msg.RecipientID
+		if partnerID == userID {
+			partnerID = msg.SenderID
+		}
+		if partnerID == 0 || partnerID == userID || seen[partnerID] {
+			continue
+		}
+		seen[partnerID] = true
+
+		var partner model.User
+		if err := h.DB.First(&partner, partnerID).Error; err == nil {
+			conversations = append(conversations, ConversationItem{
+				Partner:     partner,
+				LastMessage: msg.Content,
+				LastTime:    msg.CreatedAt,
+				MediaType:   msg.MediaType,
+				IsSender:    msg.SenderID == userID,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, conversations)
 }
 
 func (h *Handler) SendMessage(c *gin.Context) {

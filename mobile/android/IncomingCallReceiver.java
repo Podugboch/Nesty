@@ -39,6 +39,7 @@ public class IncomingCallReceiver extends BroadcastReceiver {
 
         if (ACTION_DECLINE.equals(action)) {
             Log.d(TAG, "[CallLog] Decline tapped for callId=" + callId + ", callerId=" + callerId);
+            AndroidCallBridge.restoreLockScreen(null);
             // Dispatch decline signal asynchronously to the backend without bringing up full UI
             new Thread(() -> {
                 try {

@@ -742,13 +742,6 @@
   cursor: pointer;
 }
 
-.verified-dot-green {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #10b981;
-  display: inline-block;
-}
 
 .author-handle {
   color: var(--text-muted);

@@ -1,5 +1,7 @@
 package com.devnest.app;
 
+import android.app.Activity;
+import android.app.KeyguardManager;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
@@ -11,21 +13,171 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
 import androidx.core.app.NotificationManagerCompat;
 
 public class AndroidCallBridge {
     private static final String TAG = "DevNestCall";
+    private static Activity sActivity = null;
+    private static WebView sWebView = null;
+    private static String sPendingCallActionJson = null;
+
     private final Context context;
 
     public AndroidCallBridge(Context context) {
         this.context = context;
+        if (context instanceof Activity) {
+            sActivity = (Activity) context;
+            handleNewIntent(sActivity, sActivity.getIntent());
+        }
         // Ensure channels are created as soon as bridge is instantiated on app start
         try {
             CallNotificationService.createNotificationChannels(context);
         } catch (Exception e) {
             Log.e(TAG, "[CallLog] Error creating notification channels in bridge: " + e.getMessage());
         }
+    }
+
+    public static void setWebView(WebView webView) {
+        sWebView = webView;
+    }
+
+    public static void handleNewIntent(Activity activity, Intent intent) {
+        if (activity != null) {
+            sActivity = activity;
+        }
+        if (intent == null) return;
+
+        Uri data = intent.getData();
+        Log.d(TAG, "[CallLog] handleNewIntent data=" + data);
+
+        if (data != null && "devnest".equalsIgnoreCase(data.getScheme()) && "call".equalsIgnoreCase(data.getHost())) {
+            String action = data.getQueryParameter("action");
+            String callId = data.getQueryParameter("callId");
+            String callerId = data.getQueryParameter("callerId");
+            String callType = data.getQueryParameter("callType");
+            String callerName = data.getQueryParameter("callerName");
+
+            if (action == null) action = "incoming";
+            if (callId == null) callId = "";
+            if (callerId == null) callerId = "";
+            if (callType == null) callType = "video";
+            if (callerName == null) callerName = "DevNest User";
+
+            sPendingCallActionJson = "{" +
+                    "\"action\":\"" + action + "\"," +
+                    "\"callId\":\"" + callId + "\"," +
+                    "\"callerId\":\"" + callerId + "\"," +
+                    "\"callType\":\"" + callType + "\"," +
+                    "\"callerName\":\"" + callerName + "\"" +
+                    "}";
+
+            // If incoming or answer on locked screen, wake up screen and show over keyguard
+            takeOverLockScreen(activity);
+
+            // If WebView is ready, trigger JavaScript handler immediately
+            if (sWebView != null) {
+                final String jsAction = action;
+                final String jsCallId = callId;
+                final String jsCallerId = callerId;
+                final String jsCallType = callType;
+                sWebView.post(() -> {
+                    String script = "if (window.handleNativeCallAction) { window.handleNativeCallAction('" +
+                            jsAction + "', '" + jsCallId + "', '" + jsCallerId + "', '" + jsCallType + "'); }";
+                    sWebView.evaluateJavascript(script, null);
+                });
+            }
+        }
+    }
+
+    public static void takeOverLockScreen(Activity activity) {
+        if (activity == null) activity = sActivity;
+        if (activity == null) return;
+
+        final Activity act = activity;
+        act.runOnUiThread(() -> {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    act.setShowWhenLocked(true);
+                    act.setTurnScreenOn(true);
+                }
+                act.getWindow().addFlags(
+                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED |
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON |
+                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON |
+                        WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                );
+                Log.d(TAG, "[CallLog] Window flags applied for lock-screen takeover");
+            } catch (Exception e) {
+                Log.e(TAG, "[CallLog] Error in takeOverLockScreen: " + e.getMessage());
+            }
+        });
+    }
+
+    public static void restoreLockScreen(Activity activity) {
+        if (activity == null) activity = sActivity;
+        if (activity == null) return;
+
+        final Activity act = activity;
+        act.runOnUiThread(() -> {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    act.setShowWhenLocked(false);
+                    act.setTurnScreenOn(false);
+                }
+                act.getWindow().clearFlags(
+                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED |
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON |
+                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON |
+                        WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                );
+
+                KeyguardManager km = (KeyguardManager) act.getSystemService(Context.KEYGUARD_SERVICE);
+                if (km != null && km.isKeyguardLocked()) {
+                    Log.d(TAG, "[CallLog] Device is locked; moving task to back to return to secure lock screen");
+                    act.moveTaskToBack(true);
+                } else {
+                    Log.d(TAG, "[CallLog] Device is unlocked; keeping app in current state");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "[CallLog] Error in restoreLockScreen: " + e.getMessage());
+            }
+        });
+    }
+
+    @JavascriptInterface
+    public boolean isDeviceLocked() {
+        try {
+            KeyguardManager km = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+            return km != null && km.isKeyguardLocked();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @JavascriptInterface
+    public void takeOverLockScreen() {
+        takeOverLockScreen(sActivity);
+    }
+
+    @JavascriptInterface
+    public void restoreLockScreen() {
+        restoreLockScreen(sActivity);
+    }
+
+    @JavascriptInterface
+    public void onCallEnded() {
+        stopCallAlerts();
+        restoreLockScreen(sActivity);
+    }
+
+    @JavascriptInterface
+    public String getPendingCallAction() {
+        String pending = sPendingCallActionJson;
+        sPendingCallActionJson = null;
+        return pending != null ? pending : "";
     }
 
     @JavascriptInterface
@@ -47,7 +199,6 @@ public class AndroidCallBridge {
                     channelImportance = channel.getImportance();
                     channelValid = (channelImportance >= NotificationManager.IMPORTANCE_HIGH);
                 } else {
-                    // Not created yet -> create now
                     CallNotificationService.createNotificationChannels(context);
                 }
             }
@@ -197,8 +348,23 @@ public class AndroidCallBridge {
 
     @JavascriptInterface
     public void onIncomingCall(String callId, String callerId, String callerName, String callType) {
+        onIncomingCall(callId, callerId, callerName, callType, false);
+    }
+
+    @JavascriptInterface
+    public void onIncomingCall(String callId, String callerId, String callerName, String callType, boolean isForeground) {
         try {
-            Log.d(TAG, "[CallLog] onIncomingCall received from WebView bridge: callId=" + callId + ", caller=" + callerName);
+            boolean locked = isDeviceLocked();
+            Log.d(TAG, "[CallLog] onIncomingCall received: callId=" + callId + ", caller=" + callerName + ", isForeground=" + isForeground + ", isLocked=" + locked);
+
+            // If app is currently visible to the user and the phone is unlocked,
+            // the WebView in-app UI is already displaying the Decline and Answer buttons!
+            // We suppress posting the heads-up notification banner to avoid duplicate 2 decline & 2 answer buttons!
+            if (isForeground && !locked) {
+                Log.d(TAG, "[CallLog] App is in foreground and phone is unlocked; in-app UI handles call — suppressing notification banner.");
+                return;
+            }
+
             Intent serviceIntent = new Intent(context, CallNotificationService.class);
             serviceIntent.setAction(CallNotificationService.ACTION_INCOMING_CALL);
             serviceIntent.putExtra("callId", callId != null ? callId : "");
@@ -213,6 +379,18 @@ public class AndroidCallBridge {
             }
         } catch (Exception e) {
             Log.e(TAG, "[CallLog] Error in onIncomingCall: " + e.getMessage());
+        }
+    }
+
+    @JavascriptInterface
+    public void dismissNotification(String callId) {
+        try {
+            Intent stopIntent = new Intent(context, CallNotificationService.class);
+            stopIntent.setAction(CallNotificationService.ACTION_DISMISS_NOTIFICATION);
+            stopIntent.putExtra("callId", callId != null ? callId : "");
+            context.startService(stopIntent);
+        } catch (Exception e) {
+            Log.e(TAG, "[CallLog] Error in dismissNotification: " + e.getMessage());
         }
     }
 

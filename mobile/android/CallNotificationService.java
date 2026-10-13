@@ -34,6 +34,7 @@ public class CallNotificationService extends Service {
     public static final String ACTION_INCOMING_CALL = "com.devnest.app.INCOMING_CALL";
     public static final String ACTION_STOP_CALL = "com.devnest.app.STOP_CALL";
     public static final String ACTION_CANCEL_CALL = "com.devnest.app.CANCEL_CALL";
+    public static final String ACTION_DISMISS_NOTIFICATION = "com.devnest.app.DISMISS_NOTIFICATION";
     public static final String ACTION_MISSED_CALL = "com.devnest.app.MISSED_CALL";
     public static final String ACTION_START_LISTENER = "com.devnest.app.START_LISTENER";
     public static final String ACTION_STOP_LISTENER = "com.devnest.app.STOP_LISTENER";
@@ -128,6 +129,19 @@ public class CallNotificationService extends Service {
             return START_NOT_STICKY;
         }
 
+        if (ACTION_DISMISS_NOTIFICATION.equals(action)) {
+            String callId = intent.getStringExtra("callId");
+            stopCallAlerts();
+            if (callId != null && !callId.isEmpty()) {
+                NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm != null) {
+                    nm.cancel(getNotificationId(callId));
+                }
+            }
+            stopForeground(true);
+            return START_NOT_STICKY;
+        }
+
         if (ACTION_CANCEL_CALL.equals(action) || ACTION_STOP_CALL.equals(action)) {
             String callId = intent.getStringExtra("callId");
             stopCallAlerts();
@@ -196,18 +210,10 @@ public class CallNotificationService extends Service {
         startForeground(notificationId, notification);
         Log.d(TAG, "[CallLog] Incoming call notification posted as foreground service: notifId=" + notificationId);
 
-        // Bring MainActivity to front with devnest://call deep link
-        try {
-            Intent bringToFront = new Intent();
-            bringToFront.setClassName(this, "io.github.webviewtemplate.MainActivity");
-            bringToFront.setAction(Intent.ACTION_VIEW);
-            bringToFront.setData(Uri.parse("devnest://call?action=incoming&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType));
-            bringToFront.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            startActivity(bringToFront);
-            Log.d(TAG, "[CallLog] Full-screen intent launched for MainActivity: callId=" + callId);
-        } catch (Exception e) {
-            Log.e(TAG, "[CallLog] Error launching full-screen MainActivity: " + e.getMessage());
-        }
+        // NOTE: We do NOT call startActivity directly from background here!
+        // Direct startActivity from a Service is prohibited on Android 10+ when the device is unlocked and in use,
+        // causing crashes/stops. The notification's setFullScreenIntent automatically handles lock-screen takeover
+        // when the screen is locked/off, and displays heads-up action buttons when the user is using the phone.
 
         return START_NOT_STICKY;
     }
@@ -280,6 +286,7 @@ public class CallNotificationService extends Service {
             }
             if (vibrator != null) {
                 vibrator.cancel();
+                vibrator = null;
                 Log.d(TAG, "[CallLog] Vibrator cancelled");
             }
         } catch (Exception e) {
@@ -295,7 +302,7 @@ public class CallNotificationService extends Service {
         Intent fullScreenIntent = new Intent();
         fullScreenIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
         fullScreenIntent.setAction(Intent.ACTION_VIEW);
-        fullScreenIntent.setData(Uri.parse("devnest://call?action=incoming&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType));
+        fullScreenIntent.setData(Uri.parse("devnest://call?action=incoming&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType + "&callerName=" + Uri.encode(callerName)));
         fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent fullScreenPendingIntent = PendingIntent.getActivity(
                 this, (callId + "_fs").hashCode(), fullScreenIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -305,7 +312,7 @@ public class CallNotificationService extends Service {
         Intent answerIntent = new Intent();
         answerIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
         answerIntent.setAction(Intent.ACTION_VIEW);
-        answerIntent.setData(Uri.parse("devnest://call?action=answer&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType));
+        answerIntent.setData(Uri.parse("devnest://call?action=answer&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType + "&callerName=" + Uri.encode(callerName)));
         answerIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent answerPendingIntent = PendingIntent.getActivity(
                 this, (callId + "_ans").hashCode(), answerIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
