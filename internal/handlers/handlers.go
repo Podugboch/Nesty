@@ -54,6 +54,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/community-stats", h.GetCommunityStats)
 	api.GET("/community/stats", h.GetCommunityStats)
 	api.GET("/webrtc/config", h.GetWebRTCConfig)
+	api.GET("/group-calls/active", h.GetActiveGroupCalls)
 
 	// PROTECTED ROUTES
 	protected := api.Group("/", utils.JWTMiddleware())
@@ -1744,5 +1745,17 @@ func (h *Handler) GetWebRTCConfig(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"iceServers": iceServers,
+	})
+}
+
+// GetActiveGroupCalls returns all currently ongoing group calls across channels
+func (h *Handler) GetActiveGroupCalls(c *gin.Context) {
+	if h.Hub == nil {
+		c.JSON(http.StatusOK, gin.H{"calls": []interface{}{}})
+		return
+	}
+	calls := h.Hub.GetActiveGroupCalls()
+	c.JSON(http.StatusOK, gin.H{
+		"calls": calls,
 	})
 }

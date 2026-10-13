@@ -64,6 +64,24 @@ type clusterMessage struct {
 	Payload        json.RawMessage `json:"payload"`
 }
 
+// GroupCallParticipant represents a participant in an active group call
+type GroupCallParticipant struct {
+	UserID    uint   `json:"user_id"`
+	Username  string `json:"username"`
+	Name      string `json:"name"`
+	AvatarURL string `json:"avatar_url"`
+}
+
+// ActiveGroupCall tracks an ongoing channel group call
+type ActiveGroupCall struct {
+	ChannelID    string                          `json:"channel_id"`
+	ChannelName  string                          `json:"channel_name"`
+	CallType     string                          `json:"call_type"` // "audio" | "video"
+	HostUserID   uint                            `json:"host_user_id"`
+	StartedAt    time.Time                       `json:"started_at"`
+	Participants map[uint]*GroupCallParticipant  `json:"participants"`
+}
+
 type Hub struct {
 	mu           sync.RWMutex
 	Clients      map[*SafeConn]uint
@@ -75,6 +93,9 @@ type Hub struct {
 	Unregister   chan *SafeConn
 	SendToUserC  chan userMessage
 	OnCallSignal CallSignalHandler
+
+	groupCallsMu sync.RWMutex
+	GroupCalls   map[string]*ActiveGroupCall
 
 	// Multi-instance distributed Redis clustering
 	redisClient *redis.Client
@@ -91,6 +112,7 @@ func NewHub() *Hub {
 		Register:     make(chan registration, 256),
 		Unregister:   make(chan *SafeConn, 256),
 		SendToUserC:  make(chan userMessage, 1024),
+		GroupCalls:   make(map[string]*ActiveGroupCall),
 		instanceID:   fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()),
 	}
 
@@ -263,6 +285,34 @@ func (h *Hub) HandleConnections(w http.ResponseWriter, r *http.Request, userID u
 				continue
 			}
 
+			// Handle group call queries (client requests active calls)
+			if msgType, ok := raw["type"].(string); ok && msgType == "group_call_query" {
+				activeCalls := h.GetActiveGroupCalls()
+				resp, _ := json.Marshal(map[string]interface{}{
+					"event": "group_call_broadcast",
+					"type":  "group_call_list",
+					"calls": activeCalls,
+				})
+				sc.WriteMessage(websocket.TextMessage, resp)
+				continue
+			}
+
+			// Handle group call broadcasts (start, join, leave, active sync)
+			if ev, ok := raw["event"].(string); ok && ev == "group_call_broadcast" {
+				raw["from_user_id"] = userID
+				h.RecordGroupCallEvent(userID, raw)
+				outMsg, _ := json.Marshal(raw)
+				h.Broadcast(string(outMsg))
+				continue
+			}
+			if typ, ok := raw["type"].(string); ok && strings.HasPrefix(typ, "group_call_") {
+				raw["from_user_id"] = userID
+				h.RecordGroupCallEvent(userID, raw)
+				outMsg, _ := json.Marshal(raw)
+				h.Broadcast(string(outMsg))
+				continue
+			}
+
 			// CRITICAL FIX: Guard against untargeted call_signal broadcast leaks
 			if ev, ok := raw["event"].(string); ok && ev == "call_signal" {
 				continue
@@ -273,6 +323,77 @@ func (h *Hub) HandleConnections(w http.ResponseWriter, r *http.Request, userID u
 		}
 
 		h.Broadcast(string(msg))
+	}
+}
+
+// GetActiveGroupCalls returns a list of all currently ongoing channel group calls
+func (h *Hub) GetActiveGroupCalls() []*ActiveGroupCall {
+	h.groupCallsMu.RLock()
+	defer h.groupCallsMu.RUnlock()
+	res := make([]*ActiveGroupCall, 0, len(h.GroupCalls))
+	for _, call := range h.GroupCalls {
+		res = append(res, call)
+	}
+	return res
+}
+
+// RecordGroupCallEvent updates the Hub's in-memory group call registry based on incoming events
+func (h *Hub) RecordGroupCallEvent(userID uint, raw map[string]interface{}) {
+	h.groupCallsMu.Lock()
+	defer h.groupCallsMu.Unlock()
+
+	channelID, _ := raw["channel_id"].(string)
+	if channelID == "" {
+		return
+	}
+	msgType, _ := raw["type"].(string)
+
+	call, exists := h.GroupCalls[channelID]
+	switch msgType {
+	case "group_call_start":
+		callType, _ := raw["call_type"].(string)
+		if callType == "" {
+			callType = "audio"
+		}
+		channelName, _ := raw["channel_name"].(string)
+		userName, _ := raw["name"].(string)
+		username, _ := raw["username"].(string)
+		avatarURL, _ := raw["avatar_url"].(string)
+
+		h.GroupCalls[channelID] = &ActiveGroupCall{
+			ChannelID:    channelID,
+			ChannelName:  channelName,
+			CallType:     callType,
+			HostUserID:   userID,
+			StartedAt:    time.Now(),
+			Participants: map[uint]*GroupCallParticipant{
+				userID: {
+					UserID:    userID,
+					Username:  username,
+					Name:      userName,
+					AvatarURL: avatarURL,
+				},
+			},
+		}
+	case "group_call_join":
+		if exists && call != nil {
+			userName, _ := raw["name"].(string)
+			username, _ := raw["username"].(string)
+			avatarURL, _ := raw["avatar_url"].(string)
+			call.Participants[userID] = &GroupCallParticipant{
+				UserID:    userID,
+				Username:  username,
+				Name:      userName,
+				AvatarURL: avatarURL,
+			}
+		}
+	case "group_call_leave":
+		if exists && call != nil {
+			delete(call.Participants, userID)
+			if len(call.Participants) == 0 {
+				delete(h.GroupCalls, channelID)
+			}
+		}
 	}
 }
 

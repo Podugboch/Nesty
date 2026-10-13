@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { timeAgo } from "./utils/timeAgo";
 import "./App.css";
 
@@ -23,6 +23,7 @@ type User = {
   location?: string;
   avatar_url?: string;
   banner_url?: string;
+  is_following?: boolean;
 };
 
 type Comment = {
@@ -218,12 +219,17 @@ export default function App() {
   // -----------------------------
   // NAVIGATION & COMMUNITIES
   // -----------------------------
+  // NAVIGATION & COMMUNITIES (HOME IS NOT A COMMUNITY - IT'S THE ALGORITHMIC FEED)
+  // -----------------------------
   const [page, setPage] = useState<"feed" | "create" | "profile" | "reels">("feed");
-  const [selectedCommunity, setSelectedCommunity] = useState<string>("general");
+  const [selectedCommunity, setSelectedCommunity] = useState<string>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  // Algorithmic feed controls:
+  const [feedTab, setFeedTab] = useState<"for_you" | "following" | "trending" | "latest">("for_you");
+  const [feedFilterMedia, setFeedFilterMedia] = useState<boolean>(false);
+
   const [communities, setCommunities] = useState<CommunityChannel[]>([
-    { id: "general", name: "General", badgeClass: "general", subtitle: "Chat, share, and grow together." },
     { id: "coding-help", name: "Coding Help", badgeClass: "coding", subtitle: "Stuck? Get help from the community." },
     { id: "showcase", name: "Project Showcase", badgeClass: "showcase", subtitle: "Show off what you're building." },
     { id: "opportunities", name: "Opportunities", badgeClass: "opportunities", subtitle: "Jobs, Internships and more." },
@@ -323,7 +329,17 @@ export default function App() {
   const liveVideoRef = useRef<HTMLVideoElement | null>(null);
   const liveStreamMediaRef = useRef<MediaStream | null>(null);
 
-  // GROUP CALL STATE
+  // GROUP CALL STATE (WEBRTC MULTI-PEER MESH)
+  interface GroupCallParticipant {
+    id: number | string;
+    name: string;
+    username: string;
+    isSpeaking?: boolean;
+    avatarUrl?: string;
+    stream?: MediaStream;
+  }
+
+  const [activeGroupCalls, setActiveGroupCalls] = useState<Record<string, any>>({});
   const [groupCallState, setGroupCallState] = useState<{
     channelId: string;
     channelName: string;
@@ -332,11 +348,30 @@ export default function App() {
     isMuted: boolean;
     isVideoOff: boolean;
     isScreenSharing: boolean;
-    participants: { id: number | string; name: string; username: string; isSpeaking?: boolean; avatarUrl?: string }[];
+    participants: GroupCallParticipant[];
   } | null>(null);
+
+  const groupCallStateRef = useRef<{
+    channelId: string;
+    channelName: string;
+    type: "audio" | "video";
+    startTime: number;
+    isMuted: boolean;
+    isVideoOff: boolean;
+    isScreenSharing: boolean;
+    participants: GroupCallParticipant[];
+  } | null>(null);
+
   const groupLocalVideoRef = useRef<HTMLVideoElement | null>(null);
   const groupLocalStreamRef = useRef<MediaStream | null>(null);
+  const groupPeersRef = useRef<Map<number, RTCPeerConnection>>(new Map());
+  const groupCandidatesQueueRef = useRef<Map<number, RTCIceCandidateInit[]>>(new Map());
   const [groupCallDuration, setGroupCallDuration] = useState(0);
+
+  // Keep groupCallStateRef in sync with groupCallState
+  useEffect(() => {
+    groupCallStateRef.current = groupCallState;
+  }, [groupCallState]);
 
   // -----------------------------
   // SEARCH
@@ -2485,9 +2520,11 @@ export default function App() {
         ws.onopen = () => {
           try {
             ws.send(JSON.stringify({ type: "ping" }));
+            ws.send(JSON.stringify({ type: "group_call_query" }));
           } catch {}
           sendHttpHeartbeat();
           fetchCommunityStats();
+          fetchActiveGroupCalls();
         };
 
         ws.onmessage = (event) => {
@@ -2496,6 +2533,14 @@ export default function App() {
             if (data.type === "pong") return;
             if (data.event === "presence" || data.type === "presence") {
               fetchCommunityStats();
+              return;
+            }
+            if (data.event === "group_call_broadcast" || (data.type && data.type.startsWith("group_call_"))) {
+              handleGroupCallBroadcast(data);
+              return;
+            }
+            if (data.event === "group_call_signal") {
+              handleGroupCallSignal(data);
               return;
             }
             if (data.event === "message" && data.message) {
@@ -2687,14 +2732,15 @@ export default function App() {
   }, [token]);
 
   // -----------------------------
-  // FETCH FEED POSTS
+  // FETCH FEED POSTS (HOME FETCHES ALL POSTS PLATFORM-WIDE)
   // -----------------------------
   const fetchPosts = async (pageNum: number = 1, comm = selectedCommunity) => {
     if (!token) return;
     try {
-      const commParam = comm && comm !== "all" ? `&community=${encodeURIComponent(comm)}` : "";
+      const isGlobal = !comm || comm === "all" || comm === "home";
+      const commParam = isGlobal ? "" : `&community=${encodeURIComponent(comm)}`;
       const res = await fetch(
-        `${API_URL}/api/posts?page=${pageNum}&limit=30${commParam}`,
+        `${API_URL}/api/posts?page=${pageNum}&limit=50${commParam}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
@@ -2728,6 +2774,68 @@ export default function App() {
     if (!token) return;
     fetchPosts(1, selectedCommunity);
   }, [selectedCommunity, token]);
+
+  // -----------------------------
+  // ALGORITHMIC HOME FEED MULTI-FACTOR RANKING
+  // Controlling factors:
+  // 1. Time decay / Recency: 1 / (1 + ageHours * 0.12)
+  // 2. Engagement velocity: likes * 2.5 + comments * 4.0
+  // 3. Affinity: user follows author (+20) or author is self (+15)
+  // 4. Content richness: media present (+8, video +12)
+  // -----------------------------
+  const displayedPosts = useMemo((): Post[] => {
+    if (selectedCommunity !== "home") {
+      return posts.filter((p) => p.community === selectedCommunity || !selectedCommunity);
+    }
+
+    let list = [...posts];
+
+    if (feedFilterMedia) {
+      list = list.filter((p) => !!p.media_url);
+    }
+
+    if (feedTab === "latest") {
+      return list.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+    }
+
+    if (feedTab === "following") {
+      return list
+        .filter((p) => p.user?.is_following || Number(p.user?.id) === Number(user?.id))
+        .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+    }
+
+    if (feedTab === "trending") {
+      return list.sort((a, b) => {
+        const aEng = (a.likes || 0) * 3 + (a.comments?.length || 0) * 5;
+        const bEng = (b.likes || 0) * 3 + (b.comments?.length || 0) * 5;
+        return bEng - aEng;
+      });
+    }
+
+    // Default "for_you" Tab: Multi-factor Algorithmic Ranking
+    const now = Date.now();
+    return list.sort((a, b) => {
+      const ageA = Math.max(0, (now - new Date(a.created_at || 0).getTime()) / (1000 * 3600));
+      const ageB = Math.max(0, (now - new Date(b.created_at || 0).getTime()) / (1000 * 3600));
+
+      const decayA = 1 / (1 + ageA * 0.12);
+      const decayB = 1 / (1 + ageB * 0.12);
+
+      const mediaA = a.media_url ? (a.media_url.match(/\.(mp4|webm|mov)$/i) ? 12 : 8) : 0;
+      const mediaB = b.media_url ? (b.media_url.match(/\.(mp4|webm|mov)$/i) ? 12 : 8) : 0;
+
+      const affinityA = a.user?.is_following ? 20 : (Number(a.user?.id) === Number(user?.id) ? 15 : 0);
+      const affinityB = b.user?.is_following ? 20 : (Number(b.user?.id) === Number(user?.id) ? 15 : 0);
+
+      const engA = (a.likes || 0) * 2.5 + (a.comments?.length || 0) * 4.0;
+      const engB = (b.likes || 0) * 2.5 + (b.comments?.length || 0) * 4.0;
+
+      const scoreA = (10 + engA + mediaA + affinityA) * decayA;
+      const scoreB = (10 + engB + mediaB + affinityB) * decayB;
+
+      return scoreB - scoreA;
+    });
+  }, [posts, selectedCommunity, feedTab, feedFilterMedia, user]);
 
   // -----------------------------
   // USER SEARCH AUTOCOMPLETE
@@ -2842,7 +2950,7 @@ export default function App() {
         body: JSON.stringify({
           content: newPost,
           media_url: uploadedUrl,
-          community: selectedCommunity || "general",
+          community: selectedCommunity === "home" ? "" : (selectedCommunity || ""),
         }),
       });
 
@@ -3125,69 +3233,471 @@ export default function App() {
   };
 
   // -----------------------------
-  // GROUP CALL HANDLERS
+  // GROUP CALL WEBRTC MESH IMPLEMENTATION
   // -----------------------------
-  const startGroupCall = async (type: "audio" | "video") => {
+  const fetchActiveGroupCalls = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/group-calls/active`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.calls)) {
+          const map: Record<string, any> = {};
+          data.calls.forEach((c: any) => {
+            if (c && c.channel_id) map[c.channel_id] = c;
+          });
+          setActiveGroupCalls(map);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch active group calls", err);
+    }
+  };
+
+  const createGroupPeerConnection = (targetUserId: number, channelId: string): RTCPeerConnection => {
+    let existingPc = groupPeersRef.current.get(targetUserId);
+    if (existingPc && existingPc.signalingState !== "closed") {
+      return existingPc;
+    }
+
+    const defaultStunServers = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:global.stun.twilio.com:3478" },
+      { urls: "stun:stun.services.mozilla.com" },
+    ];
+
+    let iceServers: RTCIceServer[] = dynamicIceServersRef.current && dynamicIceServersRef.current.length > 0
+      ? dynamicIceServersRef.current
+      : defaultStunServers;
+
+    const turnUrl = import.meta.env.VITE_TURN_URL || "";
+    const turnUsername = import.meta.env.VITE_TURN_USERNAME || "";
+    const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || "";
+
+    if (turnUrl) {
+      const cleanUrl = turnUrl.replace(/^(turn:)/, "").replace(/\?.*$/, "");
+      iceServers = [
+        ...iceServers,
+        {
+          urls: [`turn:${cleanUrl}?transport=udp`, `turn:${cleanUrl}?transport=tcp`],
+          username: turnUsername,
+          credential: turnCredential,
+        },
+      ];
+    }
+
+    const pc = new RTCPeerConnection({
+      iceServers,
+      bundlePolicy: "balanced",
+      rtcpMuxPolicy: "require",
+    });
+
+    // Attach local stream tracks to this peer
+    if (groupLocalStreamRef.current) {
+      groupLocalStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, groupLocalStreamRef.current!);
+      });
+    }
+
+    // Ensure audio & video transceivers are configured
+    const senders = pc.getSenders();
+    const hasAudio = senders.some((s) => s.track && s.track.kind === "audio");
+    const hasVideo = senders.some((s) => s.track && s.track.kind === "video");
+    if (!hasAudio) {
+      try { pc.addTransceiver("audio", { direction: "sendrecv" }); } catch {}
+    }
+    if (!hasVideo) {
+      try { pc.addTransceiver("video", { direction: "sendrecv" }); } catch {}
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            event: "group_call_signal",
+            signal_type: "ice-candidate",
+            to_user_id: targetUserId,
+            channel_id: channelId,
+            candidate: event.candidate,
+          })
+        );
+      }
+    };
+
+    pc.ontrack = (event) => {
+      const remoteStream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
+      setGroupCallState((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          participants: prev.participants.map((p) =>
+            Number(p.id) === Number(targetUserId) ? { ...p, stream: remoteStream } : p
+          ),
+        };
+      });
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+        console.warn(`[Group Call] Peer ${targetUserId} connectionState: ${pc.connectionState}`);
+      }
+    };
+
+    groupPeersRef.current.set(targetUserId, pc);
+    return pc;
+  };
+
+  const createAndSendOfferToPeer = async (targetUserId: number, channelId: string) => {
+    try {
+      const pc = createGroupPeerConnection(targetUserId, channelId);
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+      await pc.setLocalDescription(offer);
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            event: "group_call_signal",
+            signal_type: "offer",
+            to_user_id: targetUserId,
+            channel_id: channelId,
+            sdp: offer,
+            name: user?.name || user?.username,
+            username: user?.username,
+            avatar_url: user?.avatar_url,
+          })
+        );
+      }
+    } catch (err) {
+      console.error(`[Group Call] Error creating offer for peer ${targetUserId}`, err);
+    }
+  };
+
+  const handleIncomingGroupOffer = async (
+    fromUserId: number,
+    sdp: RTCSessionDescriptionInit,
+    channelId: string,
+    callerMeta?: { name?: string; username?: string; avatar_url?: string }
+  ) => {
+    try {
+      // Ensure participant is in list
+      setGroupCallState((prev) => {
+        if (!prev) return null;
+        if (prev.participants.some((p) => Number(p.id) === Number(fromUserId))) return prev;
+        return {
+          ...prev,
+          participants: [
+            ...prev.participants,
+            {
+              id: fromUserId,
+              name: callerMeta?.name || callerMeta?.username || `User #${fromUserId}`,
+              username: callerMeta?.username || `user_${fromUserId}`,
+              avatarUrl: callerMeta?.avatar_url,
+            },
+          ],
+        };
+      });
+
+      const pc = createGroupPeerConnection(fromUserId, channelId);
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+
+      // Flush queued candidates
+      const queued = groupCandidatesQueueRef.current.get(fromUserId) || [];
+      for (const cand of queued) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch {}
+      }
+      groupCandidatesQueueRef.current.delete(fromUserId);
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            event: "group_call_signal",
+            signal_type: "answer",
+            to_user_id: fromUserId,
+            channel_id: channelId,
+            sdp: answer,
+            name: user?.name || user?.username,
+            username: user?.username,
+            avatar_url: user?.avatar_url,
+          })
+        );
+      }
+    } catch (err) {
+      console.error(`[Group Call] Error handling offer from peer ${fromUserId}`, err);
+    }
+  };
+
+  const handleIncomingGroupAnswer = async (fromUserId: number, sdp: RTCSessionDescriptionInit) => {
+    try {
+      const pc = groupPeersRef.current.get(fromUserId);
+      if (!pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+
+      // Flush queued candidates
+      const queued = groupCandidatesQueueRef.current.get(fromUserId) || [];
+      for (const cand of queued) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch {}
+      }
+      groupCandidatesQueueRef.current.delete(fromUserId);
+    } catch (err) {
+      console.error(`[Group Call] Error handling answer from peer ${fromUserId}`, err);
+    }
+  };
+
+  const handleIncomingGroupIce = async (fromUserId: number, candidate: RTCIceCandidateInit) => {
+    try {
+      const pc = groupPeersRef.current.get(fromUserId);
+      if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } else {
+        const list = groupCandidatesQueueRef.current.get(fromUserId) || [];
+        list.push(candidate);
+        groupCandidatesQueueRef.current.set(fromUserId, list);
+      }
+    } catch (err) {
+      console.warn(`[Group Call] Error adding ICE candidate from ${fromUserId}`, err);
+    }
+  };
+
+  const handleGroupCallBroadcast = async (data: any) => {
+    if (data.type === "group_call_list") {
+      if (Array.isArray(data.calls)) {
+        const map: Record<string, any> = {};
+        data.calls.forEach((c: any) => {
+          if (c && c.channel_id) map[c.channel_id] = c;
+        });
+        setActiveGroupCalls(map);
+      }
+      return;
+    }
+
+    if (data.type === "group_call_start" || data.type === "group_call_join") {
+      const channelId = data.channel_id;
+      if (!channelId) return;
+
+      setActiveGroupCalls((prev) => {
+        const existing = prev[channelId] || {
+          channel_id: channelId,
+          channel_name: data.channel_name || channelId,
+          call_type: data.call_type || "audio",
+          participants: {},
+        };
+        const parts = { ...existing.participants };
+        if (data.from_user_id) {
+          parts[data.from_user_id] = {
+            user_id: data.from_user_id,
+            name: data.name,
+            username: data.username,
+            avatar_url: data.avatar_url,
+          };
+        }
+        return {
+          ...prev,
+          [channelId]: { ...existing, participants: parts },
+        };
+      });
+
+      // If current user is in this channel's call and this broadcast is from someone else:
+      const currentCall = groupCallStateRef.current;
+      if (currentCall && currentCall.channelId === channelId) {
+        const fromId = Number(data.from_user_id);
+        if (fromId && fromId !== Number(user?.id)) {
+          setGroupCallState((prev) => {
+            if (!prev) return null;
+            if (prev.participants.some((p) => Number(p.id) === fromId)) return prev;
+            return {
+              ...prev,
+              participants: [
+                ...prev.participants,
+                {
+                  id: fromId,
+                  name: data.name || `@${data.username}`,
+                  username: data.username || `user_${fromId}`,
+                  avatarUrl: data.avatar_url,
+                },
+              ],
+            };
+          });
+
+          // Existing member initiates offer to newly joined participant
+          createAndSendOfferToPeer(fromId, channelId);
+        }
+      }
+      return;
+    }
+
+    if (data.type === "group_call_leave") {
+      const channelId = data.channel_id;
+      const fromId = Number(data.from_user_id);
+      if (!channelId || !fromId) return;
+
+      setActiveGroupCalls((prev) => {
+        const existing = prev[channelId];
+        if (!existing) return prev;
+        const parts = { ...existing.participants };
+        delete parts[fromId];
+        if (Object.keys(parts).length === 0) {
+          const next = { ...prev };
+          delete next[channelId];
+          return next;
+        }
+        return {
+          ...prev,
+          [channelId]: { ...existing, participants: parts },
+        };
+      });
+
+      const currentCall = groupCallStateRef.current;
+      if (currentCall && currentCall.channelId === channelId) {
+        const pc = groupPeersRef.current.get(fromId);
+        if (pc) {
+          try { pc.close(); } catch {}
+          groupPeersRef.current.delete(fromId);
+        }
+        setGroupCallState((prev) =>
+          prev ? { ...prev, participants: prev.participants.filter((p) => Number(p.id) !== fromId) } : null
+        );
+      }
+    }
+  };
+
+  const handleGroupCallSignal = async (data: any) => {
+    const fromId = Number(data.from_user_id);
+    if (!fromId || fromId === Number(user?.id)) return;
+
+    if (data.signal_type === "offer") {
+      await handleIncomingGroupOffer(fromId, data.sdp, data.channel_id, {
+        name: data.name,
+        username: data.username,
+        avatar_url: data.avatar_url,
+      });
+      return;
+    }
+
+    if (data.signal_type === "answer") {
+      await handleIncomingGroupAnswer(fromId, data.sdp);
+      return;
+    }
+
+    if (data.signal_type === "ice-candidate" && data.candidate) {
+      await handleIncomingGroupIce(fromId, data.candidate);
+      return;
+    }
+  };
+
+  const startGroupCall = async (type: "audio" | "video", targetChannelId?: string) => {
     try {
       requestMobileScreenTakeover();
+      const targetId = targetChannelId || (selectedCommunity !== "home" ? selectedCommunity : "coding-help");
+      const activeComm = communities.find((c) => c.id === targetId) || communities[0];
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: type === "video" ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" } : false,
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       groupLocalStreamRef.current = stream;
 
-      const otherMembers = (communityStats.online_users || [])
-        .filter((u) => u.id && u.id !== user?.id)
-        .slice(0, 3)
-        .map((u) => ({
-          id: u.id!,
-          name: u.name || u.username,
-          username: u.username,
-          avatarUrl: u.avatar_url,
-          isSpeaking: false,
-        }));
+      // Check if there are already other participants registered in this channel
+      const existingCall = activeGroupCalls[activeComm.id];
+      const initialParticipants: GroupCallParticipant[] = [];
+      if (existingCall && existingCall.participants) {
+        Object.values(existingCall.participants).forEach((p: any) => {
+          const uid = Number(p.user_id);
+          if (uid && uid !== Number(user?.id)) {
+            initialParticipants.push({
+              id: uid,
+              name: p.name || p.username || `User #${uid}`,
+              username: p.username || `user_${uid}`,
+              avatarUrl: p.avatar_url,
+            });
+          }
+        });
+      }
 
-      const activeComm = communities.find((c) => c.id === selectedCommunity) || communities[0];
-      setGroupCallState({
+      const stateObj = {
         channelId: activeComm.id,
         channelName: activeComm.name,
         type,
         startTime: Date.now(),
         isMuted: false,
-        isVideoOff: false,
+        isVideoOff: type === "audio",
         isScreenSharing: false,
-        participants: otherMembers,
-      });
+        participants: initialParticipants,
+      };
 
+      groupCallStateRef.current = stateObj;
+      setGroupCallState(stateObj);
+
+      // Announce call join/start to WebSocket hub
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(
           JSON.stringify({
-            event: "call_signal",
-            type: "group_call_invite",
+            event: "group_call_broadcast",
+            type: "group_call_join",
             channel_id: activeComm.id,
             channel_name: activeComm.name,
             call_type: type,
-            caller_name: user?.name || user?.username,
+            from_user_id: user?.id,
+            name: user?.name || user?.username,
+            username: user?.username,
+            avatar_url: user?.avatar_url,
           })
         );
       }
 
       setTimeout(() => {
-        if (groupLocalVideoRef.current) {
+        if (groupLocalVideoRef.current && type === "video") {
           groupLocalVideoRef.current.srcObject = stream;
         }
       }, 150);
+
+      // Initiate connection to any existing members
+      initialParticipants.forEach((p) => {
+        createAndSendOfferToPeer(Number(p.id), activeComm.id);
+      });
     } catch (err) {
       console.error("Failed to start group call", err);
       alert("Unable to access microphone or camera for group call.");
     }
   };
 
+  const joinGroupCall = (channelId: string, _channelName: string, callType: "audio" | "video") => {
+    startGroupCall(callType, channelId);
+  };
+
   const leaveGroupCall = () => {
+    const currentCall = groupCallStateRef.current;
+    if (currentCall && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          event: "group_call_broadcast",
+          type: "group_call_leave",
+          channel_id: currentCall.channelId,
+          from_user_id: user?.id,
+        })
+      );
+    }
+
     if (groupLocalStreamRef.current) {
       groupLocalStreamRef.current.getTracks().forEach((track) => track.stop());
       groupLocalStreamRef.current = null;
     }
+
+    groupPeersRef.current.forEach((pc) => {
+      try { pc.close(); } catch {}
+    });
+    groupPeersRef.current.clear();
+    groupCandidatesQueueRef.current.clear();
+
+    groupCallStateRef.current = null;
     setGroupCallState(null);
     restoreMobileScreenLock();
   };
@@ -3869,10 +4379,10 @@ export default function App() {
         <div className="sidebar-nav-group">
           <button
             data-nav="home"
-            className={`nav-item-btn ${page === "feed" && selectedCommunity === "general" ? "active" : ""}`}
+            className={`nav-item-btn ${page === "feed" && selectedCommunity === "home" ? "active" : ""}`}
             onClick={() => {
               setPage("feed");
-              setSelectedCommunity("general");
+              setSelectedCommunity("home");
               setMobileMenuOpen(false);
             }}
           >
@@ -3883,22 +4393,6 @@ export default function App() {
               </svg>
             </span>
             <span>Home</span>
-          </button>
-
-          <button
-            data-nav="feed"
-            className={`nav-item-btn ${page === "feed" && selectedCommunity !== "general" ? "active" : ""}`}
-            onClick={() => {
-              setPage("feed");
-              setMobileMenuOpen(false);
-            }}
-          >
-            <span className="nav-item-icon">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-              </svg>
-            </span>
-            <span>Feed</span>
           </button>
 
           <button
@@ -4527,45 +5021,134 @@ export default function App() {
         {/* VIEW 1: HOME & COMMUNITY FEED */}
         {page === "feed" && (
           <>
-            {/* COMMUNITY GROUP HEADER WITH AUDIO & VIDEO GROUP CALL BUTTONS */}
-            <div className="community-group-header-card">
-              <div className="group-header-left">
-                <div className={`group-header-badge ${activeChannel.badgeClass}`}>
-                  #
-                </div>
-                <div className="group-header-details">
-                  <div className="group-header-title-line">
-                    <h1 className="group-header-name">{activeChannel.name}</h1>
-                    <span className="group-online-chip">
-                      <span className="group-online-dot" />
-                      {liveUserCount} online
-                    </span>
+            {/* HOME ALGORITHMIC FEED HEADER (NO COMMUNITY/GENERAL TAG) VS COMMUNITY GROUP HEADER */}
+            {selectedCommunity === "home" ? (
+              <div className="home-algorithmic-header">
+                <div className="home-algo-top">
+                  <div className="home-algo-tabs">
+                    <button
+                      type="button"
+                      className={`home-algo-tab-btn ${feedTab === "for_you" ? "active" : ""}`}
+                      onClick={() => setFeedTab("for_you")}
+                    >
+                      <span>✨ For You</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`home-algo-tab-btn ${feedTab === "following" ? "active" : ""}`}
+                      onClick={() => setFeedTab("following")}
+                    >
+                      <span>👥 Following</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`home-algo-tab-btn ${feedTab === "trending" ? "active" : ""}`}
+                      onClick={() => setFeedTab("trending")}
+                    >
+                      <span>🔥 Trending</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`home-algo-tab-btn ${feedTab === "latest" ? "active" : ""}`}
+                      onClick={() => setFeedTab("latest")}
+                    >
+                      <span>🕒 Latest</span>
+                    </button>
                   </div>
-                  <p className="group-header-desc">{activeChannel.subtitle || "Community Channel"}</p>
+
+                  <div className="home-algo-controls">
+                    <button
+                      type="button"
+                      className={`home-algo-pill-btn ${feedFilterMedia ? "active" : ""}`}
+                      onClick={() => setFeedFilterMedia(!feedFilterMedia)}
+                      title="Filter only posts with photos or videos"
+                    >
+                      <span>📷 Media</span>
+                      {feedFilterMedia && <span>✓</span>}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="home-algo-meta-bar">
+                  <span className="home-algo-badge">
+                    <span className="home-algo-badge-dot" />
+                    {feedTab === "for_you"
+                      ? "Smart Feed • Ranked by engagement velocity, author affinity & recency"
+                      : feedTab === "following"
+                      ? "Following Feed • Real-time posts from people you follow"
+                      : feedTab === "trending"
+                      ? "Trending Feed • Top discussed & liked posts"
+                      : "Chronological Feed • Newest posts across Nesty"}
+                  </span>
+                  <span>{displayedPosts.length} posts</span>
                 </div>
               </div>
+            ) : (
+              /* COMMUNITY GROUP HEADER WITH AUDIO & VIDEO GROUP CALL BUTTONS (ONLY RENDERED INSIDE GROUPS) */
+              <div className="community-group-header-card">
+                <div className="group-header-left">
+                  <div className={`group-header-badge ${activeChannel?.badgeClass || "coding"}`}>
+                    #
+                  </div>
+                  <div className="group-header-details">
+                    <div className="group-header-title-line">
+                      <h1 className="group-header-name">{activeChannel?.name || "Community Channel"}</h1>
+                      <span className="group-online-chip">
+                        <span className="group-online-dot" />
+                        {liveUserCount} online
+                      </span>
+                    </div>
+                    <p className="group-header-desc">{activeChannel?.subtitle || "Community Channel"}</p>
 
-              <div className="group-header-call-actions">
-                <button
-                  type="button"
-                  className="group-call-action-btn audio-call"
-                  onClick={() => startGroupCall("audio")}
-                  title={`Start Group Audio Call in #${activeChannel.name}`}
-                >
-                  <span className="group-call-icon">📞</span>
-                  <span>Audio Call</span>
-                </button>
-                <button
-                  type="button"
-                  className="group-call-action-btn video-call"
-                  onClick={() => startGroupCall("video")}
-                  title={`Start Group Video Call in #${activeChannel.name}`}
-                >
-                  <span className="group-call-icon">📹</span>
-                  <span>Video Call</span>
-                </button>
+                    {/* Active call indicator in community group */}
+                    {activeChannel && activeGroupCalls[activeChannel.id] && (
+                      <div className="group-call-active-banner">
+                        <span className="group-call-live-indicator">
+                          <span className="group-call-live-dot" />
+                          🔴 Group {activeGroupCalls[activeChannel.id].call_type === "video" ? "Video" : "Audio"} Call Active
+                          {activeGroupCalls[activeChannel.id].participants &&
+                            ` • ${Object.keys(activeGroupCalls[activeChannel.id].participants).length} connected`}
+                        </span>
+                        <button
+                          type="button"
+                          className="group-call-join-btn"
+                          onClick={() =>
+                            joinGroupCall(
+                              activeChannel.id,
+                              activeChannel.name,
+                              activeGroupCalls[activeChannel.id].call_type || "audio"
+                            )
+                          }
+                        >
+                          Join Call
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="group-header-call-actions">
+                  <button
+                    type="button"
+                    className="group-call-action-btn audio-call"
+                    onClick={() => startGroupCall("audio", activeChannel?.id)}
+                    title={`Start Group Audio Call in #${activeChannel?.name}`}
+                  >
+                    <span className="group-call-icon">📞</span>
+                    <span>Audio Call</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="group-call-action-btn video-call"
+                    onClick={() => startGroupCall("video", activeChannel?.id)}
+                    title={`Start Group Video Call in #${activeChannel?.name}`}
+                  >
+                    <span className="group-call-icon">📹</span>
+                    <span>Video Call</span>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* INLINE QUICK POST CREATOR */}
             <div className="inline-creator-card">
@@ -4679,13 +5262,25 @@ export default function App() {
 
             {/* POSTS FEED LIST */}
             <div className="nesty-posts-feed">
-              {posts.map((post) => {
-                const displayName = post.user?.name || post.user?.username || "piscine_builder";
-                const handle = post.user?.username || "piscine_builder";
-                const isMyPost = user?.id && post.user?.id === user.id;
+              {displayedPosts.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)" }}>
+                  <p style={{ fontSize: "16px", fontWeight: 600, color: "var(--text-h)" }}>No posts found in this feed view.</p>
+                  <p style={{ fontSize: "13px", marginTop: "4px" }}>
+                    {feedTab === "following"
+                      ? "You haven't followed anyone yet, or people you follow haven't posted. Try '✨ For You'!"
+                      : feedFilterMedia
+                      ? "No posts with media found matching your filters."
+                      : "Be the first to post something to Nesty!"}
+                  </p>
+                </div>
+              ) : (
+                displayedPosts.map((post: Post) => {
+                  const displayName = post.user?.name || post.user?.username || "piscine_builder";
+                  const handle = post.user?.username || "piscine_builder";
+                  const isMyPost = user?.id && post.user?.id === user.id;
 
-                return (
-                  <article key={post.id} className="post-card-nesty">
+                  return (
+                    <article key={post.id} className="post-card-nesty">
                     <div className="post-header-nesty">
                       <div
                         className="avatar-with-dot"
@@ -4830,7 +5425,7 @@ export default function App() {
                     {/* EXPANDABLE COMMENTS */}
                     {expandedComments[post.id] && (
                       <div className="comments-section-nesty">
-                        {(post.comments || []).map((c) => (
+                        {(post.comments || []).map((c: Comment) => (
                           <div key={c.id} className="comment-row">
                             <div
                               className="comment-avatar"
@@ -4879,7 +5474,7 @@ export default function App() {
                     )}
                   </article>
                 );
-              })}
+              }))}
             </div>
           </>
         )}
@@ -7399,20 +7994,33 @@ export default function App() {
               {/* REMOTE PARTICIPANTS TILES */}
               {groupCallState.participants.map((p, idx) => (
                 <div key={p.id || idx} className="group-call-tile remote-tile">
-                  <div className="group-call-avatar-placeholder">
-                    <div className="group-call-avatar-circle remote-pulse">
-                      {p.avatarUrl ? (
-                        <img src={p.avatarUrl} alt="" />
-                      ) : (
-                        (p.username || "N").charAt(0).toUpperCase()
+                  {p.stream && groupCallState.type === "video" ? (
+                    <VideoFeed stream={p.stream} isMuted={false} className="group-call-video-feed" />
+                  ) : (
+                    <div className="group-call-avatar-placeholder">
+                      {p.stream && (
+                        <audio
+                          autoPlay
+                          playsInline
+                          ref={(el) => {
+                            if (el && el.srcObject !== p.stream) el.srcObject = p.stream!;
+                          }}
+                        />
                       )}
+                      <div className="group-call-avatar-circle remote-pulse">
+                        {p.avatarUrl ? (
+                          <img src={p.avatarUrl} alt="" />
+                        ) : (
+                          (p.username || "N").charAt(0).toUpperCase()
+                        )}
+                      </div>
+                      <div className="speaking-wave-indicator">
+                        <span className="wave-bar bar-1" />
+                        <span className="wave-bar bar-2" />
+                        <span className="wave-bar bar-3" />
+                      </div>
                     </div>
-                    <div className="speaking-wave-indicator">
-                      <span className="wave-bar bar-1" />
-                      <span className="wave-bar bar-2" />
-                      <span className="wave-bar bar-3" />
-                    </div>
-                  </div>
+                  )}
                   <div className="group-call-tile-overlay">
                     <span className="group-participant-name">{p.name || `@${p.username}`}</span>
                     <span className="group-tile-tag">Active</span>
