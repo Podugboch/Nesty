@@ -1771,7 +1771,7 @@ export default function App() {
               : `📞 Incoming Voice Call from ${callerUser.name || callerUser.username}`;
             const sysNotif = new Notification(notifTitle, {
               body: "DevNest • Tap to answer immediately",
-              icon: callerUser.avatar_url || "/favicon.ico",
+              icon: callerUser.avatar_url || "/nesty-logo.png",
               tag: "devnest-incoming-call",
               requireInteraction: true,
               renotify: true,
@@ -1899,7 +1899,7 @@ export default function App() {
           try {
             new Notification(isVid ? "📹❌ Missed Video Call" : "📵 Missed Audio Call", {
               body: `Missed call from ${caller.name || caller.username}. Tap to call back.`,
-              icon: caller.avatar_url || "/favicon.ico",
+              icon: caller.avatar_url || "/nesty-logo.png",
               tag: `missed-call-${Date.now()}`,
             });
           } catch {}
@@ -2011,7 +2011,7 @@ export default function App() {
           try {
             new Notification(isVid ? "📹❌ Missed Video Call" : "📵 Missed Audio Call", {
               body: `Missed call from ${caller.name || caller.username}. Tap to call back.`,
-              icon: caller.avatar_url || "/favicon.ico",
+              icon: caller.avatar_url || "/nesty-logo.png",
               tag: `missed-call-${Date.now()}`,
             });
           } catch {}
@@ -2391,7 +2391,7 @@ export default function App() {
                   try {
                     new Notification(isVid ? "📹❌ Missed Video Call" : "📵 Missed Audio Call", {
                       body: `Missed call from ${callerName}. Tap to open DevNest.`,
-                      icon: data.notification.actor?.avatar_url || "/favicon.ico",
+                      icon: data.notification.actor?.avatar_url || "/nesty-logo.png",
                       tag: `missed-call-${data.notification.id || Date.now()}`,
                     });
                   } catch {}
@@ -6247,7 +6247,7 @@ export default function App() {
                   style={{ fontSize: "11px", padding: "5px 12px" }}
                   onClick={() => {
                     if ((window as any).AndroidCallBridge?.openChannelSettings) {
-                      (window as any).AndroidCallBridge.openChannelSettings("incoming_calls_v2");
+                      (window as any).AndroidCallBridge.openChannelSettings("incoming_calls_v3");
                     }
                   }}
                 >

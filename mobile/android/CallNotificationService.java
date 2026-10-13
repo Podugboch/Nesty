@@ -10,11 +10,15 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
+import android.media.AudioManager;
+import android.media.MediaPlayer;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.Vibrator;
 import android.util.Log;
@@ -33,7 +37,7 @@ public class CallNotificationService extends Service {
     private static volatile boolean sKeepListening = false;
 
     // 1. Android Notification Channel Identifiers
-    public static final String CHANNEL_INCOMING_CALLS_V2 = "incoming_calls_v2";
+    public static final String CHANNEL_INCOMING_CALLS_V3 = "incoming_calls_v3";
     public static final String CHANNEL_ONGOING_CALLS = "ongoing_calls";
     public static final String CHANNEL_MISSED_CALLS = "missed_calls";
 
@@ -49,9 +53,12 @@ public class CallNotificationService extends Service {
     public static final String ACTION_START_LISTENER = "com.devnest.app.START_LISTENER";
     public static final String ACTION_STOP_LISTENER = "com.devnest.app.STOP_LISTENER";
 
+    private MediaPlayer mediaPlayer;
     private Ringtone ringtone;
     private Vibrator vibrator;
     private PowerManager.WakeLock wakeLock;
+    private Handler fallbackRingtoneHandler;
+    private Runnable fallbackRingtoneRunnable;
 
     public static int getNotificationId(String callId) {
         if (callId == null || callId.isEmpty()) {
@@ -68,12 +75,13 @@ public class CallNotificationService extends Service {
                 try {
                     manager.deleteNotificationChannel("nesty_incoming_calls");
                     manager.deleteNotificationChannel("incoming_calls");
+                    manager.deleteNotificationChannel("incoming_calls_v2");
                     manager.deleteNotificationChannel("nesty_calling_listener");
                 } catch (Exception ignored) {}
 
-                // Channel 1: incoming_calls_v2 (IMPORTANCE_HIGH, looping ringtone, DND bypass, repeating vibration)
+                // Channel 1: incoming_calls_v3 (IMPORTANCE_HIGH, looping ringtone, DND bypass, repeating vibration)
                 NotificationChannel incomingChannel = new NotificationChannel(
-                        CHANNEL_INCOMING_CALLS_V2,
+                        CHANNEL_INCOMING_CALLS_V3,
                         "DevNest Incoming Calls",
                         NotificationManager.IMPORTANCE_HIGH
                 );
@@ -83,13 +91,17 @@ public class CallNotificationService extends Service {
                 incomingChannel.setShowBadge(false);
 
                 Uri ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+                if (ringtoneUri == null) {
+                    ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+                }
                 AudioAttributes audioAttributes = new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setLegacyStreamType(AudioManager.STREAM_RING)
                         .build();
                 incomingChannel.setSound(ringtoneUri, audioAttributes);
                 incomingChannel.enableVibration(true);
-                incomingChannel.setVibrationPattern(new long[]{0, 1000, 1000, 1000});
+                incomingChannel.setVibrationPattern(new long[]{0, 1000, 1000, 1000, 1000, 1000});
                 manager.createNotificationChannel(incomingChannel);
 
                 // Channel 2: ongoing_calls (IMPORTANCE_LOW, silent foreground service)
@@ -114,7 +126,7 @@ public class CallNotificationService extends Service {
                 missedChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
                 manager.createNotificationChannel(missedChannel);
 
-                Log.d(TAG, "[CallLog] Notification channels created natively: incoming_calls_v2, ongoing_calls, missed_calls");
+                Log.d(TAG, "[CallLog] Notification channels created natively: incoming_calls_v3, ongoing_calls, missed_calls");
             }
         }
     }
@@ -284,38 +296,113 @@ public class CallNotificationService extends Service {
         }
     }
 
-    private void startRingtoneAndVibration() {
+    private synchronized void startRingtoneAndVibration() {
         try {
-            Uri ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-            ringtone = RingtoneManager.getRingtone(getApplicationContext(), ringtoneUri);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && ringtone != null) {
-                AudioAttributes audioAttributes = new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build();
-                ringtone.setAudioAttributes(audioAttributes);
-            }
-            if (ringtone != null && !ringtone.isPlaying()) {
-                ringtone.play();
-                Log.d(TAG, "[CallLog] Ringtone started (USAGE_NOTIFICATION_RINGTONE)");
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            int ringerMode = am != null ? am.getRingerMode() : AudioManager.RINGER_MODE_NORMAL;
+            Log.d(TAG, "[CallLog] startRingtoneAndVibration: ringerMode=" + ringerMode);
+
+            // 1. Play continuous looping ringtone if not in silent mode
+            if (ringerMode != AudioManager.RINGER_MODE_SILENT) {
+                try {
+                    Uri ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+                    if (ringtoneUri == null) {
+                        ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+                    }
+
+                    if (mediaPlayer != null) {
+                        try {
+                            if (mediaPlayer.isPlaying()) mediaPlayer.stop();
+                        } catch (Exception ignored) {}
+                        try {
+                            mediaPlayer.release();
+                        } catch (Exception ignored) {}
+                        mediaPlayer = null;
+                    }
+
+                    mediaPlayer = new MediaPlayer();
+                    mediaPlayer.setDataSource(getApplicationContext(), ringtoneUri);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                .setLegacyStreamType(AudioManager.STREAM_RING)
+                                .build();
+                        mediaPlayer.setAudioAttributes(audioAttributes);
+                    } else {
+                        mediaPlayer.setAudioStreamType(AudioManager.STREAM_RING);
+                    }
+                    mediaPlayer.setLooping(true);
+                    mediaPlayer.prepare();
+                    mediaPlayer.start();
+                    Log.d(TAG, "[CallLog] MediaPlayer looping ringtone started successfully");
+                } catch (Exception e) {
+                    Log.w(TAG, "[CallLog] MediaPlayer failed: " + e.getMessage() + ", falling back to RingtoneManager");
+                    try {
+                        Uri ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+                        if (ringtoneUri == null) {
+                            ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+                        }
+                        ringtone = RingtoneManager.getRingtone(getApplicationContext(), ringtoneUri);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && ringtone != null) {
+                            AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                    .setLegacyStreamType(AudioManager.STREAM_RING)
+                                    .build();
+                            ringtone.setAudioAttributes(audioAttributes);
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && ringtone != null) {
+                            ringtone.setLooping(true);
+                        }
+                        if (ringtone != null && !ringtone.isPlaying()) {
+                            ringtone.play();
+                            Log.d(TAG, "[CallLog] Fallback Ringtone started");
+                        }
+
+                        // Loop fallback for devices where Ringtone.play() doesn't loop
+                        if (fallbackRingtoneHandler == null) {
+                            fallbackRingtoneHandler = new Handler(Looper.getMainLooper());
+                        }
+                        fallbackRingtoneRunnable = new Runnable() {
+                            @Override
+                            public void run() {
+                                if (ringtone != null && !ringtone.isPlaying()) {
+                                    try {
+                                        ringtone.play();
+                                    } catch (Exception ignored) {}
+                                }
+                                if (fallbackRingtoneHandler != null) {
+                                    fallbackRingtoneHandler.postDelayed(this, 3000);
+                                }
+                            }
+                        };
+                        fallbackRingtoneHandler.postDelayed(fallbackRingtoneRunnable, 3000);
+                    } catch (Exception ex) {
+                        Log.e(TAG, "[CallLog] Fallback Ringtone also failed: " + ex.getMessage());
+                    }
+                }
             }
 
-            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-            if (vibrator != null) {
-                long[] pattern = {0, 1000, 1000, 1000};
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator.vibrate(android.os.VibrationEffect.createWaveform(pattern, 1));
-                } else {
-                    vibrator.vibrate(pattern, 1);
+            // 2. Play continuous vibration pattern if not in silent mode
+            if (ringerMode != AudioManager.RINGER_MODE_SILENT) {
+                vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                if (vibrator != null) {
+                    long[] pattern = {0, 1000, 1000, 1000, 1000, 1000};
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        vibrator.vibrate(android.os.VibrationEffect.createWaveform(pattern, 1));
+                    } else {
+                        vibrator.vibrate(pattern, 1);
+                    }
+                    Log.d(TAG, "[CallLog] Repeating vibration pattern started");
                 }
-                Log.d(TAG, "[CallLog] Repeating vibration pattern started");
             }
         } catch (Exception e) {
             Log.e(TAG, "[CallLog] Error playing ringtone/vibrator: " + e.getMessage());
         }
     }
 
-    private void stopCallAlerts() {
+    private synchronized void stopCallAlerts() {
         try {
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();
@@ -324,6 +411,21 @@ public class CallNotificationService extends Service {
             }
         } catch (Exception ignored) {}
         try {
+            if (mediaPlayer != null) {
+                try {
+                    if (mediaPlayer.isPlaying()) mediaPlayer.stop();
+                } catch (Exception ignored) {}
+                try {
+                    mediaPlayer.release();
+                } catch (Exception ignored) {}
+                mediaPlayer = null;
+                Log.d(TAG, "[CallLog] MediaPlayer stopped & released");
+            }
+            if (fallbackRingtoneHandler != null && fallbackRingtoneRunnable != null) {
+                fallbackRingtoneHandler.removeCallbacks(fallbackRingtoneRunnable);
+                fallbackRingtoneHandler = null;
+                fallbackRingtoneRunnable = null;
+            }
             if (ringtone != null && ringtone.isPlaying()) {
                 ringtone.stop();
                 ringtone = null;
@@ -377,7 +479,10 @@ public class CallNotificationService extends Service {
                 .setKey(callerId)
                 .build();
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_INCOMING_CALLS_V2)
+        Uri ringUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+        if (ringUri == null) ringUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_INCOMING_CALLS_V3)
                 .setSmallIcon(android.R.drawable.sym_call_incoming)
                 .setContentTitle(callerName)
                 .setContentText(callTypeText)
@@ -388,6 +493,7 @@ public class CallNotificationService extends Service {
                 .setAutoCancel(false)
                 .setTimeoutAfter(30000)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setSound(ringUri, AudioManager.STREAM_RING)
                 .setFullScreenIntent(fullScreenPendingIntent, true)
                 .setContentIntent(fullScreenPendingIntent);
 
@@ -407,7 +513,9 @@ public class CallNotificationService extends Service {
             Log.d(TAG, "[CallLog] Styled notification using heads-up action buttons");
         }
 
-        return builder.build();
+        Notification notif = builder.build();
+        notif.flags |= Notification.FLAG_INSISTENT;
+        return notif;
     }
 
     private Notification buildListenerNotification() {

@@ -256,7 +256,7 @@ public class AndroidCallBridge {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager nm = context.getSystemService(NotificationManager.class);
             if (nm != null) {
-                NotificationChannel channel = nm.getNotificationChannel(CallNotificationService.CHANNEL_INCOMING_CALLS_V2);
+                NotificationChannel channel = nm.getNotificationChannel(CallNotificationService.CHANNEL_INCOMING_CALLS_V3);
                 if (channel != null) {
                     channelImportance = channel.getImportance();
                     channelValid = (channelImportance >= NotificationManager.IMPORTANCE_HIGH);
@@ -321,7 +321,7 @@ public class AndroidCallBridge {
     @JavascriptInterface
     public void openChannelSettings(String channelId) {
         try {
-            String chId = (channelId != null && !channelId.isEmpty()) ? channelId : CallNotificationService.CHANNEL_INCOMING_CALLS_V2;
+            String chId = (channelId != null && !channelId.isEmpty()) ? channelId : CallNotificationService.CHANNEL_INCOMING_CALLS_V3;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Intent intent = new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS);
                 intent.putExtra(Settings.EXTRA_APP_PACKAGE, context.getPackageName());
