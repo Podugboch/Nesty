@@ -37,6 +37,21 @@
 		<string>remote-notification</string>
 	</array>
 
+	<!-- Custom URL Schemes for Call Takeover Deep Linking -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.devnest.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>devnest</string>
+			</array>
+		</dict>
+	</array>
+
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

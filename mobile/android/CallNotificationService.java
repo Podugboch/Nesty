@@ -13,29 +13,105 @@ import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.os.Vibrator;
+import android.util.Log;
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.Person;
 
 public class CallNotificationService extends Service {
-    public static final String CHANNEL_ID = "nesty_incoming_calls";
-    public static final int NOTIFICATION_ID = 20261;
+    private static final String TAG = "DevNestCall";
 
-    public static final String LISTENER_CHANNEL_ID = "nesty_calling_listener";
+    // 1. Android Notification Channel Identifiers
+    public static final String CHANNEL_INCOMING_CALLS_V2 = "incoming_calls_v2";
+    public static final String CHANNEL_ONGOING_CALLS = "ongoing_calls";
+    public static final String CHANNEL_MISSED_CALLS = "missed_calls";
+
+    // Default listener notification ID
     public static final int LISTENER_NOTIFICATION_ID = 20260;
 
+    // Service Intent Actions
     public static final String ACTION_INCOMING_CALL = "com.devnest.app.INCOMING_CALL";
     public static final String ACTION_STOP_CALL = "com.devnest.app.STOP_CALL";
+    public static final String ACTION_CANCEL_CALL = "com.devnest.app.CANCEL_CALL";
+    public static final String ACTION_MISSED_CALL = "com.devnest.app.MISSED_CALL";
     public static final String ACTION_START_LISTENER = "com.devnest.app.START_LISTENER";
     public static final String ACTION_STOP_LISTENER = "com.devnest.app.STOP_LISTENER";
 
     private Ringtone ringtone;
     private Vibrator vibrator;
-    private android.os.PowerManager.WakeLock wakeLock;
+    private PowerManager.WakeLock wakeLock;
+
+    public static int getNotificationId(String callId) {
+        if (callId == null || callId.isEmpty()) {
+            return 20261;
+        }
+        return Math.abs(callId.hashCode() % 800000) + 10000;
+    }
+
+    public static void createNotificationChannels(Context context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            if (manager != null) {
+                // Delete previous obsolete or misconfigured channels
+                try {
+                    manager.deleteNotificationChannel("nesty_incoming_calls");
+                    manager.deleteNotificationChannel("incoming_calls");
+                    manager.deleteNotificationChannel("nesty_calling_listener");
+                } catch (Exception ignored) {}
+
+                // Channel 1: incoming_calls_v2 (IMPORTANCE_HIGH, looping ringtone, DND bypass, repeating vibration)
+                NotificationChannel incomingChannel = new NotificationChannel(
+                        CHANNEL_INCOMING_CALLS_V2,
+                        "DevNest Incoming Calls",
+                        NotificationManager.IMPORTANCE_HIGH
+                );
+                incomingChannel.setDescription("High-priority full-screen incoming call alerts with looping ringtone");
+                incomingChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+                incomingChannel.setBypassDnd(true);
+                incomingChannel.setShowBadge(false);
+
+                Uri ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+                AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build();
+                incomingChannel.setSound(ringtoneUri, audioAttributes);
+                incomingChannel.enableVibration(true);
+                incomingChannel.setVibrationPattern(new long[]{0, 1000, 1000, 1000});
+                manager.createNotificationChannel(incomingChannel);
+
+                // Channel 2: ongoing_calls (IMPORTANCE_LOW, silent foreground service)
+                NotificationChannel ongoingChannel = new NotificationChannel(
+                        CHANNEL_ONGOING_CALLS,
+                        "DevNest Ongoing Call",
+                        NotificationManager.IMPORTANCE_LOW
+                );
+                ongoingChannel.setDescription("Foreground service status during an active call or background connection");
+                ongoingChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+                ongoingChannel.setSound(null, null);
+                ongoingChannel.enableVibration(false);
+                manager.createNotificationChannel(ongoingChannel);
+
+                // Channel 3: missed_calls (IMPORTANCE_DEFAULT)
+                NotificationChannel missedChannel = new NotificationChannel(
+                        CHANNEL_MISSED_CALLS,
+                        "DevNest Missed Calls",
+                        NotificationManager.IMPORTANCE_DEFAULT
+                );
+                missedChannel.setDescription("Notifications for missed calls");
+                missedChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+                manager.createNotificationChannel(missedChannel);
+
+                Log.d(TAG, "[CallLog] Notification channels created natively: incoming_calls_v2, ongoing_calls, missed_calls");
+            }
+        }
+    }
 
     @Override
     public void onCreate() {
         super.onCreate();
-        createNotificationChannel();
+        createNotificationChannels(this);
     }
 
     @Override
@@ -43,6 +119,8 @@ public class CallNotificationService extends Service {
         if (intent == null) return START_NOT_STICKY;
 
         String action = intent.getAction();
+        Log.d(TAG, "[CallLog] CallNotificationService handling action: " + action);
+
         if (ACTION_STOP_LISTENER.equals(action)) {
             stopCallAlerts();
             stopForeground(true);
@@ -50,10 +128,47 @@ public class CallNotificationService extends Service {
             return START_NOT_STICKY;
         }
 
-        if (ACTION_STOP_CALL.equals(action)) {
+        if (ACTION_CANCEL_CALL.equals(action) || ACTION_STOP_CALL.equals(action)) {
+            String callId = intent.getStringExtra("callId");
             stopCallAlerts();
-            Notification listenerNotification = buildListenerNotification();
-            startForeground(LISTENER_NOTIFICATION_ID, listenerNotification);
+            if (callId != null && !callId.isEmpty()) {
+                NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm != null) {
+                    nm.cancel(getNotificationId(callId));
+                }
+                Log.d(TAG, "[CallLog] Dismissed call notification for callId=" + callId);
+            }
+            stopForeground(true);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
+        if (ACTION_MISSED_CALL.equals(action)) {
+            String callId = intent.getStringExtra("callId");
+            String callerName = intent.getStringExtra("callerName");
+            String callType = intent.getStringExtra("callType");
+            if (callerName == null || callerName.isEmpty()) callerName = "DevNest User";
+            boolean isVideo = "video".equalsIgnoreCase(callType);
+
+            stopCallAlerts();
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                if (callId != null && !callId.isEmpty()) {
+                    nm.cancel(getNotificationId(callId));
+                }
+                NotificationCompat.Builder missedBuilder = new NotificationCompat.Builder(this, CHANNEL_MISSED_CALLS)
+                        .setSmallIcon(android.R.drawable.sym_call_missed)
+                        .setContentTitle("Missed " + (isVideo ? "Video" : "Audio") + " Call")
+                        .setContentText("Missed call from " + callerName)
+                        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                        .setCategory(NotificationCompat.CATEGORY_MISSED_CALL)
+                        .setAutoCancel(true)
+                        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
+                nm.notify((int) System.currentTimeMillis(), missedBuilder.build());
+                Log.d(TAG, "[CallLog] Missed call notification posted in missed_calls channel");
+            }
+            stopForeground(true);
+            stopSelf();
             return START_NOT_STICKY;
         }
 
@@ -63,18 +178,25 @@ public class CallNotificationService extends Service {
             return START_STICKY;
         }
 
+        // ACTION_INCOMING_CALL
         String callId = intent.getStringExtra("callId");
         String callerName = intent.getStringExtra("callerName");
         String callerId = intent.getStringExtra("callerId");
         String callType = intent.getStringExtra("callType");
+        String callerAvatarUrl = intent.getStringExtra("callerAvatarUrl");
         if (callerName == null || callerName.isEmpty()) callerName = "DevNest User";
+
+        int notificationId = getNotificationId(callId);
+        Log.d(TAG, "[CallLog] Incoming call received: callId=" + callId + ", caller=" + callerName + ", type=" + callType + ", notifId=" + notificationId);
 
         acquireScreenWakeLock();
         startRingtoneAndVibration();
-        Notification notification = buildIncomingCallNotification(callId, callerId, callerName, callType);
-        startForeground(NOTIFICATION_ID, notification);
 
-        // Disturb screen by bringing DevNest call interface to front
+        Notification notification = buildIncomingCallNotification(callId, callerId, callerName, callType, callerAvatarUrl);
+        startForeground(notificationId, notification);
+        Log.d(TAG, "[CallLog] Incoming call notification posted as foreground service: notifId=" + notificationId);
+
+        // Bring MainActivity to front with devnest://call deep link
         try {
             Intent bringToFront = new Intent();
             bringToFront.setClassName(this, "io.github.webviewtemplate.MainActivity");
@@ -82,28 +204,32 @@ public class CallNotificationService extends Service {
             bringToFront.setData(Uri.parse("devnest://call?action=incoming&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType));
             bringToFront.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             startActivity(bringToFront);
-        } catch (Exception ignored) {}
+            Log.d(TAG, "[CallLog] Full-screen intent launched for MainActivity: callId=" + callId);
+        } catch (Exception e) {
+            Log.e(TAG, "[CallLog] Error launching full-screen MainActivity: " + e.getMessage());
+        }
 
         return START_NOT_STICKY;
     }
 
     private void acquireScreenWakeLock() {
         try {
-            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
                 if (wakeLock != null && wakeLock.isHeld()) {
                     try { wakeLock.release(); } catch (Exception ignored) {}
                 }
                 wakeLock = pm.newWakeLock(
-                        android.os.PowerManager.FULL_WAKE_LOCK |
-                        android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP |
-                        android.os.PowerManager.ON_AFTER_RELEASE,
+                        PowerManager.FULL_WAKE_LOCK |
+                        PowerManager.ACQUIRE_CAUSES_WAKEUP |
+                        PowerManager.ON_AFTER_RELEASE,
                         "DevNest:IncomingCallWakeLock"
                 );
-                wakeLock.acquire(45000);
+                wakeLock.acquire(30000);
+                Log.d(TAG, "[CallLog] Acquired FULL_WAKE_LOCK for 30 seconds");
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e(TAG, "[CallLog] Error acquiring wake lock: " + e.getMessage());
         }
     }
 
@@ -111,7 +237,7 @@ public class CallNotificationService extends Service {
         try {
             Uri ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
             ringtone = RingtoneManager.getRingtone(getApplicationContext(), ringtoneUri);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && ringtone != null) {
                 AudioAttributes audioAttributes = new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -120,15 +246,21 @@ public class CallNotificationService extends Service {
             }
             if (ringtone != null && !ringtone.isPlaying()) {
                 ringtone.play();
+                Log.d(TAG, "[CallLog] Ringtone started (USAGE_NOTIFICATION_RINGTONE)");
             }
 
             vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
             if (vibrator != null) {
-                long[] pattern = {0, 1000, 1000, 1000, 1000};
-                vibrator.vibrate(pattern, 1);
+                long[] pattern = {0, 1000, 1000, 1000};
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator.vibrate(android.os.VibrationEffect.createWaveform(pattern, 1));
+                } else {
+                    vibrator.vibrate(pattern, 1);
+                }
+                Log.d(TAG, "[CallLog] Repeating vibration pattern started");
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e(TAG, "[CallLog] Error playing ringtone/vibrator: " + e.getMessage());
         }
     }
 
@@ -137,68 +269,93 @@ public class CallNotificationService extends Service {
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();
                 wakeLock = null;
+                Log.d(TAG, "[CallLog] WakeLock released");
             }
         } catch (Exception ignored) {}
         try {
             if (ringtone != null && ringtone.isPlaying()) {
                 ringtone.stop();
+                ringtone = null;
+                Log.d(TAG, "[CallLog] Ringtone stopped");
             }
             if (vibrator != null) {
                 vibrator.cancel();
+                Log.d(TAG, "[CallLog] Vibrator cancelled");
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e(TAG, "[CallLog] Error stopping ringtone/vibrator: " + e.getMessage());
         }
     }
 
-    private Notification buildIncomingCallNotification(String callId, String callerId, String callerName, String callType) {
-        // Full-screen takeover intent when screen is locked or app backgrounded
+    private Notification buildIncomingCallNotification(String callId, String callerId, String callerName, String callType, String callerAvatarUrl) {
+        boolean isVideo = "video".equalsIgnoreCase(callType);
+        String callTypeText = isVideo ? "Incoming Video Call" : "Incoming Audio Call";
+
+        // Full-screen takeover intent when screen is locked or app is backgrounded
         Intent fullScreenIntent = new Intent();
         fullScreenIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
         fullScreenIntent.setAction(Intent.ACTION_VIEW);
         fullScreenIntent.setData(Uri.parse("devnest://call?action=incoming&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType));
         fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-
         PendingIntent fullScreenPendingIntent = PendingIntent.getActivity(
-                this, 0, fullScreenIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                this, (callId + "_fs").hashCode(), fullScreenIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        // Answer Action: Launches / foregrounds Nesty directly into call screen
+        // Answer Action
         Intent answerIntent = new Intent();
         answerIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
         answerIntent.setAction(Intent.ACTION_VIEW);
         answerIntent.setData(Uri.parse("devnest://call?action=answer&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType));
         answerIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent answerPendingIntent = PendingIntent.getActivity(
-                this, 1, answerIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                this, (callId + "_ans").hashCode(), answerIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        // Decline Action: Broadcasts decline signal and stops ringing without opening the full app
+        // Decline Action
         Intent declineIntent = new Intent(this, IncomingCallReceiver.class);
         declineIntent.setAction(IncomingCallReceiver.ACTION_DECLINE);
         declineIntent.putExtra("callId", callId);
         declineIntent.putExtra("callerId", callerId);
         PendingIntent declinePendingIntent = PendingIntent.getBroadcast(
-                this, 2, declineIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                this, (callId + "_dec").hashCode(), declineIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        boolean isVideo = "video".equalsIgnoreCase(callType);
-        String title = isVideo ? "📹 Incoming Video Call" : "📞 Incoming Voice Call";
-
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle(title)
-                .setContentText(callerName + " is calling you on DevNest")
-                .setSmallIcon(android.R.drawable.sym_call_incoming)
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_CALL)
-                .setAutoCancel(false)
-                .setOngoing(true)
-                .setFullScreenIntent(fullScreenPendingIntent, true)
-                .setContentIntent(fullScreenPendingIntent)
-                .addAction(android.R.drawable.sym_call_outgoing, "Answer", answerPendingIntent)
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declinePendingIntent)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        Person person = new Person.Builder()
+                .setName(callerName)
+                .setKey(callerId)
                 .build();
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_INCOMING_CALLS_V2)
+                .setSmallIcon(android.R.drawable.sym_call_incoming)
+                .setContentTitle(callerName)
+                .setContentText(callTypeText)
+                .setSubText(isVideo ? "Video call" : "Audio call")
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setTimeoutAfter(30000)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setFullScreenIntent(fullScreenPendingIntent, true)
+                .setContentIntent(fullScreenPendingIntent);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+ CallStyle notification
+            NotificationCompat.CallStyle callStyle = NotificationCompat.CallStyle.forIncomingCall(
+                    person,
+                    declinePendingIntent,
+                    answerPendingIntent
+            ).setIsVideo(isVideo);
+            builder.setStyle(callStyle);
+            Log.d(TAG, "[CallLog] Styled notification using NotificationCompat.CallStyle (Android 12+)");
+        } else {
+            // Heads-up actions for older Android versions
+            builder.addAction(android.R.drawable.sym_call_outgoing, "Answer", answerPendingIntent);
+            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declinePendingIntent);
+            Log.d(TAG, "[CallLog] Styled notification using heads-up action buttons");
+        }
+
+        return builder.build();
     }
 
     private Notification buildListenerNotification() {
@@ -211,9 +368,9 @@ public class CallNotificationService extends Service {
                 this, 0, launchIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        return new NotificationCompat.Builder(this, LISTENER_CHANNEL_ID)
+        return new NotificationCompat.Builder(this, CHANNEL_ONGOING_CALLS)
                 .setContentTitle("DevNest Calling Service")
-                .setContentText("Active in background • Ready for incoming calls")
+                .setContentText("Active in background • Ready for calls")
                 .setSmallIcon(android.R.drawable.sym_call_incoming)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -221,32 +378,6 @@ public class CallNotificationService extends Service {
                 .setContentIntent(pendingIntent)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .build();
-    }
-
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                NotificationChannel callChannel = new NotificationChannel(
-                        CHANNEL_ID,
-                        "DevNest Incoming Calls",
-                        NotificationManager.IMPORTANCE_HIGH
-                );
-                callChannel.setDescription("High-priority full-screen incoming call alerts");
-                callChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-                callChannel.setBypassDnd(true);
-                manager.createNotificationChannel(callChannel);
-
-                NotificationChannel listenerChannel = new NotificationChannel(
-                        LISTENER_CHANNEL_ID,
-                        "DevNest Background Service",
-                        NotificationManager.IMPORTANCE_LOW
-                );
-                listenerChannel.setDescription("Keeps DevNest connected for unrestricted call delivery");
-                listenerChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-                manager.createNotificationChannel(listenerChannel);
-            }
-        }
     }
 
     @Override

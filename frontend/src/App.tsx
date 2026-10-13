@@ -282,6 +282,33 @@ export default function App() {
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const [onlineModalOpen, setOnlineModalOpen] = useState(false);
   const [apkModalOpen, setApkModalOpen] = useState(false);
+  const [callDiagModalOpen, setCallDiagModalOpen] = useState(false);
+  const [callPermissionsStatus, setCallPermissionsStatus] = useState<{
+    notificationsEnabled: boolean;
+    channelImportance: number;
+    channelValid: boolean;
+    canUseFullScreenIntent: boolean;
+    isIgnoringBatteryOptimizations: boolean;
+    brand: string;
+  } | null>(null);
+  const [batteryTipDismissed, setBatteryTipDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("devnest_dismiss_battery_tip") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [isDevMode, setIsDevMode] = useState<boolean>(() => {
+    try {
+      return window.location.search.includes("dev=1") ||
+        window.location.search.includes("dev=true") ||
+        localStorage.getItem("devnest_dev_mode") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [devClicks, setDevClicks] = useState<number>(0);
+  const [testCallCountdown, setTestCallCountdown] = useState<number | null>(null);
 
   // WebRTC & Calling Audio / Video Refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -2093,10 +2120,81 @@ export default function App() {
     };
   }, []);
 
-  // Request notification permissions early so incoming call alerts can disturb the screen
+  // Check native Android call channels, notification permissions & Android 14 full-screen intent
+  const checkCallPermissions = () => {
+    console.log("[CallLog] Checking incoming call permissions & channels...");
+    if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.checkNotificationPermissions) {
+      try {
+        const jsonStr = (window as any).AndroidCallBridge.checkNotificationPermissions();
+        const parsed = JSON.parse(jsonStr);
+        console.log("[CallLog] Native call permissions check result:", parsed);
+        setCallPermissionsStatus(parsed);
+        return parsed;
+      } catch (err) {
+        console.error("[CallLog] Error checking native call permissions:", err);
+      }
+    }
+    return null;
+  };
+
+  const triggerTestIncomingCall = (callType: "audio" | "video" = "video", delaySeconds: number = 5) => {
+    console.log(`[CallLog] Triggering dev test incoming call (delay: ${delaySeconds}s, type: ${callType})`);
+    setTestCallCountdown(delaySeconds);
+    let remaining = delaySeconds;
+    const interval = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearInterval(interval);
+        setTestCallCountdown(null);
+      } else {
+        setTestCallCountdown(remaining);
+      }
+    }, 1000);
+
+    if ((window as any).AndroidCallBridge && (window as any).AndroidCallBridge.testIncomingCall) {
+      (window as any).AndroidCallBridge.testIncomingCall("DevNest Test Caller", callType, delaySeconds);
+    } else {
+      setTimeout(() => {
+        handleIncomingCallSignal({
+          callId: `test_call_${Date.now()}`,
+          callerId: 999,
+          callerName: "DevNest Test Caller",
+          callerAvatarUrl: "/nesty-logo.png",
+          callType: callType,
+        });
+      }, delaySeconds * 1000);
+    }
+  };
+
+  const handleBrandLogoClick = () => {
+    const next = devClicks + 1;
+    if (next >= 5) {
+      const newDevState = !isDevMode;
+      setIsDevMode(newDevState);
+      setDevClicks(0);
+      try {
+        localStorage.setItem("devnest_dev_mode", newDevState ? "true" : "false");
+      } catch {}
+      alert(newDevState ? "🛠️ Dev Mode Activated! Call diagnostics & test tools enabled." : "Dev Mode Deactivated.");
+    } else {
+      setDevClicks(next);
+      setTimeout(() => setDevClicks(0), 3000);
+    }
+  };
+
+  // Request notification permissions early and verify native channels
   useEffect(() => {
-    if (token && typeof window !== "undefined" && "Notification" in window) {
-      if (Notification.permission === "default") {
+    if (token) {
+      if ((window as any).AndroidCallBridge) {
+        if ((window as any).AndroidCallBridge.ensureChannelsCreated) {
+          (window as any).AndroidCallBridge.ensureChannelsCreated();
+        }
+        const status = checkCallPermissions();
+        if (status && (!status.notificationsEnabled || !status.channelValid || !status.canUseFullScreenIntent)) {
+          // If native calling alerts cannot wake screen, open diagnostic setup modal
+          setCallDiagModalOpen(true);
+        }
+      } else if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
         Notification.requestPermission().catch(() => {});
       }
     }
@@ -3178,6 +3276,7 @@ export default function App() {
         <div
           className="brand-header"
           onClick={() => {
+            handleBrandLogoClick();
             setPage("feed");
             setSelectedCommunity("general");
             setMobileMenuOpen(false);
@@ -3186,7 +3285,14 @@ export default function App() {
           {/* Logo container left blank per instruction: "leave the logo blank until I come up with one." */}
           <img src="/nesty-logo.png" alt="Nesty" className="brand-logo-img" />
           <div className="brand-text-col">
-            <span className="brand-title">Nesty</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span className="brand-title">Nesty</span>
+              {isDevMode && (
+                <span style={{ fontSize: "10px", background: "#7c3aed", color: "#fff", padding: "1px 5px", borderRadius: "4px", fontWeight: 700 }}>
+                  DEV
+                </span>
+              )}
+            </div>
             <span className="brand-subtitle">Build · Learn · Grow</span>
           </div>
         </div>
@@ -3363,6 +3469,24 @@ export default function App() {
           </button>
 
           <button
+            data-nav="call-diag"
+            className="nav-item-btn"
+            onClick={() => {
+              checkCallPermissions();
+              setCallDiagModalOpen(true);
+              setMobileMenuOpen(false);
+            }}
+          >
+            <span className="nav-item-icon">⚙️</span>
+            <span>Call Diagnostics</span>
+            {isDevMode && (
+              <span className="nav-unread-badge" style={{ background: "#7c3aed", marginLeft: "auto", fontSize: "10px", padding: "2px 6px" }}>
+                DEV
+              </span>
+            )}
+          </button>
+
+          <button
             data-nav="logout"
             className="nav-item-btn logout-nav-item"
             onClick={handleLogout}
@@ -3414,6 +3538,23 @@ export default function App() {
               <div className="drawer-menu-item-left">
                 <span className="drawer-menu-icon">📱</span>
                 <span className="drawer-menu-title">Download APK & QR Barcode</span>
+              </div>
+              <span className="drawer-menu-chevron" style={{ fontSize: "14px" }}>›</span>
+            </button>
+
+            {/* CALL SETUP & DIAGNOSTICS */}
+            <button
+              type="button"
+              className="drawer-menu-item-btn"
+              onClick={() => {
+                checkCallPermissions();
+                setCallDiagModalOpen(true);
+                setMobileMenuOpen(false);
+              }}
+            >
+              <div className="drawer-menu-item-left">
+                <span className="drawer-menu-icon">⚙️</span>
+                <span className="drawer-menu-title">Call Setup & Diagnostics</span>
               </div>
               <span className="drawer-menu-chevron" style={{ fontSize: "14px" }}>›</span>
             </button>
@@ -3792,6 +3933,56 @@ export default function App() {
             </span>
           </div>
         </div>
+
+        {/* ONE-TIME OEM BATTERY OPTIMIZATION TIP */}
+        {!batteryTipDismissed && callPermissionsStatus && !callPermissionsStatus.isIgnoringBatteryOptimizations && (
+          <div style={{
+            margin: "12px 16px",
+            padding: "12px 16px",
+            background: "rgba(245, 158, 11, 0.12)",
+            border: "1px solid rgba(245, 158, 11, 0.35)",
+            borderRadius: "12px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "12px"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "20px" }}>🔋</span>
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: 700, color: "#f59e0b" }}>
+                  Keep Calls Ringing in Background ({callPermissionsStatus.brand ? callPermissionsStatus.brand.toUpperCase() : "Device"})
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
+                  Allow unrestricted battery usage so incoming call alerts can wake your screen even when locked.
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+              <button
+                className="edit-profile-pill-btn"
+                style={{ fontSize: "12px", padding: "5px 10px", background: "#f59e0b", color: "#000", fontWeight: 700, border: "none" }}
+                onClick={() => {
+                  if ((window as any).AndroidCallBridge?.openBatteryOptimizationSettings) {
+                    (window as any).AndroidCallBridge.openBatteryOptimizationSettings();
+                  }
+                }}
+              >
+                Settings
+              </button>
+              <button
+                className="edit-profile-pill-btn"
+                style={{ fontSize: "12px", padding: "5px 8px" }}
+                onClick={() => {
+                  setBatteryTipDismissed(true);
+                  try { localStorage.setItem("devnest_dismiss_battery_tip", "true"); } catch {}
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* TOP BAR */}
         <div className="feed-top-bar">
@@ -5628,6 +5819,189 @@ export default function App() {
               <span>Download DevNest.apk Directly</span>
             </a>
           </div>
+        </div>
+      )}
+
+      {/* INCOMING CALL SETUP & DIAGNOSTICS MODAL */}
+      {callDiagModalOpen && (
+        <div className="modal-overlay-nesty" onClick={() => setCallDiagModalOpen(false)}>
+          <div className="modal-content-card" style={{ maxWidth: "480px", textAlign: "left", padding: "26px 24px" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "22px" }}>📞</span>
+                <h3 style={{ margin: 0, fontSize: "18px", fontWeight: 700, color: "var(--text-h)" }}>Call Setup & Diagnostics</h3>
+              </div>
+              <button
+                className="edit-profile-pill-btn"
+                onClick={() => setCallDiagModalOpen(false)}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 16px 0", lineHeight: "1.5" }}>
+              Ensure your device permissions allow Nesty to ring and show full-screen caller controls when your screen is locked or the app is killed.
+            </p>
+
+            {/* STATUS LIST */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "20px" }}>
+              {/* 1. System Notifications */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "var(--bg-subtle, rgba(255,255,255,0.03))", borderRadius: "10px", border: "1px solid var(--border-color, #334155)" }}>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600 }}>System Notifications</div>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                    {callPermissionsStatus?.notificationsEnabled ? "✅ Allowed" : "❌ Disabled — cannot post alerts"}
+                  </div>
+                </div>
+                {(!callPermissionsStatus || !callPermissionsStatus.notificationsEnabled) && (
+                  <button
+                    className="edit-profile-pill-btn"
+                    style={{ fontSize: "11px", padding: "4px 10px", background: "#2563eb", color: "#fff", border: "none" }}
+                    onClick={() => {
+                      if ((window as any).AndroidCallBridge?.openNotificationSettings) {
+                        (window as any).AndroidCallBridge.openNotificationSettings();
+                      }
+                    }}
+                  >
+                    Enable
+                  </button>
+                )}
+              </div>
+
+              {/* 2. High-Priority Call Ring Channel */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "var(--bg-subtle, rgba(255,255,255,0.03))", borderRadius: "10px", border: "1px solid var(--border-color, #334155)" }}>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600 }}>Ringtone & Vibration Channel</div>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                    {callPermissionsStatus?.channelValid ? "✅ High Priority & Looping Ringtone" : "⚠️ Channel muted or low priority"}
+                  </div>
+                </div>
+                <button
+                  className="edit-profile-pill-btn"
+                  style={{ fontSize: "11px", padding: "4px 10px" }}
+                  onClick={() => {
+                    if ((window as any).AndroidCallBridge?.openChannelSettings) {
+                      (window as any).AndroidCallBridge.openChannelSettings("incoming_calls_v2");
+                    }
+                  }}
+                >
+                  Configure
+                </button>
+              </div>
+
+              {/* 3. Full-Screen Intent (Android 14+) */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "var(--bg-subtle, rgba(255,255,255,0.03))", borderRadius: "10px", border: "1px solid var(--border-color, #334155)" }}>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600 }}>Full-Screen Lock Takeover</div>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                    {callPermissionsStatus?.canUseFullScreenIntent ? "✅ Screen wake & lock takeover allowed" : "❌ Blocked by Android 14 full-screen policy"}
+                  </div>
+                </div>
+                {callPermissionsStatus && !callPermissionsStatus.canUseFullScreenIntent && (
+                  <button
+                    className="edit-profile-pill-btn"
+                    style={{ fontSize: "11px", padding: "4px 10px", background: "#f59e0b", color: "#000", border: "none", fontWeight: 700 }}
+                    onClick={() => {
+                      if ((window as any).AndroidCallBridge?.openFullScreenIntentSettings) {
+                        (window as any).AndroidCallBridge.openFullScreenIntentSettings();
+                      }
+                    }}
+                  >
+                    Grant
+                  </button>
+                )}
+              </div>
+
+              {/* 4. Battery Optimization */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: "var(--bg-subtle, rgba(255,255,255,0.03))", borderRadius: "10px", border: "1px solid var(--border-color, #334155)" }}>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600 }}>Background Battery Activity</div>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                    {callPermissionsStatus?.isIgnoringBatteryOptimizations ? "✅ Unrestricted background activity" : "⚠️ Optimizations active (may kill background calls)"}
+                  </div>
+                </div>
+                <button
+                  className="edit-profile-pill-btn"
+                  style={{ fontSize: "11px", padding: "4px 10px" }}
+                  onClick={() => {
+                    if ((window as any).AndroidCallBridge?.openBatteryOptimizationSettings) {
+                      (window as any).AndroidCallBridge.openBatteryOptimizationSettings();
+                    }
+                  }}
+                >
+                  Battery Settings
+                </button>
+              </div>
+            </div>
+
+            {/* TEST INCOMING CALL TRIGGER */}
+            <div style={{ borderTop: "1px solid var(--border-color, #334155)", paddingTop: "16px" }}>
+              <div style={{ fontSize: "13px", fontWeight: 700, marginBottom: "4px", color: "var(--text-h)" }}>
+                🧪 Dev Tool: Test Lock-Screen Incoming Call
+              </div>
+              <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: "0 0 12px 0", lineHeight: "1.4" }}>
+                Fires a local incoming call alert after 5 seconds so you can lock your screen or close the app and verify the full-screen takeover interface.
+              </p>
+
+              {testCallCountdown !== null ? (
+                <div style={{ padding: "10px", background: "#7c3aed22", border: "1px solid #7c3aed", borderRadius: "8px", textAlign: "center", color: "#c4b5fd", fontWeight: 700, fontSize: "13px" }}>
+                  ⏱️ Incoming call ringing in {testCallCountdown} seconds... Lock your phone now!
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button
+                    className="edit-profile-pill-btn"
+                    style={{ flex: 1, padding: "8px", background: "#7c3aed", color: "#fff", border: "none", fontWeight: 600 }}
+                    onClick={() => triggerTestIncomingCall("video", 5)}
+                  >
+                    📹 Test Video Call (5s)
+                  </button>
+                  <button
+                    className="edit-profile-pill-btn"
+                    style={{ flex: 1, padding: "8px", background: "#059669", color: "#fff", border: "none", fontWeight: 600 }}
+                    onClick={() => triggerTestIncomingCall("audio", 5)}
+                  >
+                    📞 Test Voice Call (5s)
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DEV MODE FLOATING QUICK-TRIGGER */}
+      {isDevMode && (
+        <div style={{
+          position: "fixed",
+          bottom: "16px",
+          right: "16px",
+          zIndex: 99998,
+          background: "var(--bg-card, #1e293b)",
+          border: "1px solid #7c3aed",
+          borderRadius: "12px",
+          padding: "8px 12px",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+          display: "flex",
+          alignItems: "center",
+          gap: "8px"
+        }}>
+          <span style={{ fontSize: "12px", fontWeight: 700, color: "#c4b5fd" }}>🧪 Dev:</span>
+          <button
+            className="edit-profile-pill-btn"
+            style={{ fontSize: "11px", padding: "4px 8px", background: "#7c3aed", color: "#fff", border: "none" }}
+            onClick={() => triggerTestIncomingCall("video", 5)}
+          >
+            {testCallCountdown !== null ? `Ringing in ${testCallCountdown}s...` : "Test Call (5s)"}
+          </button>
+          <button
+            className="edit-profile-pill-btn"
+            style={{ fontSize: "11px", padding: "4px 8px" }}
+            onClick={() => setCallDiagModalOpen(true)}
+          >
+            Diagnostics
+          </button>
         </div>
       )}
     </div>

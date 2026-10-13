@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.util.Log;
+import androidx.core.app.NotificationManagerCompat;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -12,6 +14,7 @@ import java.net.URL;
 public class IncomingCallReceiver extends BroadcastReceiver {
     public static final String ACTION_ANSWER = "com.devnest.app.ACTION_ANSWER_CALL";
     public static final String ACTION_DECLINE = "com.devnest.app.ACTION_DECLINE_CALL";
+    private static final String TAG = "DevNestCall";
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -20,20 +23,30 @@ public class IncomingCallReceiver extends BroadcastReceiver {
         String callId = intent.getStringExtra("callId");
         String callerId = intent.getStringExtra("callerId");
 
-        // Stop the foreground ringing service immediately
+        Log.d(TAG, "[CallLog] IncomingCallReceiver onReceive: action=" + action + ", callId=" + callId);
+
+        // Stop the foreground ringing service and release wakelock immediately
         Intent stopService = new Intent(context, CallNotificationService.class);
         stopService.setAction(CallNotificationService.ACTION_STOP_CALL);
+        stopService.putExtra("callId", callId);
         context.startService(stopService);
 
+        // Cancel notification for this call
+        if (callId != null && !callId.isEmpty()) {
+            NotificationManagerCompat.from(context).cancel(CallNotificationService.getNotificationId(callId));
+            Log.d(TAG, "[CallLog] Dismissed notification ID " + CallNotificationService.getNotificationId(callId));
+        }
+
         if (ACTION_DECLINE.equals(action)) {
-            // Send decline signal asynchronously to the backend without launching the app
+            Log.d(TAG, "[CallLog] Decline tapped for callId=" + callId + ", callerId=" + callerId);
+            // Dispatch decline signal asynchronously to the backend without bringing up full UI
             new Thread(() -> {
                 try {
                     SharedPreferences prefs = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
                     String token = prefs.getString("token", "");
                     String apiUrl = prefs.getString("api_url", "https://piscine-devnest.onrender.com");
 
-                    if (!token.isEmpty() && callerId != null) {
+                    if (!token.isEmpty() && callerId != null && !callerId.isEmpty()) {
                         URL url = new URL(apiUrl + "/api/call/signal");
                         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                         conn.setRequestMethod("POST");
@@ -45,14 +58,16 @@ public class IncomingCallReceiver extends BroadcastReceiver {
                         try (OutputStream os = conn.getOutputStream()) {
                             os.write(json.getBytes("UTF-8"));
                         }
-                        conn.getResponseCode();
+                        int code = conn.getResponseCode();
+                        Log.d(TAG, "[CallLog] Sent call_declined to backend: HTTP " + code);
                     }
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    Log.e(TAG, "[CallLog] Failed sending decline signal: " + e.getMessage());
                 }
             }).start();
         } else if (ACTION_ANSWER.equals(action)) {
-            // Launch / foreground MainActivity directly to call screen
+            Log.d(TAG, "[CallLog] Answer tapped: launching MainActivity for callId=" + callId);
+            // Launch / bring MainActivity to front directly into the call screen
             Intent answerIntent = new Intent();
             answerIntent.setClassName(context, "io.github.webviewtemplate.MainActivity");
             answerIntent.setAction(Intent.ACTION_VIEW);

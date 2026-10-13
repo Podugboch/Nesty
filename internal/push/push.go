@@ -41,16 +41,17 @@ func NewPushService(db *gorm.DB) *PushService {
 func (s *PushService) SendCallInvite(calleeID uint, payload CallPushPayload) {
 	var devices []model.Device
 	if err := s.db.Where("user_id = ?", calleeID).Find(&devices).Error; err != nil || len(devices) == 0 {
+		log.Printf("[CallLog] [Push] No registered push devices found for calleeID=%d", calleeID)
 		return
 	}
 
 	payload.Action = "call_invite"
+	log.Printf("[CallLog] [Push] Dispatching call_invite for callId=%s caller=%s to %d device(s)", payload.CallID, payload.CallerName, len(devices))
 	for _, dev := range devices {
 		switch dev.Platform {
 		case "android":
 			go s.sendFCMDataPush(dev, payload)
 		case "ios":
-			// Dedicated APNs PushKit VoIP code path
 			go s.sendAPNsVoipPush(dev, payload)
 		case "web":
 			go s.sendWebPush(dev, payload)
@@ -70,6 +71,7 @@ func (s *PushService) SendCallCancel(calleeID uint, callID string) {
 		Action: "call_cancel",
 	}
 
+	log.Printf("[CallLog] [Push] Dispatching call_cancel for callId=%s to %d device(s)", callID, len(devices))
 	for _, dev := range devices {
 		switch dev.Platform {
 		case "android":
@@ -90,6 +92,7 @@ func (s *PushService) SendMissedCallNotification(calleeID uint, payload CallPush
 	}
 
 	payload.Action = "missed_call"
+	log.Printf("[CallLog] [Push] Dispatching missed_call for callId=%s to %d device(s)", payload.CallID, len(devices))
 	for _, dev := range devices {
 		switch dev.Platform {
 		case "android":
@@ -105,20 +108,30 @@ func (s *PushService) SendMissedCallNotification(calleeID uint, payload CallPush
 // ---------------------------------------------------------------------------
 // 1. ANDROID: Firebase Cloud Messaging (FCM) High-Priority Data-Only Message
 // ---------------------------------------------------------------------------
+// Strictly data-only (NO "notification" block), priority: "high", 30s short TTL.
+// Ensures Android system tray does NOT intercept, allowing native DevNestFirebaseMessagingService
+// onMessageReceived to handle the payload even when the app is backgrounded or killed.
 func (s *PushService) sendFCMDataPush(device model.Device, payload CallPushPayload) {
 	apiKey := os.Getenv("FCM_SERVER_KEY")
 	if apiKey == "" {
 		apiKey = os.Getenv("FIREBASE_SERVER_KEY")
 	}
 	if apiKey == "" {
-		log.Println("[Push] FCM_SERVER_KEY not configured, skipping Android push")
+		log.Println("[CallLog] [Push] FCM_SERVER_KEY not configured, skipping Android FCM push")
 		return
 	}
 
-	// Data-only message with priority: "high" to wake Android from Doze / Background
+	log.Printf("[CallLog] [Push] Sending FCM data-only push: action=%s, callId=%s, deviceToken=%.16s...", payload.Action, payload.CallID, device.Token)
+
+	// Strictly data-only payload: NO "notification" block!
 	body := map[string]interface{}{
-		"to":       device.Token,
-		"priority": "high",
+		"to":           device.Token,
+		"priority":     "high",
+		"time_to_live": 30, // 30-second TTL
+		"android": map[string]interface{}{
+			"priority": "high",
+			"ttl":      "30s",
+		},
 		"data": map[string]string{
 			"callId":          payload.CallID,
 			"callerId":        strconv.FormatUint(uint64(payload.CallerID), 10),
@@ -132,11 +145,13 @@ func (s *PushService) sendFCMDataPush(device model.Device, payload CallPushPaylo
 
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
+		log.Printf("[CallLog] [Push] JSON marshal error: %v", err)
 		return
 	}
 
 	req, err := http.NewRequest("POST", "https://fcm.googleapis.com/fcm/send", bytes.NewBuffer(jsonBytes))
 	if err != nil {
+		log.Printf("[CallLog] [Push] NewRequest error: %v", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -144,10 +159,12 @@ func (s *PushService) sendFCMDataPush(device model.Device, payload CallPushPaylo
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		log.Printf("[Push] FCM error for device %s: %v", device.Token, err)
+		log.Printf("[CallLog] [Push] FCM HTTP error for device %.16s...: %v", device.Token, err)
 		return
 	}
 	defer resp.Body.Close()
+
+	log.Printf("[CallLog] [Push] FCM response HTTP %d for callId=%s", resp.StatusCode, payload.CallID)
 
 	if resp.StatusCode == http.StatusOK {
 		var fcmResp struct {
@@ -160,7 +177,7 @@ func (s *PushService) sendFCMDataPush(device model.Device, payload CallPushPaylo
 		if err := json.NewDecoder(resp.Body).Decode(&fcmResp); err == nil && len(fcmResp.Results) > 0 {
 			errStr := fcmResp.Results[0].Error
 			if errStr == "NotRegistered" || errStr == "InvalidRegistration" {
-				log.Printf("[Push] Device token invalidated by FCM, removing: %s", device.Token)
+				log.Printf("[CallLog] [Push] Device token invalidated by FCM, deleting record: %.16s...", device.Token)
 				s.db.Delete(&device)
 			}
 		}
@@ -172,8 +189,8 @@ func (s *PushService) sendFCMDataPush(device model.Device, payload CallPushPaylo
 // ---------------------------------------------------------------------------
 // 2. iOS: Apple Push Notification Service (APNs) PushKit / VoIP Push Path
 // ---------------------------------------------------------------------------
+// Dedicated PushKit VoIP push. Delivers directly to iOS CallKit for native incoming call UI.
 func (s *PushService) sendAPNsVoipPush(device model.Device, payload CallPushPayload) {
-	// VoIP push requires PushKit token (stored in VoipToken or Token)
 	voipToken := device.VoipToken
 	if voipToken == "" {
 		voipToken = device.Token
@@ -200,9 +217,11 @@ func (s *PushService) sendAPNsVoipPush(device model.Device, payload CallPushPayl
 
 	apnsBearer := os.Getenv("APNS_AUTH_TOKEN")
 	if apnsBearer == "" {
-		log.Println("[Push] APNS_AUTH_TOKEN not configured, skipping iOS VoIP push")
+		log.Println("[CallLog] [Push] APNS_AUTH_TOKEN not configured, skipping iOS VoIP push")
 		return
 	}
+
+	log.Printf("[CallLog] [Push] Sending APNs VoIP PushKit push: action=%s, callId=%s, token=%.16s...", payload.Action, payload.CallID, voipToken)
 
 	endpoint := fmt.Sprintf("%s/3/device/%s", apnsURL, voipToken)
 	voipBody := map[string]interface{}{
@@ -237,13 +256,15 @@ func (s *PushService) sendAPNsVoipPush(device model.Device, payload CallPushPayl
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		log.Printf("[Push] APNs VoIP push error: %v", err)
+		log.Printf("[CallLog] [Push] APNs VoIP push error: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 
+	log.Printf("[CallLog] [Push] APNs response HTTP %d for callId=%s", resp.StatusCode, payload.CallID)
+
 	if resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusBadRequest {
-		log.Printf("[Push] APNs token expired or invalid (HTTP %d), removing device", resp.StatusCode)
+		log.Printf("[CallLog] [Push] APNs token expired or invalid (HTTP %d), removing device", resp.StatusCode)
 		s.db.Delete(&device)
 	}
 }
@@ -252,6 +273,5 @@ func (s *PushService) sendAPNsVoipPush(device model.Device, payload CallPushPayl
 // 3. WEB FALLBACK: Web Push for PWA / Browser environments
 // ---------------------------------------------------------------------------
 func (s *PushService) sendWebPush(device model.Device, payload CallPushPayload) {
-	// Web Push delivers incoming call notification action buttons to desktop / mobile browsers
-	log.Printf("[Push] Web push registered for token %s, action: %s", device.Token, payload.Action)
+	log.Printf("[CallLog] [Push] Web push registered for token %.16s..., action: %s", device.Token, payload.Action)
 }

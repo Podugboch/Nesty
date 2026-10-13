@@ -12,6 +12,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
     var activeCallUUID: UUID?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        print("[CallLog] [iOS] App didFinishLaunching: Initializing native CallKit & PushKit")
         setupCallKit()
         setupPushKitVoIP()
         return true
@@ -24,9 +25,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
         configuration.maximumCallsPerCallGroup = 1
         configuration.supportedHandleTypes = [.generic]
         configuration.iconTemplateImageData = UIImage(named: "AppIcon")?.pngData()
+        configuration.ringtoneSound = "ringtone.caf"
 
         callKitProvider = CXProvider(configuration: configuration)
         callKitProvider?.setDelegate(self, queue: nil)
+        print("[CallLog] [iOS] CXProvider initialized with localizedName: DevNest")
     }
 
     // MARK: - PushKit VoIP Registration
@@ -34,21 +37,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
         voipRegistry = PKPushRegistry(queue: DispatchQueue.main)
         voipRegistry?.delegate = self
         voipRegistry?.desiredPushTypes = [.voIP]
+        print("[CallLog] [iOS] PushKit VoIP registry configured for .voIP")
     }
 
     func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
         let token = pushCredentials.token.map { String(format: "%02.2hhx", $0) }.joined()
-        print("[PushKit] VoIP Token: \(token)")
+        print("[CallLog] [iOS] PushKit VoIP token updated: \(token)")
         registerVoipTokenWithBackend(token: token)
     }
 
     func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
-        print("[PushKit] VoIP Token invalidated")
+        print("[CallLog] [iOS] PushKit VoIP token invalidated")
     }
 
     // MARK: - Incoming VoIP Push (High-Priority Background Wake-up)
+    // Mandatory for iOS 13+: Must report incoming call to CXProvider immediately in this callback!
     func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
         guard type == .voIP, let dict = payload.dictionaryPayload as? [String: Any] else {
+            print("[CallLog] [iOS] Received invalid push payload, ignoring")
             completion()
             return
         }
@@ -57,6 +63,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
         let callId = dict["callId"] as? String ?? UUID().uuidString
         let callerName = dict["callerName"] as? String ?? "DevNest User"
         let callType = dict["callType"] as? String ?? "audio"
+
+        print("[CallLog] [iOS] PushKit push received: action=\(action), callId=\(callId), caller=\(callerName), type=\(callType)")
 
         if action == "call_invite" {
             let uuid = UUID()
@@ -70,15 +78,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
             update.supportsUngrouping = false
             update.supportsHolding = false
 
-            // Report incoming call to iOS system -> Triggers native full screen CallKit UI!
+            // Report immediately to CallKit -> Presents the native iOS full-screen call UI!
+            print("[CallLog] [iOS] Reporting new incoming call to CXProvider: uuid=\(uuid)")
             callKitProvider?.reportNewIncomingCall(with: uuid, update: update) { error in
                 if let error = error {
-                    print("[CallKit] Error reporting call: \(error)")
+                    print("[CallLog] [iOS] Error reporting CallKit incoming call: \(error.localizedDescription)")
+                } else {
+                    print("[CallLog] [iOS] Successfully presented native iOS CallKit screen")
                 }
                 completion()
             }
         } else if action == "call_cancel" {
-            // Dismiss active ringing
+            print("[CallLog] [iOS] Received call_cancel: Ending CallKit ringing for callId=\(callId)")
             if let uuid = self.activeCallUUID {
                 callKitProvider?.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
                 self.activeCallUUID = nil
@@ -91,19 +102,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
 
     // MARK: - CXProviderDelegate Actions
     func providerDidReset(_ provider: CXProvider) {
+        print("[CallLog] [iOS] CXProvider reset: clearing activeCallUUID")
         self.activeCallUUID = nil
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        // User tapped 'Answer' on the native iOS CallKit screen
-        // Foreground/launch app directly into the call screen
+        print("[CallLog] [iOS] CXAnswerCallAction tapped: Launching app into active call screen")
+        // User pressed "Answer" on native lock-screen / banner -> deep link into WebRTC view
         let url = URL(string: "devnest://call?action=answer")!
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
         action.fulfill()
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        // User tapped 'Decline' on native CallKit screen -> Notify backend
+        print("[CallLog] [iOS] CXEndCallAction tapped (Decline / End): Notifying backend")
         let url = URL(string: "devnest://call?action=decline")!
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
         self.activeCallUUID = nil
@@ -126,6 +138,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body, options: [])
 
-        URLSession.shared.dataTask(with: request).resume()
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            if let httpResp = response as? HTTPURLResponse {
+                print("[CallLog] [iOS] Synced VoIP token to DevNest backend: HTTP \(httpResp.statusCode)")
+            } else if let error = error {
+                print("[CallLog] [iOS] Error syncing VoIP token: \(error.localizedDescription)")
+            }
+        }.resume()
     }
 }
