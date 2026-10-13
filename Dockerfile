@@ -26,4 +26,4 @@ COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["./server"]
+CMD ["sh", "-c", "ulimit -n 250000 2>/dev/null || true; exec ./server"]

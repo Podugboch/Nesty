@@ -20,7 +20,8 @@ type User struct {
 	Bio       string `json:"bio"`
 	Skills    string `json:"skills"`
 	Batch     string `json:"batch"`
-	Location  string `json:"location"`
-	AvatarURL string `json:"avatar_url"`
-	BannerURL string `json:"banner_url"`
+	Location   string     `json:"location"`
+	AvatarURL  string     `json:"avatar_url"`
+	BannerURL  string     `json:"banner_url"`
+	LastSeenAt *time.Time `gorm:"index" json:"last_seen_at,omitempty"`
 }

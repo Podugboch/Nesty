@@ -348,6 +348,7 @@ export default function App() {
   const screenWakeLockRef = useRef<any>(null);
   const titleFlashIntervalRef = useRef<any>(null);
   const originalTitleRef = useRef<string>("Nesty");
+  const dynamicIceServersRef = useRef<RTCIceServer[] | null>(null);
 
   // Hamburger drawer accordion state
   const [showOverview, setShowOverview] = useState(false);
@@ -539,6 +540,16 @@ export default function App() {
   };
 
   useEffect(() => {
+    // Dynamically discover production ICE/TURN servers from backend
+    fetch(`${API_URL}/api/webrtc/config`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+          dynamicIceServersRef.current = data.iceServers;
+        }
+      })
+      .catch(() => {});
+
     fetchCommunityStats();
     const interval = setInterval(fetchCommunityStats, 8000);
     const handleVisibility = () => {
@@ -1331,7 +1342,7 @@ export default function App() {
     const turnUsername = import.meta.env.VITE_TURN_USERNAME || "";
     const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL || "";
 
-    const iceServers: RTCIceServer[] = [
+    const defaultStunServers: RTCIceServer[] = [
       { urls: "stun:stun.l.google.com:19302" },
       { urls: "stun:stun1.l.google.com:19302" },
       { urls: "stun:stun2.l.google.com:19302" },
@@ -1343,16 +1354,23 @@ export default function App() {
       { urls: "stun:stun.nextcloud.com:443" },
     ];
 
+    let iceServers: RTCIceServer[] = dynamicIceServersRef.current && dynamicIceServersRef.current.length > 0
+      ? dynamicIceServersRef.current
+      : defaultStunServers;
+
     if (turnUrl) {
       const cleanUrl = turnUrl.replace(/^(turn:)/, "").replace(/\?.*$/, "");
-      iceServers.push({
-        urls: [
-          `turn:${cleanUrl}?transport=udp`,
-          `turn:${cleanUrl}?transport=tcp`,
-        ],
-        username: turnUsername,
-        credential: turnCredential,
-      });
+      iceServers = [
+        ...iceServers,
+        {
+          urls: [
+            `turn:${cleanUrl}?transport=udp`,
+            `turn:${cleanUrl}?transport=tcp`,
+          ],
+          username: turnUsername,
+          credential: turnCredential,
+        },
+      ];
     }
 
     const pc = new RTCPeerConnection({

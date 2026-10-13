@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv" // 👈 Added for parameter parsing
@@ -109,6 +110,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.GET("/call/online/:id", h.CheckUserOnline)
 		protected.GET("/call/events", h.CallEventsStream)
 		protected.POST("/call/signal", h.SendCallSignal)
+		protected.GET("/webrtc/config", h.GetWebRTCConfig)
 
 		// DEVICE PUSH TOKENS
 		protected.POST("/devices", h.RegisterDevice)
@@ -127,6 +129,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/logout", utils.JWTMiddleware(), h.Logout)
 	r.POST("/heartbeat", utils.JWTMiddleware(), h.Heartbeat)
 	r.GET("/heartbeat", utils.JWTMiddleware(), h.Heartbeat)
+	r.GET("/webrtc/config", h.GetWebRTCConfig)
+	r.GET("/api/webrtc/config", h.GetWebRTCConfig)
 
 	// WebSocket
 	r.GET("/ws", func(c *gin.Context) {
@@ -1709,5 +1713,37 @@ func (h *Handler) Heartbeat(c *gin.Context) {
 		"status":  "ok",
 		"online":  true,
 		"user_id": userID,
+	})
+}
+
+// GetWebRTCConfig returns production ICE server configurations (Google STUN + custom TURN servers if configured)
+func (h *Handler) GetWebRTCConfig(c *gin.Context) {
+	iceServers := []gin.H{
+		{"urls": []string{"stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"}},
+	}
+
+	turnURLs := os.Getenv("TURN_URLS")
+	turnUsername := os.Getenv("TURN_USERNAME")
+	turnCredential := os.Getenv("TURN_CREDENTIAL")
+	if turnCredential == "" {
+		turnCredential = os.Getenv("TURN_PASSWORD")
+	}
+
+	if turnURLs != "" {
+		urls := strings.Split(turnURLs, ",")
+		turnConfig := gin.H{
+			"urls": urls,
+		}
+		if turnUsername != "" {
+			turnConfig["username"] = turnUsername
+		}
+		if turnCredential != "" {
+			turnConfig["credential"] = turnCredential
+		}
+		iceServers = append(iceServers, turnConfig)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"iceServers": iceServers,
 	})
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -34,6 +35,14 @@ func Run() error {
 	})
 	if err != nil {
 		return fmt.Errorf("connect db: %w", err)
+	}
+
+	// High-performance connection pool configuration to prevent DB saturation
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(50)
+		sqlDB.SetMaxIdleConns(25)
+		sqlDB.SetConnMaxLifetime(5 * time.Minute)
+		sqlDB.SetConnMaxIdleTime(2 * time.Minute)
 	}
 
 	// 2. FIXED: Added &model.Comment{} and &model.Device{} to migrate
