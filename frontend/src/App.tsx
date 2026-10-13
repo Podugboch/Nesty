@@ -218,7 +218,7 @@ export default function App() {
   // -----------------------------
   // NAVIGATION & COMMUNITIES
   // -----------------------------
-  const [page, setPage] = useState<"feed" | "create" | "profile">("feed");
+  const [page, setPage] = useState<"feed" | "create" | "profile" | "reels">("feed");
   const [selectedCommunity, setSelectedCommunity] = useState<string>("general");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -232,6 +232,111 @@ export default function App() {
 
   const [createCommModalOpen, setCreateCommModalOpen] = useState(false);
   const [newCommName, setNewCommName] = useState("");
+
+  // -----------------------------
+  // REELS, GO LIVE & GROUP CALLS STATE
+  // -----------------------------
+  const initialReels: {
+    id: string | number;
+    userId: number;
+    username: string;
+    name?: string;
+    avatarUrl?: string;
+    videoUrl: string;
+    caption: string;
+    likes: number;
+    likedByMe?: boolean;
+    commentsCount: number;
+    audioTitle?: string;
+  }[] = [
+    {
+      id: "reel-1",
+      userId: 1,
+      username: "alex_builder",
+      name: "Alex Builder",
+      avatarUrl: "",
+      videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+      caption: "Building full-stack real-time apps with Go & WebSockets on Nesty! 🚀 Who else loves writing backend in Go? #golang #fullstack #nesty",
+      likes: 54,
+      likedByMe: false,
+      commentsCount: 12,
+      audioTitle: "Nesty Beats • Original Audio",
+    },
+    {
+      id: "reel-2",
+      userId: 2,
+      username: "sarah_frontend",
+      name: "Sarah Chen",
+      avatarUrl: "",
+      videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+      caption: "Center any element with CSS in 2 lines 🔥 grid place-items center! Save this for your next project. #css #frontend #codingtips",
+      likes: 182,
+      likedByMe: true,
+      commentsCount: 38,
+      audioTitle: "Lo-fi Coding • Deep Focus",
+    },
+    {
+      id: "reel-3",
+      userId: 3,
+      username: "david_cloud",
+      name: "David K.",
+      avatarUrl: "",
+      videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+      caption: "How we scale WebRTC calling to 100k users with Redis Pub/Sub clusters ⚡ High performance signaling in action. #webrtc #cloud #scaling",
+      likes: 97,
+      likedByMe: false,
+      commentsCount: 19,
+      audioTitle: "Tech Waves • Electronic",
+    },
+  ];
+
+  const [reelsList, setReelsList] = useState(initialReels);
+  const [activeReelIndex, setActiveReelIndex] = useState(0);
+  const [isReelMuted, setIsReelMuted] = useState(false);
+  const [createReelModalOpen, setCreateReelModalOpen] = useState(false);
+  const [newReelVideoUrl, setNewReelVideoUrl] = useState("");
+  const [newReelCaption, setNewReelCaption] = useState("");
+  const [newReelAudio, setNewReelAudio] = useState("");
+  const [newReelFile, setNewReelFile] = useState<File | null>(null);
+  const [newReelPreview, setNewReelPreview] = useState<string | null>(null);
+  const [isSubmittingReel, setIsSubmittingReel] = useState(false);
+  const [reelCommentsModalOpen, setReelCommentsModalOpen] = useState(false);
+  const [activeReelComments, setActiveReelComments] = useState<{ id: string; user: string; text: string; time: string }[]>([
+    { id: "1", user: "dev_john", text: "This is super clean! What library are you using?", time: "2h ago" },
+    { id: "2", user: "anna_engineer", text: "Love the UI animations 🔥", time: "1h ago" },
+  ]);
+  const [newReelComment, setNewReelComment] = useState("");
+
+  // GO LIVE STATE
+  const [liveStudioOpen, setLiveStudioOpen] = useState(false);
+  const [liveStreamTitle, setLiveStreamTitle] = useState("🔴 Live Coding & Community Hangout");
+  const [liveStreamViewers, setLiveStreamViewers] = useState(14);
+  const [liveStreamSeconds, setLiveStreamSeconds] = useState(0);
+  const [isLiveMuted, setIsLiveMuted] = useState(false);
+  const [isLiveVideoOff, setIsLiveVideoOff] = useState(false);
+  const [liveChatMessages, setLiveChatMessages] = useState<{ id: string; user: string; text: string; time: string }[]>([
+    { id: "1", user: "NestySystem", text: "Welcome to the live stream! Nesters can chat live below.", time: "Just now" },
+    { id: "2", user: "DevAlex", text: "Excited to see the demo! 🚀", time: "Just now" },
+    { id: "3", user: "CodeNinja", text: "Audio and video are super clear!", time: "Just now" },
+  ]);
+  const [liveChatInput, setLiveChatInput] = useState("");
+  const liveVideoRef = useRef<HTMLVideoElement | null>(null);
+  const liveStreamMediaRef = useRef<MediaStream | null>(null);
+
+  // GROUP CALL STATE
+  const [groupCallState, setGroupCallState] = useState<{
+    channelId: string;
+    channelName: string;
+    type: "audio" | "video";
+    startTime: number;
+    isMuted: boolean;
+    isVideoOff: boolean;
+    isScreenSharing: boolean;
+    participants: { id: number | string; name: string; username: string; isSpeaking?: boolean; avatarUrl?: string }[];
+  } | null>(null);
+  const groupLocalVideoRef = useRef<HTMLVideoElement | null>(null);
+  const groupLocalStreamRef = useRef<MediaStream | null>(null);
+  const [groupCallDuration, setGroupCallDuration] = useState(0);
 
   // -----------------------------
   // SEARCH
@@ -793,6 +898,14 @@ export default function App() {
         if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
           document.documentElement.requestFullscreen().catch(() => {});
         }
+      } catch {}
+    }
+  };
+
+  const restoreMobileScreenLock = () => {
+    if (typeof document !== "undefined" && document.fullscreenElement && document.exitFullscreen) {
+      try {
+        document.exitFullscreen().catch(() => {});
       } catch {}
     }
   };
@@ -2856,6 +2969,314 @@ export default function App() {
   };
 
   // -----------------------------
+  // REELS HANDLERS
+  // -----------------------------
+  const handlePublishReel = async () => {
+    if (!newReelCaption.trim() && !newReelFile && !newReelVideoUrl) {
+      alert("Please choose a video or enter a URL, and write a caption for your reel.");
+      return;
+    }
+    setIsSubmittingReel(true);
+    let finalVideoUrl = newReelVideoUrl || "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+
+    if (newReelFile) {
+      try {
+        const formData = new FormData();
+        formData.append("file", newReelFile);
+        const res = await fetch(`${API_URL}/api/upload`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+          body: formData,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.url) finalVideoUrl = data.url;
+        }
+      } catch (e) {
+        console.warn("Upload fallback to preview/sample", e);
+        if (newReelPreview) finalVideoUrl = newReelPreview;
+      }
+    }
+
+    const newReel = {
+      id: `reel-${Date.now()}`,
+      userId: user?.id || 1,
+      username: user?.username || "You",
+      name: user?.name || user?.username || "You",
+      avatarUrl: user?.avatar_url,
+      videoUrl: finalVideoUrl,
+      caption: newReelCaption || "New Reel on Nesty! 🎬 #nesty #developer",
+      likes: 1,
+      likedByMe: true,
+      commentsCount: 0,
+      audioTitle: newReelAudio || `Original Audio • ${user?.username || "You"}`,
+    };
+
+    setReelsList([newReel, ...reelsList]);
+    setActiveReelIndex(0);
+    setCreateReelModalOpen(false);
+    setNewReelCaption("");
+    setNewReelAudio("");
+    setNewReelFile(null);
+    setNewReelPreview(null);
+    setNewReelVideoUrl("");
+    setIsSubmittingReel(false);
+  };
+
+  const toggleReelLike = (reelId: string | number) => {
+    setReelsList((prev) =>
+      prev.map((r) => {
+        if (r.id === reelId) {
+          const liked = !r.likedByMe;
+          return {
+            ...r,
+            likedByMe: liked,
+            likes: liked ? r.likes + 1 : Math.max(0, r.likes - 1),
+          };
+        }
+        return r;
+      })
+    );
+  };
+
+  const handleNextReel = () => {
+    setActiveReelIndex((prev) => (prev + 1) % reelsList.length);
+  };
+
+  const handlePrevReel = () => {
+    setActiveReelIndex((prev) => (prev - 1 + reelsList.length) % reelsList.length);
+  };
+
+  const handleAddReelComment = () => {
+    if (!newReelComment.trim()) return;
+    const commentObj = {
+      id: Date.now().toString(),
+      user: user?.username || "You",
+      text: newReelComment.trim(),
+      time: "Just now",
+    };
+    setActiveReelComments((prev) => [...prev, commentObj]);
+    setReelsList((prev) =>
+      prev.map((r, i) =>
+        i === activeReelIndex ? { ...r, commentsCount: r.commentsCount + 1 } : r
+      )
+    );
+    setNewReelComment("");
+  };
+
+  // -----------------------------
+  // GO LIVE HANDLERS
+  // -----------------------------
+  const startLiveStream = async () => {
+    try {
+      requestMobileScreenTakeover();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+      liveStreamMediaRef.current = stream;
+      setLiveStudioOpen(true);
+      setLiveStreamSeconds(0);
+      setLiveStreamViewers(Math.floor(Math.random() * 8) + 6);
+
+      setTimeout(() => {
+        if (liveVideoRef.current) {
+          liveVideoRef.current.srcObject = stream;
+        }
+      }, 150);
+
+      // Broadcast live event on WebSocket
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            event: "broadcast",
+            type: "user_went_live",
+            user_id: user?.id,
+            username: user?.username,
+            title: liveStreamTitle,
+          })
+        );
+      }
+    } catch (err) {
+      console.error("Failed to start live stream", err);
+      alert("Camera or microphone permission is required to Go Live.");
+    }
+  };
+
+  const stopLiveStream = () => {
+    if (liveStreamMediaRef.current) {
+      liveStreamMediaRef.current.getTracks().forEach((track) => track.stop());
+      liveStreamMediaRef.current = null;
+    }
+    setLiveStudioOpen(false);
+    restoreMobileScreenLock();
+  };
+
+  const sendLiveChatMessage = () => {
+    if (!liveChatInput.trim()) return;
+    const newMsg = {
+      id: Date.now().toString(),
+      user: user?.username || "You",
+      text: liveChatInput.trim(),
+      time: "Just now",
+    };
+    setLiveChatMessages((prev) => [...prev, newMsg]);
+    setLiveChatInput("");
+  };
+
+  // -----------------------------
+  // GROUP CALL HANDLERS
+  // -----------------------------
+  const startGroupCall = async (type: "audio" | "video") => {
+    try {
+      requestMobileScreenTakeover();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: type === "video" ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" } : false,
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      groupLocalStreamRef.current = stream;
+
+      const otherMembers = (communityStats.online_users || [])
+        .filter((u) => u.id && u.id !== user?.id)
+        .slice(0, 3)
+        .map((u) => ({
+          id: u.id!,
+          name: u.name || u.username,
+          username: u.username,
+          avatarUrl: u.avatar_url,
+          isSpeaking: false,
+        }));
+
+      const activeComm = communities.find((c) => c.id === selectedCommunity) || communities[0];
+      setGroupCallState({
+        channelId: activeComm.id,
+        channelName: activeComm.name,
+        type,
+        startTime: Date.now(),
+        isMuted: false,
+        isVideoOff: false,
+        isScreenSharing: false,
+        participants: otherMembers,
+      });
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            event: "call_signal",
+            type: "group_call_invite",
+            channel_id: activeComm.id,
+            channel_name: activeComm.name,
+            call_type: type,
+            caller_name: user?.name || user?.username,
+          })
+        );
+      }
+
+      setTimeout(() => {
+        if (groupLocalVideoRef.current) {
+          groupLocalVideoRef.current.srcObject = stream;
+        }
+      }, 150);
+    } catch (err) {
+      console.error("Failed to start group call", err);
+      alert("Unable to access microphone or camera for group call.");
+    }
+  };
+
+  const leaveGroupCall = () => {
+    if (groupLocalStreamRef.current) {
+      groupLocalStreamRef.current.getTracks().forEach((track) => track.stop());
+      groupLocalStreamRef.current = null;
+    }
+    setGroupCallState(null);
+    restoreMobileScreenLock();
+  };
+
+  const toggleGroupMute = () => {
+    if (!groupCallState || !groupLocalStreamRef.current) return;
+    const newMuted = !groupCallState.isMuted;
+    groupLocalStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = !newMuted));
+    setGroupCallState({ ...groupCallState, isMuted: newMuted });
+  };
+
+  const toggleGroupVideo = () => {
+    if (!groupCallState || !groupLocalStreamRef.current) return;
+    const newOff = !groupCallState.isVideoOff;
+    groupLocalStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = !newOff));
+    setGroupCallState({ ...groupCallState, isVideoOff: newOff });
+  };
+
+  const toggleGroupScreenShare = async () => {
+    if (!groupCallState) return;
+    try {
+      if (!groupCallState.isScreenSharing) {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenTrack = screenStream.getVideoTracks()[0];
+        if (groupLocalVideoRef.current) {
+          groupLocalVideoRef.current.srcObject = screenStream;
+        }
+        screenTrack.onended = () => {
+          if (groupLocalStreamRef.current && groupLocalVideoRef.current) {
+            groupLocalVideoRef.current.srcObject = groupLocalStreamRef.current;
+          }
+          setGroupCallState((prev) => (prev ? { ...prev, isScreenSharing: false } : null));
+        };
+        setGroupCallState({ ...groupCallState, isScreenSharing: true });
+      } else {
+        if (groupLocalStreamRef.current && groupLocalVideoRef.current) {
+          groupLocalVideoRef.current.srcObject = groupLocalStreamRef.current;
+        }
+        setGroupCallState({ ...groupCallState, isScreenSharing: false });
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    let timer: any = null;
+    if (liveStudioOpen) {
+      timer = setInterval(() => {
+        setLiveStreamSeconds((s) => s + 1);
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [liveStudioOpen]);
+
+  useEffect(() => {
+    let timer: any = null;
+    if (groupCallState) {
+      timer = setInterval(() => {
+        setGroupCallDuration((d) => d + 1);
+      }, 1000);
+    } else {
+      setGroupCallDuration(0);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [groupCallState]);
+
+  useEffect(() => {
+    if (page !== "reels") return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (createReelModalOpen || reelCommentsModalOpen) return;
+      if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        handleNextReel();
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        handlePrevReel();
+      } else if (e.key === "m") {
+        e.preventDefault();
+        setIsReelMuted((m) => !m);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [page, reelsList.length, createReelModalOpen, reelCommentsModalOpen]);
+
+  // -----------------------------
   // PROFILE VIEW LOGIC
   // -----------------------------
   const openMyProfile = () => {
@@ -3326,15 +3747,8 @@ export default function App() {
     );
   }
 
-  // Active channel title and subtitle
+  // Active channel
   const activeChannel = communities.find((c) => c.id === selectedCommunity) || communities[0];
-  const pageTitle = page === "profile" ? "Profile" : page === "create" ? "Create Post" : activeChannel.name;
-  const pageSub =
-    page === "profile"
-      ? "Your page on Nesty"
-      : page === "create"
-      ? "Share a win, bug, idea, or question."
-      : activeChannel.subtitle;
 
   return (
     <div className="nesty-app">
@@ -3485,6 +3899,30 @@ export default function App() {
               </svg>
             </span>
             <span>Feed</span>
+          </button>
+
+          <button
+            data-nav="reels"
+            className={`nav-item-btn ${page === "reels" ? "active" : ""}`}
+            onClick={() => {
+              setPage("reels");
+              setMobileMenuOpen(false);
+            }}
+          >
+            <span className="nav-item-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
+                <line x1="7" y1="2" x2="7" y2="22" />
+                <line x1="17" y1="2" x2="17" y2="22" />
+                <line x1="2" y1="12" x2="22" y2="12" />
+                <line x1="2" y1="7" x2="7" y2="7" />
+                <line x1="2" y1="17" x2="7" y2="17" />
+                <line x1="17" y1="17" x2="22" y2="17" />
+                <line x1="17" y1="7" x2="22" y2="7" />
+              </svg>
+            </span>
+            <span>Reels</span>
+            <span className="nav-unread-badge" style={{ background: "linear-gradient(135deg, #ec4899, #f43f5e)", marginLeft: "auto", fontSize: "10px", padding: "1px 6px" }}>HOT</span>
           </button>
 
           <button
@@ -4086,47 +4524,49 @@ export default function App() {
           </div>
         )}
 
-        {/* TOP BAR */}
-        <div className="feed-top-bar">
-          <div className="feed-top-left">
-            <div
-              className={`feed-top-badge ${
-                page === "profile" ? "profile-badge" : page === "create" ? "create-badge" : ""
-              }`}
-            >
-              {page === "profile" ? "👤" : page === "create" ? "✏️" : "#"}
-            </div>
-            <div className="feed-top-titles">
-              <h1 className="feed-top-title">{pageTitle}</h1>
-              <span className="feed-top-sub">{pageSub}</span>
-            </div>
-          </div>
-
-          <div className="feed-top-right">
-            <div className="members-pill">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-              <span>{liveUserCount} users</span>
-            </div>
-            <button className="top-action-icon-btn" title="Search">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-            </button>
-            <button className="top-action-icon-btn" title="Options">
-              ···
-            </button>
-          </div>
-        </div>
-
         {/* VIEW 1: HOME & COMMUNITY FEED */}
         {page === "feed" && (
           <>
+            {/* COMMUNITY GROUP HEADER WITH AUDIO & VIDEO GROUP CALL BUTTONS */}
+            <div className="community-group-header-card">
+              <div className="group-header-left">
+                <div className={`group-header-badge ${activeChannel.badgeClass}`}>
+                  #
+                </div>
+                <div className="group-header-details">
+                  <div className="group-header-title-line">
+                    <h1 className="group-header-name">{activeChannel.name}</h1>
+                    <span className="group-online-chip">
+                      <span className="group-online-dot" />
+                      {liveUserCount} online
+                    </span>
+                  </div>
+                  <p className="group-header-desc">{activeChannel.subtitle || "Community Channel"}</p>
+                </div>
+              </div>
+
+              <div className="group-header-call-actions">
+                <button
+                  type="button"
+                  className="group-call-action-btn audio-call"
+                  onClick={() => startGroupCall("audio")}
+                  title={`Start Group Audio Call in #${activeChannel.name}`}
+                >
+                  <span className="group-call-icon">📞</span>
+                  <span>Audio Call</span>
+                </button>
+                <button
+                  type="button"
+                  className="group-call-action-btn video-call"
+                  onClick={() => startGroupCall("video")}
+                  title={`Start Group Video Call in #${activeChannel.name}`}
+                >
+                  <span className="group-call-icon">📹</span>
+                  <span>Video Call</span>
+                </button>
+              </div>
+            </div>
+
             {/* INLINE QUICK POST CREATOR */}
             <div className="inline-creator-card">
               <div className="inline-creator-top">
@@ -4547,6 +4987,15 @@ export default function App() {
                       ) : (
                         <>
                           <button
+                            type="button"
+                            className="profile-golive-btn"
+                            onClick={startLiveStream}
+                            title="Go Live & Broadcast to Nesty Community"
+                          >
+                            <span className="live-pulsing-badge">●</span>
+                            <span>Go Live</span>
+                          </button>
+                          <button
                             className="edit-profile-pill-btn"
                             onClick={() => {
                               setProfileForm({
@@ -4836,6 +5285,196 @@ export default function App() {
                 <span>{uploadingMedia ? "Publishing..." : "Publish"}</span>
               </button>
             </div>
+          </div>
+        )}
+
+        {/* VIEW 4: REELS FEED & CREATOR */}
+        {page === "reels" && (
+          <div className="reels-feed-container">
+            {/* REELS TOP CONTROLS */}
+            <div className="reels-top-header">
+              <div className="reels-brand-pill">
+                <span className="reels-play-icon">🎬</span>
+                <span className="reels-brand-title">Nesty Reels</span>
+                <span className="reels-hot-pill">TRENDING</span>
+              </div>
+              <div className="reels-top-actions">
+                <button
+                  type="button"
+                  className="reels-create-btn"
+                  onClick={() => setCreateReelModalOpen(true)}
+                  title="Upload or record a new Reel"
+                >
+                  <span style={{ fontSize: "16px", fontWeight: "bold" }}>+</span>
+                  <span>Create Reel</span>
+                </button>
+                <button
+                  type="button"
+                  className="reels-mute-toggle-btn"
+                  onClick={() => setIsReelMuted(!isReelMuted)}
+                  title={isReelMuted ? "Unmute Audio" : "Mute Audio"}
+                >
+                  {isReelMuted ? "🔇" : "🔊"}
+                </button>
+              </div>
+            </div>
+
+            {reelsList.length === 0 ? (
+              <div className="reels-empty-card">
+                <span style={{ fontSize: "48px" }}>🎬</span>
+                <h3>No reels yet!</h3>
+                <p>Be the first to share a short video or tip with the Nesty community.</p>
+                <button className="reels-create-btn" onClick={() => setCreateReelModalOpen(true)}>
+                  + Post First Reel
+                </button>
+              </div>
+            ) : (
+              <div className="reels-stage-wrapper">
+                {/* PREVIOUS REEL BUTTON */}
+                <button
+                  type="button"
+                  className="reel-nav-float-btn prev-btn"
+                  onClick={handlePrevReel}
+                  title="Previous Reel (Up Arrow)"
+                  aria-label="Previous Reel"
+                >
+                  ▲
+                </button>
+
+                {/* THE ACTIVE REEL CARD */}
+                {(() => {
+                  const currentReel = reelsList[activeReelIndex] || reelsList[0];
+                  return (
+                    <div className="reel-card-main">
+                      {/* VIDEO ELEMENT */}
+                      <video
+                        key={currentReel.id}
+                        src={currentReel.videoUrl}
+                        className="reel-video-viewport"
+                        autoPlay
+                        loop
+                        playsInline
+                        muted={isReelMuted}
+                        onClick={() => setIsReelMuted(!isReelMuted)}
+                      />
+
+                      {/* RIGHT-SIDE ACTION BUTTONS */}
+                      <div className="reel-side-actions">
+                        {/* AUTHOR AVATAR */}
+                        <div
+                          className="reel-side-avatar-wrap"
+                          onClick={() => currentReel.userId && openProfile(currentReel.userId)}
+                          title={`View @${currentReel.username}'s profile`}
+                        >
+                          {currentReel.avatarUrl ? (
+                            <img src={currentReel.avatarUrl} alt="" className="reel-side-avatar-img" />
+                          ) : (
+                            <div className="reel-side-avatar-fallback">
+                              {(currentReel.username || "U").charAt(0).toUpperCase()}
+                            </div>
+                          )}
+                          <div className="reel-author-badge">+</div>
+                        </div>
+
+                        {/* LIKE BUTTON */}
+                        <button
+                          type="button"
+                          className={`reel-side-btn ${currentReel.likedByMe ? "liked" : ""}`}
+                          onClick={() => toggleReelLike(currentReel.id)}
+                          title="Like Reel"
+                        >
+                          <span className="reel-side-icon">{currentReel.likedByMe ? "❤️" : "🤍"}</span>
+                          <span className="reel-side-count">{currentReel.likes}</span>
+                        </button>
+
+                        {/* COMMENT BUTTON */}
+                        <button
+                          type="button"
+                          className="reel-side-btn"
+                          onClick={() => setReelCommentsModalOpen(true)}
+                          title="Comments"
+                        >
+                          <span className="reel-side-icon">💬</span>
+                          <span className="reel-side-count">{currentReel.commentsCount}</span>
+                        </button>
+
+                        {/* SHARE BUTTON */}
+                        <button
+                          type="button"
+                          className="reel-side-btn"
+                          onClick={() => {
+                            if (navigator.share) {
+                              navigator.share({
+                                title: `${currentReel.username} on Nesty Reels`,
+                                text: currentReel.caption,
+                                url: window.location.href,
+                              }).catch(() => {});
+                            } else {
+                              navigator.clipboard?.writeText(window.location.href);
+                              alert("Reel link copied to clipboard!");
+                            }
+                          }}
+                          title="Share Reel"
+                        >
+                          <span className="reel-side-icon">↗</span>
+                          <span className="reel-side-count">Share</span>
+                        </button>
+
+                        {/* MUTE/UNMUTE ICON BUTTON */}
+                        <button
+                          type="button"
+                          className="reel-side-btn"
+                          onClick={() => setIsReelMuted(!isReelMuted)}
+                          title={isReelMuted ? "Unmute" : "Mute"}
+                        >
+                          <span className="reel-side-icon">{isReelMuted ? "🔇" : "🔊"}</span>
+                          <span className="reel-side-count">{isReelMuted ? "Muted" : "Sound"}</span>
+                        </button>
+
+                        {/* ROTATING SOUND DISC */}
+                        <div className={`reel-sound-disc ${isReelMuted ? "paused" : ""}`}>
+                          <span>🎵</span>
+                        </div>
+                      </div>
+
+                      {/* BOTTOM OVERLAY INFO */}
+                      <div className="reel-bottom-info">
+                        <div
+                          className="reel-author-handle-row"
+                          onClick={() => currentReel.userId && openProfile(currentReel.userId)}
+                        >
+                          <span className="reel-author-handle">@{currentReel.username}</span>
+                          <span className="reel-verified-badge">✓</span>
+                          <span className="reel-counter-pill">
+                            {activeReelIndex + 1} / {reelsList.length}
+                          </span>
+                        </div>
+
+                        <p className="reel-caption-text">{currentReel.caption}</p>
+
+                        <div className="reel-audio-pill">
+                          <span className="reel-music-note">🎵</span>
+                          <span className="reel-audio-name">
+                            {currentReel.audioTitle || `Original Audio • ${currentReel.username}`}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* NEXT REEL BUTTON */}
+                <button
+                  type="button"
+                  className="reel-nav-float-btn next-btn"
+                  onClick={handleNextReel}
+                  title="Next Reel (Down Arrow)"
+                  aria-label="Next Reel"
+                >
+                  ▼
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -6327,6 +6966,503 @@ export default function App() {
                 }}
               >
                 Continue to Nesty
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: CREATE REEL MODAL
+          ===================================================================== */}
+      {createReelModalOpen && (
+        <div className="modal-overlay-nesty" onClick={() => setCreateReelModalOpen(false)}>
+          <div className="modal-card-nesty reels-create-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header-nesty">
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "20px" }}>🎬</span>
+                <h3 className="modal-title-nesty">Create New Reel</h3>
+              </div>
+              <button
+                className="edit-profile-pill-btn"
+                style={{ padding: "4px 8px" }}
+                onClick={() => setCreateReelModalOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body-nesty" style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-h)" }}>
+                  Video Source (Upload Video File or Paste MP4/WebM URL)
+                </label>
+                <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                  <label className="edit-profile-pill-btn" style={{ cursor: "pointer", background: "var(--surface)", border: "1px dashed var(--border)" }}>
+                    📁 Select Video File
+                    <input
+                      type="file"
+                      accept="video/mp4,video/webm,video/ogg,video/quicktime"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        setNewReelFile(file);
+                        if (file) {
+                          setNewReelPreview(URL.createObjectURL(file));
+                          setNewReelVideoUrl("");
+                        }
+                      }}
+                    />
+                  </label>
+                  <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>or URL:</span>
+                  <input
+                    type="text"
+                    className="nesty-input-field"
+                    placeholder="https://.../video.mp4"
+                    value={newReelVideoUrl}
+                    onChange={(e) => {
+                      setNewReelVideoUrl(e.target.value);
+                      if (e.target.value) {
+                        setNewReelPreview(e.target.value);
+                        setNewReelFile(null);
+                      }
+                    }}
+                    style={{ flex: 1, minWidth: "160px", padding: "8px 12px", fontSize: "13px" }}
+                  />
+                </div>
+              </div>
+
+              {newReelPreview && (
+                <div style={{ position: "relative", borderRadius: "12px", overflow: "hidden", maxHeight: "240px", background: "#000", display: "flex", justifyContent: "center" }}>
+                  <video
+                    src={newReelPreview}
+                    controls
+                    playsInline
+                    style={{ maxHeight: "240px", maxWidth: "100%", borderRadius: "12px" }}
+                  />
+                  <button
+                    style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.7)", color: "#fff", border: "none", borderRadius: "50%", width: "24px", height: "24px", cursor: "pointer" }}
+                    onClick={() => { setNewReelPreview(null); setNewReelFile(null); setNewReelVideoUrl(""); }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-h)" }}>
+                  Caption & Hashtags
+                </label>
+                <textarea
+                  className="nesty-input-field"
+                  rows={3}
+                  placeholder="Tell Nesters what this reel is about... #coding #fullstack"
+                  value={newReelCaption}
+                  onChange={(e) => setNewReelCaption(e.target.value)}
+                  style={{ width: "100%", padding: "10px", fontSize: "13px", resize: "none" }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-h)" }}>
+                  🎵 Audio Title / Song Name
+                </label>
+                <input
+                  type="text"
+                  className="nesty-input-field"
+                  placeholder="Original Audio • My Sound"
+                  value={newReelAudio}
+                  onChange={(e) => setNewReelAudio(e.target.value)}
+                  style={{ width: "100%", padding: "8px 12px", fontSize: "13px" }}
+                />
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "8px" }}>
+                <button
+                  type="button"
+                  className="edit-profile-pill-btn"
+                  onClick={() => setCreateReelModalOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="post-pill-submit"
+                  disabled={isSubmittingReel || (!newReelFile && !newReelVideoUrl.trim() && !newReelPreview)}
+                  onClick={handlePublishReel}
+                >
+                  {isSubmittingReel ? "Posting..." : "🚀 Publish Reel"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: REEL COMMENTS DRAWER
+          ===================================================================== */}
+      {reelCommentsModalOpen && (
+        <div className="modal-overlay-nesty" onClick={() => setReelCommentsModalOpen(false)}>
+          <div className="modal-card-nesty reels-comments-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header-nesty">
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span>💬</span>
+                <h3 className="modal-title-nesty">Comments ({activeReelComments.length})</h3>
+              </div>
+              <button
+                className="edit-profile-pill-btn"
+                style={{ padding: "4px 8px" }}
+                onClick={() => setReelCommentsModalOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body-nesty" style={{ display: "flex", flexDirection: "column", height: "360px" }}>
+              <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "10px", paddingRight: "4px" }}>
+                {activeReelComments.length === 0 ? (
+                  <div style={{ textAlign: "center", color: "var(--text-muted)", marginTop: "40px" }}>
+                    No comments yet. Be the first to comment!
+                  </div>
+                ) : (
+                  activeReelComments.map((c) => (
+                    <div key={c.id} style={{ display: "flex", gap: "10px", alignItems: "flex-start", padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+                      <div className="avatar-with-dot" style={{ width: "32px", height: "32px", fontSize: "12px", flexShrink: 0 }}>
+                        {c.user.charAt(0).toUpperCase()}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontWeight: 700, fontSize: "13px", color: "var(--text-h)" }}>@{c.user}</span>
+                          <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{c.time}</span>
+                        </div>
+                        <p style={{ margin: "2px 0 0 0", fontSize: "13px", color: "var(--text)" }}>{c.text}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div style={{ display: "flex", gap: "8px", paddingTop: "12px", borderTop: "1px solid var(--border)" }}>
+                <input
+                  type="text"
+                  className="nesty-input-field"
+                  placeholder="Add a comment..."
+                  value={newReelComment}
+                  onChange={(e) => setNewReelComment(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleAddReelComment();
+                    }
+                  }}
+                  style={{ flex: 1, padding: "8px 12px", fontSize: "13px" }}
+                />
+                <button
+                  type="button"
+                  className="post-pill-submit"
+                  disabled={!newReelComment.trim()}
+                  onClick={handleAddReelComment}
+                >
+                  Send
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: LIVE BROADCAST STUDIO (GO LIVE)
+          ===================================================================== */}
+      {liveStudioOpen && (
+        <div className="live-broadcast-overlay">
+          <div className="live-broadcast-container">
+            {/* TOP BAR */}
+            <div className="live-top-bar">
+              <div className="live-top-left">
+                <span className="live-pulsing-badge-large">● LIVE</span>
+                <div className="live-title-wrap">
+                  <input
+                    type="text"
+                    className="live-studio-title-input"
+                    value={liveStreamTitle}
+                    onChange={(e) => setLiveStreamTitle(e.target.value)}
+                    placeholder="Enter Live Stream Topic..."
+                  />
+                  <span className="live-channel-badge">Broadcasting to Nesty</span>
+                </div>
+              </div>
+
+              <div className="live-top-right">
+                <div className="live-viewers-pill">
+                  <span>👁️</span>
+                  <span>{liveStreamViewers} watching</span>
+                </div>
+                <div className="live-duration-pill">
+                  ⏱️ {Math.floor(liveStreamSeconds / 60).toString().padStart(2, "0")}:
+                  {(liveStreamSeconds % 60).toString().padStart(2, "0")}
+                </div>
+                <button
+                  type="button"
+                  className="live-end-btn"
+                  onClick={stopLiveStream}
+                  title="End Broadcast"
+                >
+                  End Stream
+                </button>
+              </div>
+            </div>
+
+            {/* MAIN STAGE */}
+            <div className="live-main-stage">
+              {/* VIDEO VIEWER */}
+              <div className="live-video-box">
+                <video
+                  ref={liveVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="live-video-element"
+                />
+                {isLiveVideoOff && (
+                  <div className="live-video-off-backdrop">
+                    <span style={{ fontSize: "56px" }}>📷</span>
+                    <span>Camera is Paused</span>
+                  </div>
+                )}
+
+                {/* BOTTOM FLOATING CONTROLS OVER VIDEO */}
+                <div className="live-floating-controls">
+                  <button
+                    type="button"
+                    className={`live-ctrl-btn ${isLiveMuted ? "muted" : ""}`}
+                    onClick={() => {
+                      if (liveStreamMediaRef.current) {
+                        const tracks = liveStreamMediaRef.current.getAudioTracks();
+                        tracks.forEach((t) => (t.enabled = isLiveMuted));
+                        setIsLiveMuted(!isLiveMuted);
+                      }
+                    }}
+                    title={isLiveMuted ? "Unmute Mic" : "Mute Mic"}
+                  >
+                    {isLiveMuted ? "🔇 Unmute" : "🎤 Mute"}
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`live-ctrl-btn ${isLiveVideoOff ? "muted" : ""}`}
+                    onClick={() => {
+                      if (liveStreamMediaRef.current) {
+                        const tracks = liveStreamMediaRef.current.getVideoTracks();
+                        tracks.forEach((t) => (t.enabled = isLiveVideoOff));
+                        setIsLiveVideoOff(!isLiveVideoOff);
+                      }
+                    }}
+                    title={isLiveVideoOff ? "Turn Camera On" : "Turn Camera Off"}
+                  >
+                    {isLiveVideoOff ? "📷 Start Video" : "📹 Stop Video"}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="live-ctrl-btn"
+                    onClick={async () => {
+                      try {
+                        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                        if (liveVideoRef.current) {
+                          liveVideoRef.current.srcObject = screenStream;
+                        }
+                        screenStream.getVideoTracks()[0].onended = () => {
+                          if (liveStreamMediaRef.current && liveVideoRef.current) {
+                            liveVideoRef.current.srcObject = liveStreamMediaRef.current;
+                          }
+                        };
+                      } catch {}
+                    }}
+                    title="Share Screen with Viewers"
+                  >
+                    🖥️ Share Screen
+                  </button>
+                </div>
+              </div>
+
+              {/* LIVE CHAT SIDEBAR */}
+              <div className="live-chat-panel">
+                <div className="live-chat-header">
+                  <span>💬 Live Stream Chat</span>
+                  <span className="live-chat-badge">{liveChatMessages.length} msgs</span>
+                </div>
+
+                <div className="live-chat-messages-scroll">
+                  {liveChatMessages.map((msg) => (
+                    <div key={msg.id} className="live-chat-bubble">
+                      <div className="live-chat-user-line">
+                        <span className="live-chat-username">@{msg.user}</span>
+                        <span className="live-chat-timestamp">{msg.time}</span>
+                      </div>
+                      <div className="live-chat-body">{msg.text}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="live-chat-composer">
+                  <input
+                    type="text"
+                    className="live-chat-input"
+                    placeholder="Say something live..."
+                    value={liveChatInput}
+                    onChange={(e) => setLiveChatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        sendLiveChatMessage();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="live-chat-send-btn"
+                    onClick={sendLiveChatMessage}
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: GROUP CALL (AUDIO & VIDEO)
+          ===================================================================== */}
+      {groupCallState && (
+        <div className="group-call-overlay">
+          <div className="group-call-container">
+            {/* HEADER */}
+            <div className="group-call-header">
+              <div className="group-call-header-info">
+                <span className="group-call-badge">
+                  {groupCallState.type === "video" ? "📹" : "📞"}
+                </span>
+                <div>
+                  <h3 className="group-call-title">
+                    #{groupCallState.channelName} • Group {groupCallState.type === "video" ? "Video" : "Audio"} Call
+                  </h3>
+                  <span className="group-call-meta">
+                    ⏱️ {Math.floor(groupCallDuration / 60).toString().padStart(2, "0")}:
+                    {(groupCallDuration % 60).toString().padStart(2, "0")} • {groupCallState.participants.length + 1} connected
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="group-call-leave-btn"
+                onClick={leaveGroupCall}
+                title="Leave Group Call"
+              >
+                Leave Call
+              </button>
+            </div>
+
+            {/* CALL PARTICIPANTS GRID */}
+            <div className={`group-call-grid count-${groupCallState.participants.length + 1}`}>
+              {/* LOCAL PARTICIPANT TILE */}
+              <div className="group-call-tile local-tile">
+                {groupCallState.type === "video" && !groupCallState.isVideoOff ? (
+                  <video
+                    ref={groupLocalVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="group-call-video-feed"
+                  />
+                ) : (
+                  <div className="group-call-avatar-placeholder">
+                    <div className="group-call-avatar-circle">
+                      {user?.avatar_url ? (
+                        <img src={user.avatar_url} alt="" />
+                      ) : (
+                        (user?.username || "You").charAt(0).toUpperCase()
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="group-call-tile-overlay">
+                  <span className="group-participant-name">You {groupCallState.isScreenSharing ? "(Sharing Screen)" : ""}</span>
+                  {groupCallState.isMuted && <span className="group-tile-muted">🔇</span>}
+                </div>
+              </div>
+
+              {/* REMOTE PARTICIPANTS TILES */}
+              {groupCallState.participants.map((p, idx) => (
+                <div key={p.id || idx} className="group-call-tile remote-tile">
+                  <div className="group-call-avatar-placeholder">
+                    <div className="group-call-avatar-circle remote-pulse">
+                      {p.avatarUrl ? (
+                        <img src={p.avatarUrl} alt="" />
+                      ) : (
+                        (p.username || "N").charAt(0).toUpperCase()
+                      )}
+                    </div>
+                    <div className="speaking-wave-indicator">
+                      <span className="wave-bar bar-1" />
+                      <span className="wave-bar bar-2" />
+                      <span className="wave-bar bar-3" />
+                    </div>
+                  </div>
+                  <div className="group-call-tile-overlay">
+                    <span className="group-participant-name">{p.name || `@${p.username}`}</span>
+                    <span className="group-tile-tag">Active</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* CONTROLS DOCK */}
+            <div className="group-call-dock">
+              <button
+                type="button"
+                className={`group-dock-btn ${groupCallState.isMuted ? "active" : ""}`}
+                onClick={toggleGroupMute}
+                title={groupCallState.isMuted ? "Unmute Mic" : "Mute Mic"}
+              >
+                <span className="dock-btn-icon">{groupCallState.isMuted ? "🔇" : "🎤"}</span>
+                <span className="dock-btn-text">{groupCallState.isMuted ? "Unmute" : "Mute"}</span>
+              </button>
+
+              {groupCallState.type === "video" && (
+                <button
+                  type="button"
+                  className={`group-dock-btn ${groupCallState.isVideoOff ? "active" : ""}`}
+                  onClick={toggleGroupVideo}
+                  title={groupCallState.isVideoOff ? "Turn Camera On" : "Turn Camera Off"}
+                >
+                  <span className="dock-btn-icon">{groupCallState.isVideoOff ? "📷" : "📹"}</span>
+                  <span className="dock-btn-text">{groupCallState.isVideoOff ? "Camera On" : "Camera Off"}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                className={`group-dock-btn ${groupCallState.isScreenSharing ? "active" : ""}`}
+                onClick={toggleGroupScreenShare}
+                title="Share Screen"
+              >
+                <span className="dock-btn-icon">🖥️</span>
+                <span className="dock-btn-text">{groupCallState.isScreenSharing ? "Stop Share" : "Share Screen"}</span>
+              </button>
+
+              <button
+                type="button"
+                className="group-dock-btn end-call-btn"
+                onClick={leaveGroupCall}
+                title="Leave Call"
+              >
+                <span className="dock-btn-icon">🛑</span>
+                <span className="dock-btn-text">Leave</span>
               </button>
             </div>
           </div>
