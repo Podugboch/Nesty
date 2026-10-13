@@ -43,9 +43,13 @@ public class IncomingCallReceiver extends BroadcastReceiver {
             // Dispatch decline signal asynchronously to the backend without bringing up full UI
             new Thread(() -> {
                 try {
-                    SharedPreferences prefs = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
-                    String token = prefs.getString("token", "");
+                    SharedPreferences prefs = context.getSharedPreferences("DevNestPrefs", Context.MODE_PRIVATE);
+                    String token = prefs.getString("auth_token", "");
                     String apiUrl = prefs.getString("api_url", "https://piscine-devnest.onrender.com");
+                    if (token.isEmpty()) {
+                        SharedPreferences capPrefs = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
+                        token = capPrefs.getString("token", "");
+                    }
 
                     if (!token.isEmpty() && callerId != null && !callerId.isEmpty()) {
                         URL url = new URL(apiUrl + "/api/call/signal");

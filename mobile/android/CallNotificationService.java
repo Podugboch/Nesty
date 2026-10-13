@@ -7,6 +7,8 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
@@ -18,9 +20,17 @@ import android.os.Vibrator;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.Person;
+import org.json.JSONObject;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 public class CallNotificationService extends Service {
     private static final String TAG = "DevNestCall";
+
+    private static Thread sNativeListenerThread = null;
+    private static volatile boolean sKeepListening = false;
 
     // 1. Android Notification Channel Identifiers
     public static final String CHANNEL_INCOMING_CALLS_V2 = "incoming_calls_v2";
@@ -124,6 +134,7 @@ public class CallNotificationService extends Service {
 
         if (ACTION_STOP_LISTENER.equals(action)) {
             stopCallAlerts();
+            stopNativeEventListener();
             stopForeground(true);
             stopSelf();
             return START_NOT_STICKY;
@@ -138,8 +149,18 @@ public class CallNotificationService extends Service {
                     nm.cancel(getNotificationId(callId));
                 }
             }
-            stopForeground(true);
-            return START_NOT_STICKY;
+            if (sKeepListening) {
+                Notification listenerNotification = buildListenerNotification();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(LISTENER_NOTIFICATION_ID, listenerNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                } else {
+                    startForeground(LISTENER_NOTIFICATION_ID, listenerNotification);
+                }
+                return START_STICKY;
+            } else {
+                stopForeground(true);
+                return START_NOT_STICKY;
+            }
         }
 
         if (ACTION_CANCEL_CALL.equals(action) || ACTION_STOP_CALL.equals(action)) {
@@ -152,9 +173,19 @@ public class CallNotificationService extends Service {
                 }
                 Log.d(TAG, "[CallLog] Dismissed call notification for callId=" + callId);
             }
-            stopForeground(true);
-            stopSelf();
-            return START_NOT_STICKY;
+            if (sKeepListening) {
+                Notification listenerNotification = buildListenerNotification();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(LISTENER_NOTIFICATION_ID, listenerNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                } else {
+                    startForeground(LISTENER_NOTIFICATION_ID, listenerNotification);
+                }
+                return START_STICKY;
+            } else {
+                stopForeground(true);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
         }
 
         if (ACTION_MISSED_CALL.equals(action)) {
@@ -181,14 +212,29 @@ public class CallNotificationService extends Service {
                 nm.notify((int) System.currentTimeMillis(), missedBuilder.build());
                 Log.d(TAG, "[CallLog] Missed call notification posted in missed_calls channel");
             }
-            stopForeground(true);
-            stopSelf();
-            return START_NOT_STICKY;
+            if (sKeepListening) {
+                Notification listenerNotification = buildListenerNotification();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(LISTENER_NOTIFICATION_ID, listenerNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                } else {
+                    startForeground(LISTENER_NOTIFICATION_ID, listenerNotification);
+                }
+                return START_STICKY;
+            } else {
+                stopForeground(true);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
         }
 
         if (ACTION_START_LISTENER.equals(action)) {
             Notification listenerNotification = buildListenerNotification();
-            startForeground(LISTENER_NOTIFICATION_ID, listenerNotification);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(LISTENER_NOTIFICATION_ID, listenerNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            } else {
+                startForeground(LISTENER_NOTIFICATION_ID, listenerNotification);
+            }
+            startNativeEventListener();
             return START_STICKY;
         }
 
@@ -207,13 +253,12 @@ public class CallNotificationService extends Service {
         startRingtoneAndVibration();
 
         Notification notification = buildIncomingCallNotification(callId, callerId, callerName, callType, callerAvatarUrl);
-        startForeground(notificationId, notification);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL);
+        } else {
+            startForeground(notificationId, notification);
+        }
         Log.d(TAG, "[CallLog] Incoming call notification posted as foreground service: notifId=" + notificationId);
-
-        // NOTE: We do NOT call startActivity directly from background here!
-        // Direct startActivity from a Service is prohibited on Android 10+ when the device is unlocked and in use,
-        // causing crashes/stops. The notification's setFullScreenIntent automatically handles lock-screen takeover
-        // when the screen is locked/off, and displays heads-up action buttons when the user is using the phone.
 
         return START_NOT_STICKY;
     }
@@ -387,9 +432,168 @@ public class CallNotificationService extends Service {
                 .build();
     }
 
+    private synchronized void startNativeEventListener() {
+        if (sKeepListening && sNativeListenerThread != null && sNativeListenerThread.isAlive()) {
+            return;
+        }
+        sKeepListening = true;
+        sNativeListenerThread = new Thread(() -> {
+            Log.d(TAG, "[CallLog] Native background call event listener thread started");
+            while (sKeepListening) {
+                SharedPreferences prefs = getSharedPreferences("DevNestPrefs", Context.MODE_PRIVATE);
+                String authToken = prefs.getString("auth_token", "");
+                String apiUrl = prefs.getString("api_url", "https://piscine-devnest.onrender.com");
+
+                if (authToken.isEmpty()) {
+                    SharedPreferences capPrefs = getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
+                    authToken = capPrefs.getString("token", "");
+                }
+
+                if (authToken.isEmpty()) {
+                    try {
+                        Thread.sleep(3000);
+                    } catch (InterruptedException ie) {
+                        break;
+                    }
+                    continue;
+                }
+
+                HttpURLConnection conn = null;
+                try {
+                    String streamUrl = apiUrl.replaceAll("/+$", "") + "/api/call/events";
+                    Log.d(TAG, "[CallLog] Connecting native background SSE to: " + streamUrl);
+                    URL url = new URL(streamUrl);
+                    conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setRequestProperty("Authorization", "Bearer " + authToken);
+                    conn.setRequestProperty("Accept", "text/event-stream");
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(45000);
+
+                    int responseCode = conn.getResponseCode();
+                    Log.d(TAG, "[CallLog] Native background SSE connected: HTTP " + responseCode);
+
+                    if (responseCode == 200) {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                        String line;
+                        while (sKeepListening && (line = reader.readLine()) != null) {
+                            line = line.trim();
+                            if (line.startsWith("data:")) {
+                                String jsonStr = line.substring(5).trim();
+                                handleNativeBackgroundCallSignal(jsonStr);
+                            }
+                        }
+                    } else if (responseCode == 401) {
+                        Log.w(TAG, "[CallLog] Native background SSE 401 unauthorized, waiting 10s");
+                        Thread.sleep(10000);
+                    } else {
+                        Log.w(TAG, "[CallLog] Native background SSE HTTP " + responseCode + ", waiting 5s");
+                        Thread.sleep(5000);
+                    }
+                } catch (Exception e) {
+                    if (sKeepListening) {
+                        Log.w(TAG, "[CallLog] Native background SSE connection interrupted: " + e.getMessage() + ", reconnecting in 3s");
+                        try {
+                            Thread.sleep(3000);
+                        } catch (InterruptedException ie) {
+                            break;
+                        }
+                    }
+                } finally {
+                    if (conn != null) {
+                        try { conn.disconnect(); } catch (Exception ignored) {}
+                    }
+                }
+            }
+            Log.d(TAG, "[CallLog] Native background call event listener thread terminated");
+        }, "DevNest-NativeListener");
+        sNativeListenerThread.setDaemon(true);
+        sNativeListenerThread.start();
+    }
+
+    private synchronized void stopNativeEventListener() {
+        sKeepListening = false;
+        if (sNativeListenerThread != null) {
+            try {
+                sNativeListenerThread.interrupt();
+            } catch (Exception ignored) {}
+            sNativeListenerThread = null;
+        }
+    }
+
+    private void handleNativeBackgroundCallSignal(String jsonStr) {
+        try {
+            JSONObject obj = new JSONObject(jsonStr);
+            String type = obj.optString("type", "");
+            Log.d(TAG, "[CallLog] Native background event received: type=" + type);
+
+            if ("call_invite".equals(type)) {
+                JSONObject data = obj.optJSONObject("data");
+                String callId = data != null ? data.optString("callId", "") : obj.optString("callId", "");
+                boolean isVideo = data != null ? data.optBoolean("isVideo", false) : false;
+                String callType = isVideo ? "video" : "audio";
+
+                String fromUserId = String.valueOf(obj.opt("from_user_id"));
+                String callerName = "DevNest User";
+                String callerAvatarUrl = "";
+                JSONObject caller = obj.optJSONObject("caller");
+                if (caller != null) {
+                    callerName = caller.optString("name", caller.optString("username", "DevNest User"));
+                    callerAvatarUrl = caller.optString("avatar_url", "");
+                }
+
+                // If app is in foreground and phone is unlocked, in-app modal handles it
+                boolean isFg = AndroidCallBridge.isAppForeground();
+                boolean isLocked = AndroidCallBridge.isDeviceLocked(this);
+                if (isFg && !isLocked) {
+                    Log.d(TAG, "[CallLog] App is in foreground and unlocked; in-app UI handles call");
+                    return;
+                }
+
+                Intent incomingIntent = new Intent(this, CallNotificationService.class);
+                incomingIntent.setAction(ACTION_INCOMING_CALL);
+                incomingIntent.putExtra("callId", callId);
+                incomingIntent.putExtra("callerId", fromUserId);
+                incomingIntent.putExtra("callerName", callerName);
+                incomingIntent.putExtra("callerAvatarUrl", callerAvatarUrl);
+                incomingIntent.putExtra("callType", callType);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(incomingIntent);
+                } else {
+                    startService(incomingIntent);
+                }
+            } else if ("call_cancelled".equals(type) || "call_declined".equals(type) || "call_ended".equals(type)) {
+                JSONObject data = obj.optJSONObject("data");
+                String callId = data != null ? data.optString("callId", "") : "";
+                stopCallAlerts();
+                if (!callId.isEmpty()) {
+                    NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                    if (nm != null) {
+                        nm.cancel(getNotificationId(callId));
+                    }
+                }
+                AndroidCallBridge.restoreLockScreen(null);
+
+                // Restore listener notification
+                if (sKeepListening) {
+                    Notification listenerNotification = buildListenerNotification();
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        startForeground(LISTENER_NOTIFICATION_ID, listenerNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                    } else {
+                        startForeground(LISTENER_NOTIFICATION_ID, listenerNotification);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[CallLog] Error parsing native call signal: " + e.getMessage());
+        }
+    }
+
     @Override
     public void onDestroy() {
         stopCallAlerts();
+        stopNativeEventListener();
         super.onDestroy();
     }
 

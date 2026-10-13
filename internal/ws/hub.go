@@ -53,6 +53,7 @@ type Hub struct {
 	mu           sync.RWMutex
 	Clients      map[*SafeConn]uint
 	UserConns    map[uint]map[*SafeConn]bool
+	UserSSEConns map[uint]map[chan []byte]bool
 	UserLastSeen map[uint]time.Time
 	BroadcastC   chan []byte
 	Register     chan registration
@@ -65,6 +66,7 @@ func NewHub() *Hub {
 	return &Hub{
 		Clients:      make(map[*SafeConn]uint),
 		UserConns:    make(map[uint]map[*SafeConn]bool),
+		UserSSEConns: make(map[uint]map[chan []byte]bool),
 		UserLastSeen: make(map[uint]time.Time),
 		BroadcastC:   make(chan []byte, 256),
 		Register:     make(chan registration),
@@ -256,24 +258,76 @@ func (h *Hub) Broadcast(msg string) {
 	h.BroadcastC <- []byte(msg)
 }
 
-// SendToUser delivers a message to all connections belonging to the given userID
+// RegisterSSE registers a native Server-Sent Events channel for targeted call events
+func (h *Hub) RegisterSSE(userID uint, ch chan []byte) {
+	if userID == 0 || ch == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.UserSSEConns == nil {
+		h.UserSSEConns = make(map[uint]map[chan []byte]bool)
+	}
+	if h.UserSSEConns[userID] == nil {
+		h.UserSSEConns[userID] = make(map[chan []byte]bool)
+	}
+	h.UserSSEConns[userID][ch] = true
+	if h.UserLastSeen == nil {
+		h.UserLastSeen = make(map[uint]time.Time)
+	}
+	h.UserLastSeen[userID] = time.Now()
+	h.mu.Unlock()
+	log.Printf("[Hub] Registered native SSE listener for user %d (total active SSE channels: %d)", userID, len(h.UserSSEConns[userID]))
+}
+
+// UnregisterSSE removes a native Server-Sent Events channel
+func (h *Hub) UnregisterSSE(userID uint, ch chan []byte) {
+	if userID == 0 || ch == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.UserSSEConns != nil && h.UserSSEConns[userID] != nil {
+		delete(h.UserSSEConns[userID], ch)
+		if len(h.UserSSEConns[userID]) == 0 {
+			delete(h.UserSSEConns, userID)
+		}
+	}
+	h.mu.Unlock()
+	log.Printf("[Hub] Unregistered native SSE listener for user %d", userID)
+}
+
+// SendToUser delivers a message to all connections (WebSocket + Native SSE) belonging to the given userID
 func (h *Hub) SendToUser(userID uint, msg []byte) bool {
 	h.mu.RLock()
-	conns, exists := h.UserConns[userID]
-	if !exists || len(conns) == 0 {
+	conns, existsWS := h.UserConns[userID]
+	sseConns, existsSSE := h.UserSSEConns[userID]
+	if (!existsWS || len(conns) == 0) && (!existsSSE || len(sseConns) == 0) {
 		h.mu.RUnlock()
 		return false
 	}
-	list := make([]*SafeConn, 0, len(conns))
+
+	wsList := make([]*SafeConn, 0, len(conns))
 	for sc := range conns {
-		list = append(list, sc)
+		wsList = append(wsList, sc)
+	}
+
+	sseList := make([]chan []byte, 0, len(sseConns))
+	for ch := range sseConns {
+		sseList = append(sseList, ch)
 	}
 	h.mu.RUnlock()
 
 	sentCount := 0
-	for _, sc := range list {
+	for _, sc := range wsList {
 		if err := sc.WriteMessage(websocket.TextMessage, msg); err == nil {
 			sentCount++
+		}
+	}
+	for _, ch := range sseList {
+		select {
+		case ch <- msg:
+			sentCount++
+		default:
+			log.Printf("[Hub] SSE channel for user %d was full, dropping message", userID)
 		}
 	}
 	return sentCount > 0
@@ -302,15 +356,21 @@ func (h *Hub) RemoveUserPresence(userID uint) {
 		delete(h.UserLastSeen, userID)
 	}
 	delete(h.UserConns, userID)
+	if h.UserSSEConns != nil {
+		delete(h.UserSSEConns, userID)
+	}
 	h.mu.Unlock()
 	go h.BroadcastPresence(userID, false)
 }
 
-// IsUserOnline returns true if user has active connections or was active within 2 minutes (e.g. minimized)
+// IsUserOnline returns true if user has active WebSocket connections, native SSE connections, or was active within 2 minutes
 func (h *Hub) IsUserOnline(userID uint) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if conns, exists := h.UserConns[userID]; exists && len(conns) > 0 {
+		return true
+	}
+	if sseConns, exists := h.UserSSEConns[userID]; exists && len(sseConns) > 0 {
 		return true
 	}
 	if lastSeen, ok := h.UserLastSeen[userID]; ok {

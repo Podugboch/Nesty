@@ -75,20 +75,25 @@ public class DevNestFirebaseMessagingService extends FirebaseMessagingService {
         super.onNewToken(token);
         Log.d(TAG, "[CallLog] FCM device token updated: " + token);
 
-        SharedPreferences prefs = getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
-        prefs.edit().putString("devnest_device_token", token).apply();
+        SharedPreferences prefs = getSharedPreferences("DevNestPrefs", Context.MODE_PRIVATE);
+        prefs.edit().putString("fcm_token", token).putString("devnest_device_token", token).apply();
 
-        String authToken = prefs.getString("token", "");
+        String tempToken = prefs.getString("auth_token", "");
         String apiUrl = prefs.getString("api_url", "https://piscine-devnest.onrender.com");
+        if (tempToken.isEmpty()) {
+            SharedPreferences capPrefs = getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
+            tempToken = capPrefs.getString("token", "");
+        }
+        final String effectiveToken = tempToken;
 
-        if (!authToken.isEmpty()) {
+        if (!effectiveToken.isEmpty()) {
             new Thread(() -> {
                 try {
                     URL url = new URL(apiUrl + "/api/devices");
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setRequestMethod("POST");
                     conn.setRequestProperty("Content-Type", "application/json");
-                    conn.setRequestProperty("Authorization", "Bearer " + authToken);
+                    conn.setRequestProperty("Authorization", "Bearer " + effectiveToken);
                     conn.setDoOutput(true);
 
                     String json = "{\"token\":\"" + token + "\",\"platform\":\"android\"}";

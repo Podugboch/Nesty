@@ -107,6 +107,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// CALL & WEBRTC SIGNALING
 		protected.GET("/call/online/:id", h.CheckUserOnline)
+		protected.GET("/call/events", h.CallEventsStream)
 		protected.POST("/call/signal", h.SendCallSignal)
 
 		// DEVICE PUSH TOKENS
@@ -1373,6 +1374,47 @@ func (h *Handler) CheckUserOnline(c *gin.Context) {
 		"online":  online,
 		"user_id": targetID,
 	})
+}
+
+// CallEventsStream provides a persistent Server-Sent Events (SSE) stream for native mobile background listeners
+func (h *Handler) CallEventsStream(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	if userID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+
+	ch := make(chan []byte, 32)
+	h.Hub.RegisterSSE(userID, ch)
+	defer h.Hub.UnregisterSSE(userID, ch)
+
+	c.Writer.Flush()
+
+	clientGone := c.Request.Context().Done()
+	pingTicker := time.NewTicker(20 * time.Second)
+	defer pingTicker.Stop()
+
+	// Initial connected confirmation
+	fmt.Fprintf(c.Writer, "data: {\"event\":\"connected\",\"user_id\":%d}\n\n", userID)
+	c.Writer.Flush()
+
+	for {
+		select {
+		case <-clientGone:
+			return
+		case msg := <-ch:
+			fmt.Fprintf(c.Writer, "data: %s\n\n", string(msg))
+			c.Writer.Flush()
+		case <-pingTicker.C:
+			fmt.Fprintf(c.Writer, ": ping\n\n")
+			c.Writer.Flush()
+		}
+	}
 }
 
 type CallSignalInput struct {

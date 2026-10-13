@@ -1017,11 +1017,11 @@ export default function App() {
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
   };
 
-  const tuneBitrate = (pc: RTCPeerConnection, targetBitrate: number = 800000) => {
+  const tuneBitrate = (pc: RTCPeerConnection, targetBitrate: number = 2500000) => {
     currentMaxBitrateRef.current = targetBitrate;
     try {
       const senders = pc.getSenders();
-      // Video sender parameters: maxBitrate ~800000 (or 400000 adapted), maxFramerate 30, degradationPreference "maintain-framerate"
+      // Video sender parameters: Full HD 1080p maxBitrate ~2500000 (or 1000000 adapted), maxFramerate 30, degradationPreference "maintain-framerate"
       const videoSender = senders.find((s) => s.track && s.track.kind === "video");
       if (videoSender && videoSender.getParameters) {
         const params = videoSender.getParameters();
@@ -1104,17 +1104,17 @@ export default function App() {
           });
         }
 
-        // If packet loss stays above 8% for two checks, lower maxBitrate to 400000. Raise it back when loss clears.
+        // If packet loss stays above 8% for two checks, lower maxBitrate to 1000000. Raise it back to 2500000 when loss clears.
         if (lossRate > 8) {
           lossStreakRef.current += 1;
-          if (lossStreakRef.current >= 2 && currentMaxBitrateRef.current > 400000) {
-            tuneBitrate(pc, 400000);
+          if (lossStreakRef.current >= 2 && currentMaxBitrateRef.current > 1000000) {
+            tuneBitrate(pc, 1000000);
           }
         } else {
           if (lossStreakRef.current > 0) {
             lossStreakRef.current = 0;
-            if (currentMaxBitrateRef.current < 800000) {
-              tuneBitrate(pc, 800000);
+            if (currentMaxBitrateRef.current < 2500000) {
+              tuneBitrate(pc, 2500000);
             }
           }
         }
@@ -1139,12 +1139,12 @@ export default function App() {
 
       const targetFacing = requestedFacing || facingMode;
 
-      // Video constraints: ideal 640x480 (max 640x480), frameRate ideal 24, max 30, facingMode
+      // Video constraints: Full HD 1080p (1920x1080), 30-60 fps, facingMode
       const videoConstraints: MediaTrackConstraints = {
         facingMode: { ideal: targetFacing },
-        width: { ideal: 640, max: 640 },
-        height: { ideal: 480, max: 480 },
-        frameRate: { ideal: 24, max: 30 },
+        width: { ideal: 1920, max: 1920 },
+        height: { ideal: 1080, max: 1080 },
+        frameRate: { ideal: 30, max: 60 },
       };
 
       let stream: MediaStream | null = null;
@@ -1160,7 +1160,7 @@ export default function App() {
           try {
             stream = await navigator.mediaDevices.getUserMedia({
               audio: audioConstraints,
-              video: { facingMode: targetFacing, frameRate: { ideal: 24, max: 30 } },
+              video: { facingMode: targetFacing, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 60 } },
             });
           } catch (vErr2) {
             console.warn("Fallback video failed, falling back to audio only:", vErr2);
@@ -1213,9 +1213,9 @@ export default function App() {
       const newStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: nextFacing },
-          width: { ideal: 640, max: 640 },
-          height: { ideal: 480, max: 480 },
-          frameRate: { ideal: 24, max: 30 },
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 },
+          frameRate: { ideal: 30, max: 60 },
         },
         audio: false,
       });
@@ -1391,7 +1391,7 @@ export default function App() {
       }
       setActiveCall((prev) => (prev ? { ...prev, status: "connected", statusText: "Connected" } : null));
       iceRestartCountRef.current = 0;
-      tuneBitrate(pc, 800000);
+      tuneBitrate(pc, 2500000);
       startStatsMonitor(pc);
     };
 
@@ -2068,9 +2068,21 @@ export default function App() {
     try {
       let deviceToken = localStorage.getItem("devnest_device_token");
       let platform = "web";
+      const isAndroidNative = !!(window as any).AndroidCallBridge;
       const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.();
 
-      if (isCapacitor) {
+      if (isAndroidNative) {
+        platform = "android";
+        try {
+          const nativeToken = (window as any).AndroidCallBridge.getDeviceToken?.();
+          if (nativeToken) {
+            deviceToken = nativeToken;
+          }
+          if (authToken) {
+            (window as any).AndroidCallBridge.setAuthToken?.(authToken, API_URL);
+          }
+        } catch {}
+      } else if (isCapacitor) {
         platform = (window as any).Capacitor.getPlatform() || "android";
         if ((window as any).PushNotifications) {
           try {
@@ -2083,7 +2095,7 @@ export default function App() {
       }
 
       if (!deviceToken) {
-        deviceToken = (isCapacitor ? "mobile_" : "web_") + Math.random().toString(36).substring(2) + "_" + Date.now();
+        deviceToken = (isAndroidNative || isCapacitor ? "android_" : "web_") + Math.random().toString(36).substring(2) + "_" + Date.now();
         localStorage.setItem("devnest_device_token", deviceToken);
       }
 
@@ -2119,9 +2131,14 @@ export default function App() {
     }
   };
 
-  // Register device push token on auth mount
+  // Register device push token and sync native auth on auth mount
   useEffect(() => {
     if (!token) return;
+    if ((window as any).AndroidCallBridge?.setAuthToken) {
+      try {
+        (window as any).AndroidCallBridge.setAuthToken(token, API_URL);
+      } catch {}
+    }
     fetchNotifications();
     registerDevicePushToken(token);
   }, [token]);

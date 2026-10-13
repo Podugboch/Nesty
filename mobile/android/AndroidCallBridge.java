@@ -1,13 +1,16 @@
 package com.devnest.app;
 
 import android.app.Activity;
+import android.app.Application;
 import android.app.KeyguardManager;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -23,6 +26,8 @@ public class AndroidCallBridge {
     private static Activity sActivity = null;
     private static WebView sWebView = null;
     private static String sPendingCallActionJson = null;
+    private static volatile boolean sIsForeground = false;
+    private static boolean sLifecycleRegistered = false;
 
     private final Context context;
 
@@ -31,12 +36,69 @@ public class AndroidCallBridge {
         if (context instanceof Activity) {
             sActivity = (Activity) context;
             handleNewIntent(sActivity, sActivity.getIntent());
+            registerLifecycle(sActivity);
         }
         // Ensure channels are created as soon as bridge is instantiated on app start
         try {
             CallNotificationService.createNotificationChannels(context);
         } catch (Exception e) {
             Log.e(TAG, "[CallLog] Error creating notification channels in bridge: " + e.getMessage());
+        }
+    }
+
+    private static synchronized void registerLifecycle(Activity activity) {
+        if (sLifecycleRegistered || activity == null) return;
+        try {
+            Application app = activity.getApplication();
+            if (app != null) {
+                app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+                    @Override
+                    public void onActivityResumed(Activity a) {
+                        if (a == sActivity) {
+                            sIsForeground = true;
+                            Log.d(TAG, "[CallLog] DevNest activity resumed -> isForeground=true");
+                        }
+                    }
+
+                    @Override
+                    public void onActivityPaused(Activity a) {
+                        if (a == sActivity) {
+                            sIsForeground = false;
+                            Log.d(TAG, "[CallLog] DevNest activity paused -> isForeground=false");
+                        }
+                    }
+
+                    @Override public void onActivityCreated(Activity a, Bundle b) {}
+                    @Override public void onActivityStarted(Activity a) {}
+                    @Override public void onActivityStopped(Activity a) {}
+                    @Override public void onActivitySaveInstanceState(Activity a, Bundle b) {}
+                    @Override public void onActivityDestroyed(Activity a) {
+                        if (a == sActivity) {
+                            sActivity = null;
+                            sIsForeground = false;
+                        }
+                    }
+                });
+                sLifecycleRegistered = true;
+                sIsForeground = true;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[CallLog] Error registering lifecycle callbacks: " + e.getMessage());
+        }
+    }
+
+    public static boolean isAppForeground() {
+        return sIsForeground;
+    }
+
+    public static boolean isDeviceLocked(Context ctx) {
+        if (ctx == null) ctx = sActivity;
+        if (ctx == null) return false;
+        try {
+            KeyguardManager km = (KeyguardManager) ctx.getSystemService(Context.KEYGUARD_SERVICE);
+            return km != null && km.isKeyguardLocked();
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -429,6 +491,39 @@ public class AndroidCallBridge {
             context.startService(stopIntent);
         } catch (Exception e) {
             Log.e(TAG, "[CallLog] Error stopping background listener: " + e.getMessage());
+        }
+    }
+
+    @JavascriptInterface
+    public void setAuthToken(String token, String apiUrl) {
+        if (token == null) token = "";
+        if (apiUrl == null || apiUrl.isEmpty()) apiUrl = "https://piscine-devnest.onrender.com";
+        try {
+            SharedPreferences prefs = context.getSharedPreferences("DevNestPrefs", Context.MODE_PRIVATE);
+            prefs.edit().putString("auth_token", token).putString("api_url", apiUrl).apply();
+            Log.d(TAG, "[CallLog] Saved auth token in DevNestPrefs (token len=" + token.length() + ")");
+            // Start or refresh background calling listener
+            startBackgroundListener();
+        } catch (Exception e) {
+            Log.e(TAG, "[CallLog] Error saving auth token in bridge: " + e.getMessage());
+        }
+    }
+
+    @JavascriptInterface
+    public String getDeviceToken() {
+        try {
+            SharedPreferences prefs = context.getSharedPreferences("DevNestPrefs", Context.MODE_PRIVATE);
+            String token = prefs.getString("fcm_token", "");
+            if (token.isEmpty()) {
+                token = prefs.getString("native_device_id", "");
+                if (token.isEmpty()) {
+                    token = "native_android_" + System.currentTimeMillis();
+                    prefs.edit().putString("native_device_id", token).apply();
+                }
+            }
+            return token;
+        } catch (Exception e) {
+            return "native_android_" + System.currentTimeMillis();
         }
     }
 
