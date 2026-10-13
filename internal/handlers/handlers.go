@@ -53,6 +53,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/forgot-password", h.ForgotPassword)
 	api.GET("/community-stats", h.GetCommunityStats)
 	api.GET("/community/stats", h.GetCommunityStats)
+	api.GET("/webrtc/config", h.GetWebRTCConfig)
 
 	// PROTECTED ROUTES
 	protected := api.Group("/", utils.JWTMiddleware())
@@ -110,7 +111,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.GET("/call/online/:id", h.CheckUserOnline)
 		protected.GET("/call/events", h.CallEventsStream)
 		protected.POST("/call/signal", h.SendCallSignal)
-		protected.GET("/webrtc/config", h.GetWebRTCConfig)
 
 		// DEVICE PUSH TOKENS
 		protected.POST("/devices", h.RegisterDevice)
@@ -130,7 +130,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/heartbeat", utils.JWTMiddleware(), h.Heartbeat)
 	r.GET("/heartbeat", utils.JWTMiddleware(), h.Heartbeat)
 	r.GET("/webrtc/config", h.GetWebRTCConfig)
-	r.GET("/api/webrtc/config", h.GetWebRTCConfig)
 
 	// WebSocket
 	r.GET("/ws", func(c *gin.Context) {
