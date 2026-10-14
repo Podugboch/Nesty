@@ -17,11 +17,9 @@ type Post struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	UserID    uint      `gorm:"index" json:"user_id"`
 	User      *User     `gorm:"foreignKey:UserID" json:"user"`
-	Content    string    `json:"content"`
-	MediaURL   string    `json:"media_url"`
-	MusicURL   string    `json:"music_url"`
-	MusicTitle string    `json:"music_title"`
-	Community  string    `gorm:"default:'general';index" json:"community"`
+	Content   string    `json:"content"`
+	MediaURL  string    `json:"media_url"`
+	Community string    `gorm:"default:'general';index" json:"community"`
 	Likes     int64     `gorm:"default:0" json:"likes"`
 	LikedByMe bool      `gorm:"-" json:"liked_by_me"` 
 	Comments  []Comment `gorm:"foreignKey:PostID" json:"comments"`

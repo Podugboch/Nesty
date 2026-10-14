@@ -158,11 +158,9 @@ func (h *Handler) Ping(c *gin.Context) {
 // ---------------------- POSTS ----------------------
 func (h *Handler) CreatePost(c *gin.Context) {
 	var input struct {
-		Content    string `json:"content"`
-		MediaURL   string `json:"media_url"`
-		MusicURL   string `json:"music_url"`
-		MusicTitle string `json:"music_title"`
-		Community  string `json:"community"`
+		Content   string `json:"content"`
+		MediaURL  string `json:"media_url"`
+		Community string `json:"community"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -176,12 +174,10 @@ func (h *Handler) CreatePost(c *gin.Context) {
 
 	userID := c.GetUint("user_id")
 	post := model.Post{
-		UserID:     userID,
-		Content:    input.Content,
-		MediaURL:   input.MediaURL,
-		MusicURL:   input.MusicURL,
-		MusicTitle: input.MusicTitle,
-		Community:  comm,
+		UserID:    userID,
+		Content:   input.Content,
+		MediaURL:  input.MediaURL,
+		Community: comm,
 	}
 
 	if err := h.DB.Create(&post).Error; err != nil {
