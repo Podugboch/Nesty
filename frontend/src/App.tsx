@@ -38,6 +38,8 @@ type Post = {
   id: number;
   content: string;
   media_url?: string;
+  music_url?: string;
+  music_title?: string;
   community?: string;
   created_at?: string;
   user?: User;
@@ -103,6 +105,82 @@ type CommunityChannel = {
   badgeClass: string;
   subtitle: string;
 };
+
+type MusicTrack = {
+  id: string;
+  title: string;
+  artist: string;
+  genre: string;
+  duration: string;
+  url: string;
+  coverEmoji: string;
+};
+
+const CURATED_MUSIC_TRACKS: MusicTrack[] = [
+  {
+    id: "track-1",
+    title: "Coffee Shop Deep Focus",
+    artist: "Nesty Beats",
+    genre: "Lo-Fi & Chill",
+    duration: "2:45",
+    url: "https://actions.google.com/sounds/v1/ambiences/coffee_shop.ogg",
+    coverEmoji: "☕",
+  },
+  {
+    id: "track-2",
+    title: "Rainy Night Coding",
+    artist: "Sarah Chen",
+    genre: "Lo-Fi & Chill",
+    duration: "3:10",
+    url: "https://actions.google.com/sounds/v1/weather/light_rain.ogg",
+    coverEmoji: "🌧️",
+  },
+  {
+    id: "track-3",
+    title: "Synthwave Pulse 1984",
+    artist: "Alex Synth",
+    genre: "Synthwave",
+    duration: "2:50",
+    url: "https://actions.google.com/sounds/v1/science_fiction/scifi_pulse.ogg",
+    coverEmoji: "⚡",
+  },
+  {
+    id: "track-4",
+    title: "Melodic Harmony Groove",
+    artist: "SoundHelix",
+    genre: "Melodic",
+    duration: "6:12",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+    coverEmoji: "🎵",
+  },
+  {
+    id: "track-5",
+    title: "Electronic Uplift Energy",
+    artist: "Cyber Sound",
+    genre: "Electronic",
+    duration: "7:05",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+    coverEmoji: "🚀",
+  },
+  {
+    id: "track-6",
+    title: "Midnight Acoustic Journey",
+    artist: "Leo Guitar",
+    genre: "Acoustic",
+    duration: "5:42",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
+    coverEmoji: "🎸",
+  },
+  {
+    id: "track-7",
+    title: "Deep Space Bassline",
+    artist: "Cloud Nine",
+    genre: "Ambient",
+    duration: "5:02",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
+    coverEmoji: "🌌",
+  },
+];
 
 // Isolated duration timer: updates every 1s internally without re-rendering App or <video> elements!
 const CallDurationTimer = React.memo(({ isConnected }: { isConnected: boolean }) => {
@@ -312,6 +390,166 @@ export default function App() {
     { id: "2", user: "anna_engineer", text: "Love the UI animations 🔥", time: "1h ago" },
   ]);
   const [newReelComment, setNewReelComment] = useState("");
+
+  // -----------------------------
+  // MUSIC ATTACHMENT & PLAYBACK STATE
+  // -----------------------------
+  type SelectedMusicInfo = {
+    title: string;
+    artist?: string;
+    url: string;
+    genre?: string;
+    coverEmoji?: string;
+  };
+
+  const [musicModalOpen, setMusicModalOpen] = useState(false);
+  const [musicModalTarget, setMusicModalTarget] = useState<"post" | "reel">("post");
+  const [selectedMusic, setSelectedMusic] = useState<SelectedMusicInfo | null>(null);
+  const [customAudioFile, setCustomAudioFile] = useState<File | null>(null);
+  const [previewingTrackId, setPreviewingTrackId] = useState<string | null>(null);
+  const [isPlayingSelectedMusic, setIsPlayingSelectedMusic] = useState(false);
+  const [activePlayingPostId, setActivePlayingPostId] = useState<number | null>(null);
+
+  const [musicSearchQuery, setMusicSearchQuery] = useState("");
+  const [selectedMusicCategory, setSelectedMusicCategory] = useState<string>("All");
+  const [musicModalTab, setMusicModalTab] = useState<"library" | "upload" | "url">("library");
+  const [customAudioUrlInput, setCustomAudioUrlInput] = useState("");
+  const [customAudioTitleInput, setCustomAudioTitleInput] = useState("");
+  const [modalUploadAudioFile, setModalUploadAudioFile] = useState<File | null>(null);
+
+  const musicAuditionAudioRef = useRef<HTMLAudioElement | null>(null);
+  const postAudioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  const selectedMusicAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const openMusicModal = (target: "post" | "reel" = "post") => {
+    setMusicModalTarget(target);
+    setMusicModalOpen(true);
+  };
+
+  const toggleTrackPreview = (track: MusicTrack) => {
+    if (previewingTrackId === track.id) {
+      if (musicAuditionAudioRef.current) {
+        musicAuditionAudioRef.current.pause();
+      }
+      setPreviewingTrackId(null);
+    } else {
+      if (musicAuditionAudioRef.current) {
+        musicAuditionAudioRef.current.pause();
+      }
+      const audio = new Audio(track.url);
+      audio.volume = 0.8;
+      audio.play().catch((err) => console.warn("Audio play blocked", err));
+      audio.onended = () => {
+        setPreviewingTrackId(null);
+      };
+      musicAuditionAudioRef.current = audio;
+      setPreviewingTrackId(track.id);
+    }
+  };
+
+  const selectTrack = (track: MusicTrack) => {
+    if (musicAuditionAudioRef.current) {
+      musicAuditionAudioRef.current.pause();
+    }
+    setPreviewingTrackId(null);
+
+    const info: SelectedMusicInfo = {
+      title: `${track.title} • ${track.artist}`,
+      artist: track.artist,
+      url: track.url,
+      genre: track.genre,
+      coverEmoji: track.coverEmoji,
+    };
+
+    if (musicModalTarget === "reel") {
+      setNewReelAudio(`${track.title} • ${track.artist}`);
+    } else {
+      setSelectedMusic(info);
+      setCustomAudioFile(null);
+    }
+
+    setMusicModalOpen(false);
+  };
+
+  const applyCustomAudioUpload = (file: File, title: string) => {
+    const objectUrl = URL.createObjectURL(file);
+    const audioTitle = title.trim() || file.name.replace(/\.[^/.]+$/, "");
+    const info: SelectedMusicInfo = {
+      title: audioTitle,
+      artist: "Original Sound",
+      url: objectUrl,
+      genre: "Custom Audio",
+      coverEmoji: "🎙️",
+    };
+
+    if (musicModalTarget === "reel") {
+      setNewReelAudio(audioTitle);
+    } else {
+      setSelectedMusic(info);
+      setCustomAudioFile(file);
+    }
+    setMusicModalOpen(false);
+  };
+
+  const applyCustomAudioUrl = (url: string, title: string) => {
+    if (!url.trim()) return;
+    const audioTitle = title.trim() || "Online Audio Track";
+    const info: SelectedMusicInfo = {
+      title: audioTitle,
+      artist: "Web Audio",
+      url: url.trim(),
+      genre: "Stream",
+      coverEmoji: "🌐",
+    };
+
+    if (musicModalTarget === "reel") {
+      setNewReelAudio(audioTitle);
+    } else {
+      setSelectedMusic(info);
+      setCustomAudioFile(null);
+    }
+    setMusicModalOpen(false);
+  };
+
+  const toggleSelectedMusicPreview = () => {
+    if (!selectedMusic) return;
+    if (isPlayingSelectedMusic) {
+      if (selectedMusicAudioRef.current) {
+        selectedMusicAudioRef.current.pause();
+      }
+      setIsPlayingSelectedMusic(false);
+    } else {
+      if (selectedMusicAudioRef.current) {
+        selectedMusicAudioRef.current.pause();
+      }
+      const audio = new Audio(selectedMusic.url);
+      audio.volume = 0.8;
+      audio.play().catch(() => {});
+      audio.onended = () => setIsPlayingSelectedMusic(false);
+      selectedMusicAudioRef.current = audio;
+      setIsPlayingSelectedMusic(true);
+    }
+  };
+
+  const togglePostMusic = (post: Post) => {
+    if (!post.music_url) return;
+    if (activePlayingPostId === post.id) {
+      if (postAudioPlayerRef.current) {
+        postAudioPlayerRef.current.pause();
+      }
+      setActivePlayingPostId(null);
+    } else {
+      if (postAudioPlayerRef.current) {
+        postAudioPlayerRef.current.pause();
+      }
+      const audio = new Audio(post.music_url);
+      audio.volume = 0.85;
+      audio.play().catch((err) => console.warn("Audio play blocked", err));
+      audio.onended = () => setActivePlayingPostId(null);
+      postAudioPlayerRef.current = audio;
+      setActivePlayingPostId(post.id);
+    }
+  };
 
   // GO LIVE STATE
   const [liveStudioOpen, setLiveStudioOpen] = useState(false);
@@ -2920,7 +3158,7 @@ export default function App() {
   // POST ACTIONS: CREATE, LIKE, DELETE
   // -----------------------------
   const createPost = async () => {
-    if (!newPost.trim() && !selectedFile) return;
+    if (!newPost.trim() && !selectedFile && !selectedMusic) return;
     setUploadingMedia(true);
 
     try {
@@ -2941,6 +3179,25 @@ export default function App() {
         }
       }
 
+      let musicUrl = selectedMusic?.url || "";
+      let musicTitle = selectedMusic?.title || "";
+
+      if (customAudioFile) {
+        const audioFormData = new FormData();
+        audioFormData.append("file", customAudioFile);
+
+        const audioRes = await fetch(`${API_URL}/api/upload`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: audioFormData,
+        });
+
+        if (audioRes.ok) {
+          const audioData = await audioRes.json();
+          musicUrl = audioData.url;
+        }
+      }
+
       const res = await fetch(`${API_URL}/api/posts`, {
         method: "POST",
         headers: {
@@ -2950,6 +3207,8 @@ export default function App() {
         body: JSON.stringify({
           content: newPost,
           media_url: uploadedUrl,
+          music_url: musicUrl,
+          music_title: musicTitle,
           community: selectedCommunity === "home" ? "" : (selectedCommunity || ""),
         }),
       });
@@ -2966,6 +3225,8 @@ export default function App() {
         setNewPost("");
         setSelectedFile(null);
         setMediaPreview(null);
+        setSelectedMusic(null);
+        setCustomAudioFile(null);
         setPage("feed");
       } else {
         alert("Failed to publish post.");
@@ -5177,10 +5438,46 @@ export default function App() {
 
               {mediaPreview && (
                 <div style={{ position: "relative", marginBottom: "12px", borderRadius: "12px", overflow: "hidden" }}>
-                  <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "240px", objectFit: "cover" }} />
+                  {selectedFile?.type.startsWith("video/") || mediaPreview.match(/\.(mp4|webm|mov)$/i) ? (
+                    <video src={mediaPreview} controls playsInline style={{ width: "100%", maxHeight: "240px", objectFit: "cover" }} />
+                  ) : (
+                    <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "240px", objectFit: "cover" }} />
+                  )}
                   <button
                     style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "24px", height: "24px", cursor: "pointer" }}
                     onClick={() => { setSelectedFile(null); setMediaPreview(null); }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {/* ATTACHED MUSIC SOUNDTRACK PREVIEW */}
+              {selectedMusic && (
+                <div className="selected-music-pill">
+                  <span className="selected-music-icon">🎵</span>
+                  <div className="selected-music-info">
+                    <span className="selected-music-title">{selectedMusic.title}</span>
+                    {selectedMusic.artist && <span className="selected-music-artist">{selectedMusic.artist}</span>}
+                  </div>
+                  <button
+                    type="button"
+                    className="selected-music-preview-btn"
+                    onClick={toggleSelectedMusicPreview}
+                    title={isPlayingSelectedMusic ? "Pause audio preview" : "Listen to audio preview"}
+                  >
+                    {isPlayingSelectedMusic ? "⏸" : "▶"}
+                  </button>
+                  <button
+                    type="button"
+                    className="selected-music-remove-btn"
+                    onClick={() => {
+                      if (selectedMusicAudioRef.current) selectedMusicAudioRef.current.pause();
+                      setIsPlayingSelectedMusic(false);
+                      setSelectedMusic(null);
+                      setCustomAudioFile(null);
+                    }}
+                    title="Remove soundtrack"
                   >
                     ✕
                   </button>
@@ -5195,10 +5492,10 @@ export default function App() {
                       <circle cx="8.5" cy="8.5" r="1.5" />
                       <polyline points="21 15 16 10 5 21" />
                     </svg>
-                    <span>Image</span>
+                    <span>Photo / Video</span>
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/*,video/*"
                       style={{ display: "none" }}
                       onChange={(e) => {
                         const file = e.target.files?.[0] || null;
@@ -5207,6 +5504,16 @@ export default function App() {
                       }}
                     />
                   </label>
+
+                  <button
+                    type="button"
+                    className={`tool-attach-btn ${selectedMusic ? "active" : ""}`}
+                    onClick={() => openMusicModal("post")}
+                    title="Add music soundtrack to your image, video or post"
+                  >
+                    <span style={{ fontSize: "14px" }}>🎵</span>
+                    <span>{selectedMusic ? "Music Added" : "Add Music"}</span>
+                  </button>
 
                   <button
                     className="tool-attach-btn"
@@ -5232,24 +5539,12 @@ export default function App() {
                     </svg>
                     <span>Link</span>
                   </button>
-
-                  <button
-                    className="tool-attach-btn"
-                    onClick={() => alert("Poll creation dialog")}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="18" y1="20" x2="18" y2="10" />
-                      <line x1="12" y1="20" x2="12" y2="4" />
-                      <line x1="6" y1="20" x2="6" y2="14" />
-                    </svg>
-                    <span>Poll</span>
-                  </button>
                 </div>
 
                 <button
                   className="post-pill-submit"
+                  disabled={uploadingMedia || (!newPost.trim() && !selectedFile && !selectedMusic)}
                   onClick={createPost}
-                  disabled={uploadingMedia || (!newPost.trim() && !selectedFile)}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="22" y1="2" x2="11" y2="13" />
@@ -5382,6 +5677,35 @@ export default function App() {
                         </div>
                       )
                     ) : null}
+
+                    {/* MUSIC SOUNDTRACK BADGE & PLAYBACK */}
+                    {post.music_url && (
+                      <div
+                        className={`post-music-badge ${activePlayingPostId === post.id ? "playing" : ""}`}
+                        onClick={() => togglePostMusic(post)}
+                        title={activePlayingPostId === post.id ? "Pause music" : "Play music soundtrack"}
+                      >
+                        <span className={`post-music-disc ${activePlayingPostId === post.id ? "spinning" : ""}`}>
+                          💿
+                        </span>
+                        <div className="post-music-info">
+                          <span className="post-music-label">MUSIC SOUNDTRACK</span>
+                          <span className="post-music-title">{post.music_title || "Original Audio"}</span>
+                        </div>
+                        <div className="post-music-btn">
+                          {activePlayingPostId === post.id ? (
+                            <div className="music-wave-bars">
+                              <span className="mwave m1" />
+                              <span className="mwave m2" />
+                              <span className="mwave m3" />
+                              <span className="mwave m4" />
+                            </div>
+                          ) : (
+                            <span className="music-play-triangle">▶</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     {/* ACTION BAR */}
                     <div className="post-actions-bar">
@@ -5720,10 +6044,43 @@ export default function App() {
                             <div className="mock-photo-placeholder">Photo</div>
                           ) : (
                             <div className="post-media-container">
-                              <img src={post.media_url} alt="" />
+                              {post.media_url.match(/\.(mp4|webm|mov)/i) ? (
+                                <video src={post.media_url} controls playsInline />
+                              ) : (
+                                <img src={post.media_url} alt="" />
+                              )}
                             </div>
                           )
                         ) : null}
+
+                        {/* MUSIC SOUNDTRACK BADGE & PLAYBACK */}
+                        {post.music_url && (
+                          <div
+                            className={`post-music-badge ${activePlayingPostId === post.id ? "playing" : ""}`}
+                            onClick={() => togglePostMusic(post)}
+                            title={activePlayingPostId === post.id ? "Pause music" : "Play music soundtrack"}
+                          >
+                            <span className={`post-music-disc ${activePlayingPostId === post.id ? "spinning" : ""}`}>
+                              💿
+                            </span>
+                            <div className="post-music-info">
+                              <span className="post-music-label">MUSIC SOUNDTRACK</span>
+                              <span className="post-music-title">{post.music_title || "Original Audio"}</span>
+                            </div>
+                            <div className="post-music-btn">
+                              {activePlayingPostId === post.id ? (
+                                <div className="music-wave-bars">
+                                  <span className="mwave m1" />
+                                  <span className="mwave m2" />
+                                  <span className="mwave m3" />
+                                  <span className="mwave m4" />
+                                </div>
+                              ) : (
+                                <span className="music-play-triangle">▶</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
 
                         <div className="post-actions-bar">
                           <button
@@ -5842,10 +6199,46 @@ export default function App() {
 
             {mediaPreview && (
               <div style={{ marginBottom: "16px", borderRadius: "12px", overflow: "hidden", position: "relative" }}>
-                <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "320px", objectFit: "cover" }} />
+                {selectedFile?.type.startsWith("video/") || mediaPreview.match(/\.(mp4|webm|mov)$/i) ? (
+                  <video src={mediaPreview} controls playsInline style={{ width: "100%", maxHeight: "320px", objectFit: "cover" }} />
+                ) : (
+                  <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "320px", objectFit: "cover" }} />
+                )}
                 <button
                   style={{ position: "absolute", top: "10px", right: "10px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "26px", height: "26px", cursor: "pointer" }}
                   onClick={() => { setSelectedFile(null); setMediaPreview(null); }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* ATTACHED MUSIC SOUNDTRACK PREVIEW */}
+            {selectedMusic && (
+              <div className="selected-music-pill" style={{ marginBottom: "16px" }}>
+                <span className="selected-music-icon">🎵</span>
+                <div className="selected-music-info">
+                  <span className="selected-music-title">{selectedMusic.title}</span>
+                  {selectedMusic.artist && <span className="selected-music-artist">{selectedMusic.artist}</span>}
+                </div>
+                <button
+                  type="button"
+                  className="selected-music-preview-btn"
+                  onClick={toggleSelectedMusicPreview}
+                  title={isPlayingSelectedMusic ? "Pause audio preview" : "Listen to audio preview"}
+                >
+                  {isPlayingSelectedMusic ? "⏸" : "▶"}
+                </button>
+                <button
+                  type="button"
+                  className="selected-music-remove-btn"
+                  onClick={() => {
+                    if (selectedMusicAudioRef.current) selectedMusicAudioRef.current.pause();
+                    setIsPlayingSelectedMusic(false);
+                    setSelectedMusic(null);
+                    setCustomAudioFile(null);
+                  }}
+                  title="Remove soundtrack"
                 >
                   ✕
                 </button>
@@ -5869,8 +6262,18 @@ export default function App() {
               </label>
 
               <button
+                type="button"
+                className={`attach-media-pill-btn ${selectedMusic ? "active" : ""}`}
+                onClick={() => openMusicModal("post")}
+                title="Add background music soundtrack"
+              >
+                <span>🎵</span>
+                <span>{selectedMusic ? "Change Music" : "Add Music"}</span>
+              </button>
+
+              <button
                 className="publish-pill-btn"
-                disabled={uploadingMedia || (!newPost.trim() && !selectedFile)}
+                disabled={uploadingMedia || (!newPost.trim() && !selectedFile && !selectedMusic)}
                 onClick={createPost}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -7659,13 +8062,23 @@ export default function App() {
               </div>
 
               <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-h)" }}>
-                  🎵 Audio Title / Song Name
-                </label>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700, color: "var(--text-h)" }}>
+                    🎵 Audio Title / Song Name
+                  </label>
+                  <button
+                    type="button"
+                    className="edit-profile-pill-btn"
+                    style={{ fontSize: "11px", padding: "3px 8px", background: "rgba(99, 102, 241, 0.15)", color: "#a5b4fc", border: "1px solid rgba(99, 102, 241, 0.3)" }}
+                    onClick={() => openMusicModal("reel")}
+                  >
+                    🎵 Pick Music Track
+                  </button>
+                </div>
                 <input
                   type="text"
                   className="nesty-input-field"
-                  placeholder="Original Audio • My Sound"
+                  placeholder="Original Audio • My Sound (or pick a track above)"
                   value={newReelAudio}
                   onChange={(e) => setNewReelAudio(e.target.value)}
                   style={{ width: "100%", padding: "8px 12px", fontSize: "13px" }}
@@ -8072,6 +8485,268 @@ export default function App() {
                 <span className="dock-btn-icon">🛑</span>
                 <span className="dock-btn-text">Leave</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: MUSIC SOUNDTRACK SELECTOR
+          ===================================================================== */}
+      {musicModalOpen && (
+        <div
+          className="modal-overlay-nesty"
+          onClick={() => {
+            if (musicAuditionAudioRef.current) musicAuditionAudioRef.current.pause();
+            setPreviewingTrackId(null);
+            setMusicModalOpen(false);
+          }}
+        >
+          <div
+            className="modal-card-nesty music-selector-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="modal-header-nesty">
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "22px" }}>🎵</span>
+                <div>
+                  <h3 className="modal-title-nesty" style={{ margin: 0 }}>
+                    {musicModalTarget === "reel" ? "Choose Reel Soundtrack" : "Add Background Music"}
+                  </h3>
+                  <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                    Select a royalty-free track, upload your audio, or paste a link
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="edit-profile-pill-btn"
+                style={{ padding: "4px 8px" }}
+                onClick={() => {
+                  if (musicAuditionAudioRef.current) musicAuditionAudioRef.current.pause();
+                  setPreviewingTrackId(null);
+                  setMusicModalOpen(false);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="modal-body-nesty" style={{ display: "flex", flexDirection: "column", gap: "12px", paddingTop: "6px" }}>
+              {/* Tab Selector */}
+              <div className="music-tabs">
+                <button
+                  type="button"
+                  className={`music-tab-btn ${musicModalTab === "library" ? "active" : ""}`}
+                  onClick={() => setMusicModalTab("library")}
+                >
+                  🎧 Curated Tracks
+                </button>
+                <button
+                  type="button"
+                  className={`music-tab-btn ${musicModalTab === "upload" ? "active" : ""}`}
+                  onClick={() => setMusicModalTab("upload")}
+                >
+                  📁 Upload Audio
+                </button>
+                <button
+                  type="button"
+                  className={`music-tab-btn ${musicModalTab === "url" ? "active" : ""}`}
+                  onClick={() => setMusicModalTab("url")}
+                >
+                  🔗 Direct Link
+                </button>
+              </div>
+
+              {/* TAB 1: CURATED TRACKS LIBRARY */}
+              {musicModalTab === "library" && (
+                <>
+                  {/* Search box */}
+                  <div className="music-search-box">
+                    <span className="music-search-icon">🔍</span>
+                    <input
+                      type="text"
+                      className="music-search-input"
+                      placeholder="Search songs, artists, genres..."
+                      value={musicSearchQuery}
+                      onChange={(e) => setMusicSearchQuery(e.target.value)}
+                    />
+                  </div>
+
+                  {/* Genre Pills */}
+                  <div className="music-genres-scroll">
+                    {["All", "Lo-Fi & Chill", "Synthwave", "Melodic", "Electronic", "Acoustic", "Ambient"].map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        className={`music-genre-chip ${selectedMusicCategory === cat ? "active" : ""}`}
+                        onClick={() => setSelectedMusicCategory(cat)}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Tracks List */}
+                  <div className="music-tracks-list">
+                    {CURATED_MUSIC_TRACKS.filter((track) => {
+                      const matchesCategory = selectedMusicCategory === "All" || track.genre === selectedMusicCategory;
+                      const matchesSearch =
+                        !musicSearchQuery.trim() ||
+                        track.title.toLowerCase().includes(musicSearchQuery.toLowerCase()) ||
+                        track.artist.toLowerCase().includes(musicSearchQuery.toLowerCase()) ||
+                        track.genre.toLowerCase().includes(musicSearchQuery.toLowerCase());
+                      return matchesCategory && matchesSearch;
+                    }).map((track) => {
+                      const isPreviewing = previewingTrackId === track.id;
+                      return (
+                        <div key={track.id} className="music-track-item">
+                          <div className="music-track-avatar">
+                            <span>{track.coverEmoji}</span>
+                          </div>
+                          <div className="music-track-details">
+                            <span className="music-track-title">{track.title}</span>
+                            <div className="music-track-sub">
+                              <span>{track.artist}</span>
+                              <span>•</span>
+                              <span>{track.genre}</span>
+                              <span>•</span>
+                              <span>{track.duration}</span>
+                            </div>
+                          </div>
+                          <div className="music-track-actions">
+                            <button
+                              type="button"
+                              className="music-audition-btn"
+                              onClick={() => toggleTrackPreview(track)}
+                              title={isPreviewing ? "Pause track" : "Audition track"}
+                            >
+                              {isPreviewing ? "⏸" : "▶"}
+                            </button>
+                            <button
+                              type="button"
+                              className="music-select-btn"
+                              onClick={() => selectTrack(track)}
+                              title="Attach this soundtrack"
+                            >
+                              Use
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {/* TAB 2: UPLOAD AUDIO */}
+              {musicModalTab === "upload" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "8px 0" }}>
+                  <div style={{ border: "2px dashed var(--border)", borderRadius: "12px", padding: "20px", textAlign: "center", background: "var(--bg)" }}>
+                    <div style={{ fontSize: "32px", marginBottom: "8px" }}>🎙️</div>
+                    <div style={{ fontWeight: 600, fontSize: "14px", marginBottom: "4px" }}>
+                      {modalUploadAudioFile ? modalUploadAudioFile.name : "Select an audio file from your device"}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "12px" }}>
+                      Supports MP3, WAV, AAC, M4A, OGG
+                    </div>
+                    <label className="edit-profile-pill-btn" style={{ cursor: "pointer", display: "inline-block", background: "var(--primary, #6366f1)", color: "#fff" }}>
+                      Browse Audio File
+                      <input
+                        type="file"
+                        accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          setModalUploadAudioFile(file);
+                          if (file && !customAudioTitleInput) {
+                            setCustomAudioTitleInput(file.name.replace(/\.[^/.]+$/, ""));
+                          }
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  <div>
+                    <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>
+                      Track Title (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      className="nesty-input-field"
+                      placeholder="e.g. My Podcast Clip, Guitar Jam, Theme Song"
+                      value={customAudioTitleInput}
+                      onChange={(e) => setCustomAudioTitleInput(e.target.value)}
+                      style={{ width: "100%", padding: "9px 12px", fontSize: "13px" }}
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    className="post-pill-submit"
+                    disabled={!modalUploadAudioFile}
+                    style={{ marginTop: "4px", width: "100%", justifyContent: "center" }}
+                    onClick={() => {
+                      if (!modalUploadAudioFile) return;
+                      applyCustomAudioUpload(modalUploadAudioFile, customAudioTitleInput);
+                      setModalUploadAudioFile(null);
+                      setCustomAudioTitleInput("");
+                    }}
+                  >
+                    🎵 Attach Uploaded Audio
+                  </button>
+                </div>
+              )}
+
+              {/* TAB 3: DIRECT AUDIO LINK */}
+              {musicModalTab === "url" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "8px 0" }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>
+                      Direct Audio URL (MP3, OGG, WAV)
+                    </label>
+                    <input
+                      type="url"
+                      className="nesty-input-field"
+                      placeholder="https://example.com/soundtrack.mp3"
+                      value={customAudioUrlInput}
+                      onChange={(e) => setCustomAudioUrlInput(e.target.value)}
+                      style={{ width: "100%", padding: "9px 12px", fontSize: "13px" }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "4px" }}>
+                      Soundtrack Title
+                    </label>
+                    <input
+                      type="text"
+                      className="nesty-input-field"
+                      placeholder="e.g. Synth Anthem"
+                      value={customAudioTitleInput}
+                      onChange={(e) => setCustomAudioTitleInput(e.target.value)}
+                      style={{ width: "100%", padding: "9px 12px", fontSize: "13px" }}
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    className="post-pill-submit"
+                    disabled={!customAudioUrlInput.trim()}
+                    style={{ marginTop: "4px", width: "100%", justifyContent: "center" }}
+                    onClick={() => {
+                      if (!customAudioUrlInput.trim()) return;
+                      applyCustomAudioUrl(customAudioUrlInput, customAudioTitleInput);
+                      setCustomAudioUrlInput("");
+                      setCustomAudioTitleInput("");
+                    }}
+                  >
+                    🔗 Attach Audio URL
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
