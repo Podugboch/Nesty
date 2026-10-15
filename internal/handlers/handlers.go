@@ -2216,54 +2216,59 @@ func (h *Handler) SearchMusic(c *gin.Context) {
 	}
 
 	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Get(reqURL)
-	if err == nil && resp.StatusCode == http.StatusOK {
-		defer resp.Body.Close()
-		var jamendoResp struct {
-			Headers struct {
-				Status string `json:"status"`
-				Count  int    `json:"results_count"`
-			} `json:"headers"`
-			Results []struct {
-				ID         string `json:"id"`
-				Name       string `json:"name"`
-				Duration   int    `json:"duration"`
-				ArtistName string `json:"artist_name"`
-				AlbumImage string `json:"album_image"`
-				Audio      string `json:"audio"`
-				LicenseCC  string `json:"license_ccurl"`
-			} `json:"results"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&jamendoResp); err == nil && jamendoResp.Headers.Status == "success" {
-			tracks := make([]UnifiedTrack, 0, len(jamendoResp.Results))
-			for _, item := range jamendoResp.Results {
-				if item.Audio == "" {
-					continue
-				}
-				cover := item.AlbumImage
-				lic := "Creative Commons (CC BY)"
-				if strings.Contains(item.LicenseCC, "nc") {
-					lic = "Creative Commons (CC BY-NC)"
-				}
-				tracks = append(tracks, UnifiedTrack{
-					ID:          "jamendo_" + item.ID,
-					Title:       item.Name,
-					Artist:      item.ArtistName,
-					AudioURL:    item.Audio,
-					CoverURL:    &cover,
-					DurationSec: item.Duration,
-					Source:      "jamendo",
-					License:     lic,
-					Attribution: fmt.Sprintf("Music by %s (Jamendo / %s)", item.ArtistName, lic),
-				})
+	httpReq, errReq := http.NewRequest("GET", reqURL, nil)
+	if errReq == nil {
+		httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Nesty/1.0; +https://nesty.app)")
+		httpReq.Header.Set("Accept", "application/json")
+		resp, err := client.Do(httpReq)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			var jamendoResp struct {
+				Headers struct {
+					Status string `json:"status"`
+					Count  int    `json:"results_count"`
+				} `json:"headers"`
+				Results []struct {
+					ID         string `json:"id"`
+					Name       string `json:"name"`
+					Duration   int    `json:"duration"`
+					ArtistName string `json:"artist_name"`
+					AlbumImage string `json:"album_image"`
+					Audio      string `json:"audio"`
+					LicenseCC  string `json:"license_ccurl"`
+				} `json:"results"`
 			}
-			c.JSON(http.StatusOK, gin.H{
-				"tracks": tracks,
-				"total":  jamendoResp.Headers.Count,
-				"source": "jamendo",
-			})
-			return
+
+			if err := json.NewDecoder(resp.Body).Decode(&jamendoResp); err == nil && jamendoResp.Headers.Status == "success" {
+				tracks := make([]UnifiedTrack, 0, len(jamendoResp.Results))
+				for _, item := range jamendoResp.Results {
+					if item.Audio == "" {
+						continue
+					}
+					cover := item.AlbumImage
+					lic := "Creative Commons (CC BY)"
+					if strings.Contains(item.LicenseCC, "nc") {
+						lic = "Creative Commons (CC BY-NC)"
+					}
+					tracks = append(tracks, UnifiedTrack{
+						ID:          "jamendo_" + item.ID,
+						Title:       item.Name,
+						Artist:      item.ArtistName,
+						AudioURL:    item.Audio,
+						CoverURL:    &cover,
+						DurationSec: item.Duration,
+						Source:      "jamendo",
+						License:     lic,
+						Attribution: fmt.Sprintf("Music by %s (Jamendo / %s)", item.ArtistName, lic),
+					})
+				}
+				c.JSON(http.StatusOK, gin.H{
+					"tracks": tracks,
+					"total":  jamendoResp.Headers.Count,
+					"source": "jamendo",
+				})
+				return
+			}
 		}
 	}
 
