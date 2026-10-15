@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { timeAgo } from "./utils/timeAgo";
+import { MusicPicker, type MusicTrack } from "./components/MusicPicker";
+import { ReelsView } from "./components/ReelsView";
+import { ReelCreateView } from "./components/ReelCreateView";
 import "./App.css";
 
 const API_URL: string = (import.meta as any).env?.VITE_API_URL ||
@@ -46,8 +49,225 @@ type Post = {
   comments?: Comment[];
   parent_id?: number;
   parent?: Post;
+  music_track_id?: number | null;
+  music_track?: MusicTrack | null;
+  music_start_sec?: number;
+  mute_original?: boolean;
+  music_volume?: number;
+  original_volume?: number;
 };
 
+type ReelItem = {
+  id: string | number;
+  userId: number;
+  username: string;
+  name?: string;
+  avatarUrl?: string;
+  videoUrl: string;
+  caption: string;
+  likes: number;
+  likedByMe?: boolean;
+  commentsCount: number;
+  audioTitle?: string;
+  music_track_id?: number | null;
+  music_track?: MusicTrack | null;
+  music_start_sec?: number;
+  mute_original?: boolean;
+  music_volume?: number;
+  original_volume?: number;
+};
+
+// ---------------------------------------------------------------------------
+// FEED POST PLAYBACK COMPONENT (VIDEO/AUDIO SYNC & IMAGE SOUNDTRACK)
+// ---------------------------------------------------------------------------
+const PostPlaybackMedia: React.FC<{
+  post: Post;
+  activePlayingPostId: number | null;
+  setActivePlayingPostId: (id: number | null) => void;
+}> = ({ post, activePlayingPostId, setActivePlayingPostId }) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+
+  const hasMusic = !!post.music_track;
+  const isVideo = !!(post.media_url && post.media_url.match(/\.(mp4|webm|mov|ogg)/i));
+  const isImage = !!(post.media_url && !isVideo && post.media_url !== "photo_placeholder");
+
+  // Keep audio volume in sync
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = post.music_volume != null ? Math.max(0, Math.min(1, post.music_volume)) : 1;
+    }
+  }, [post.music_volume]);
+
+  // Keep video volume and mute state in sync
+  useEffect(() => {
+    if (videoRef.current) {
+      const origVol = post.original_volume != null ? Math.max(0, Math.min(1, post.original_volume)) : 1;
+      videoRef.current.volume = origVol;
+      videoRef.current.muted = post.mute_original || origVol === 0;
+    }
+  }, [post.original_volume, post.mute_original]);
+
+  // Pause if another post becomes active
+  useEffect(() => {
+    if (activePlayingPostId !== null && activePlayingPostId !== post.id) {
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
+      if (audioRef.current && !audioRef.current.paused) {
+        audioRef.current.pause();
+        setIsPlayingAudio(false);
+      }
+    }
+  }, [activePlayingPostId, post.id]);
+
+  // IntersectionObserver to pause when scrolled out of view, and for image posts play when in view
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) {
+            // Scrolled out of view
+            if (videoRef.current && !videoRef.current.paused) {
+              videoRef.current.pause();
+            }
+            if (audioRef.current && !audioRef.current.paused) {
+              audioRef.current.pause();
+              setIsPlayingAudio(false);
+            }
+          } else {
+            // Scrolled into view
+            if (isImage && hasMusic && (activePlayingPostId === null || activePlayingPostId === post.id)) {
+              if (audioRef.current && audioRef.current.paused) {
+                audioRef.current.currentTime = post.music_start_sec || 0;
+                audioRef.current.play().then(() => {
+                  setActivePlayingPostId(post.id);
+                  setIsPlayingAudio(true);
+                }).catch(() => {});
+              }
+            }
+          }
+        });
+      },
+      { threshold: 0.5 }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isImage, hasMusic, activePlayingPostId, post.id, post.music_start_sec, setActivePlayingPostId]);
+
+  // Sync video and audio
+  const handleVideoPlay = () => {
+    setActivePlayingPostId(post.id);
+    if (audioRef.current && hasMusic) {
+      const targetTime = (post.music_start_sec || 0) + (videoRef.current?.currentTime || 0);
+      audioRef.current.currentTime = targetTime;
+      audioRef.current.play().catch(() => {});
+      setIsPlayingAudio(true);
+    }
+  };
+
+  const handleVideoPause = () => {
+    if (audioRef.current && hasMusic) {
+      audioRef.current.pause();
+      setIsPlayingAudio(false);
+    }
+  };
+
+  const handleVideoSeeked = () => {
+    if (audioRef.current && hasMusic && videoRef.current) {
+      const targetTime = (post.music_start_sec || 0) + videoRef.current.currentTime;
+      audioRef.current.currentTime = targetTime;
+    }
+  };
+
+  const toggleImageAudio = () => {
+    if (!audioRef.current) return;
+    if (audioRef.current.paused) {
+      audioRef.current.currentTime = post.music_start_sec || 0;
+      audioRef.current.play().then(() => {
+        setActivePlayingPostId(post.id);
+        setIsPlayingAudio(true);
+      }).catch(() => {});
+    } else {
+      audioRef.current.pause();
+      setIsPlayingAudio(false);
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="post-media-with-audio-wrap">
+      {/* ♪ Title – Artist Soundtrack Badge */}
+      {hasMusic && post.music_track && (
+        <div
+          className="post-soundtrack-pill"
+          onClick={isImage ? toggleImageAudio : undefined}
+          style={{ cursor: isImage ? "pointer" : "default" }}
+          title={isImage ? (isPlayingAudio ? "Click to pause music" : "Click to play music") : undefined}
+        >
+          <span className="post-soundtrack-note">♪</span>
+          <span className="post-soundtrack-text">
+            {post.music_track.title} – {post.music_track.artist}
+          </span>
+          {isImage && (
+            <span style={{ fontSize: "11px", marginLeft: "4px", opacity: 0.8 }}>
+              {isPlayingAudio ? "⏸" : "▶"}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Hidden audio element for music soundtrack */}
+      {hasMusic && post.music_track && (
+        <audio
+          ref={audioRef}
+          src={post.music_track.audio_url}
+          loop
+          preload="auto"
+          style={{ display: "none" }}
+        />
+      )}
+
+      {/* Media: Video or Image */}
+      {isVideo && (
+        <div className="post-media-container">
+          <video
+            ref={videoRef}
+            src={post.media_url}
+            controls
+            playsInline
+            onPlay={handleVideoPlay}
+            onPause={handleVideoPause}
+            onSeeked={handleVideoSeeked}
+          />
+        </div>
+      )}
+
+      {isImage && (
+        <div className="post-media-container">
+          <img src={post.media_url} alt="Attachment" />
+        </div>
+      )}
+    </div>
+  );
+};
+
+
+type QuotedMsg = {
+  id: number;
+  sender_id: number;
+  username: string;
+  sender_name: string;
+  content: string;
+  media_url?: string;
+  media_type?: string;
+  is_deleted?: boolean;
+};
 
 type ChatMessage = {
   id?: number;
@@ -59,6 +279,8 @@ type ChatMessage = {
   file_name?: string;
   file_size?: number;
   created_at?: string;
+  reply_to_message_id?: number | null;
+  reply_to_message?: QuotedMsg | null;
 };
 
 type CallState = {
@@ -221,7 +443,47 @@ export default function App() {
   // -----------------------------
   // NAVIGATION & COMMUNITIES (HOME IS NOT A COMMUNITY - IT'S THE ALGORITHMIC FEED)
   // -----------------------------
-  const [page, setPage] = useState<"feed" | "create" | "profile" | "reels">("feed");
+  // URL Route Synchronization
+  const [page, setPage] = useState<"feed" | "create" | "profile" | "reels" | "reels_create">(() => {
+    if (typeof window !== "undefined") {
+      const path = window.location.pathname;
+      if (path === "/reels") return "reels";
+      if (path === "/reels/create") return "reels_create";
+      if (path.startsWith("/profile") || path.startsWith("/u/")) return "profile";
+    }
+    return "feed";
+  });
+
+  const navigateTo = (path: string) => {
+    if (typeof window !== "undefined") {
+      window.history.pushState({}, "", path);
+      if (path === "/reels") {
+        setPage("reels");
+      } else if (path === "/reels/create") {
+        setPage("reels_create");
+      } else if (path === "/" || path === "") {
+        setPage("feed");
+        setSelectedCommunity("home");
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname;
+      if (path === "/reels") {
+        setPage("reels");
+      } else if (path === "/reels/create") {
+        setPage("reels_create");
+      } else if (path === "/" || path === "") {
+        setPage("feed");
+        setSelectedCommunity("home");
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
   const [selectedCommunity, setSelectedCommunity] = useState<string>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -229,76 +491,38 @@ export default function App() {
   const [feedTab, setFeedTab] = useState<"for_you" | "following" | "trending" | "latest">("for_you");
   const [feedFilterMedia, setFeedFilterMedia] = useState<boolean>(false);
 
-  const [communities, setCommunities] = useState<CommunityChannel[]>([
-    { id: "coding-help", name: "Coding Help", badgeClass: "coding", subtitle: "Stuck? Get help from the community." },
-    { id: "showcase", name: "Project Showcase", badgeClass: "showcase", subtitle: "Show off what you're building." },
-    { id: "opportunities", name: "Opportunities", badgeClass: "opportunities", subtitle: "Jobs, Internships and more." },
-    { id: "study-buddies", name: "Study Buddies", badgeClass: "study", subtitle: "Find study partners and collaborate." },
-  ]);
+  // Real user-created communities (no seeded/fake communities)
+  const [communities, setCommunities] = useState<CommunityChannel[]>([]);
+
+  useEffect(() => {
+    const fetchCommunities = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/communities`);
+        if (res.ok) {
+          const data = await res.json();
+          const list = (data.communities || []).map((c: any) => ({
+            id: c.slug || String(c.id),
+            name: c.name,
+            badgeClass: c.badge_class || "custom",
+            subtitle: c.description || `Community channel for ${c.name}`,
+          }));
+          setCommunities(list);
+        }
+      } catch (err) {
+        console.error("Failed to fetch communities:", err);
+      }
+    };
+    fetchCommunities();
+  }, []);
 
   const [createCommModalOpen, setCreateCommModalOpen] = useState(false);
   const [newCommName, setNewCommName] = useState("");
 
   // -----------------------------
-  // REELS, GO LIVE & GROUP CALLS STATE
+  // REELS STATE (NO FAKE / MOCK ACCOUNTS)
   // -----------------------------
-  const initialReels: {
-    id: string | number;
-    userId: number;
-    username: string;
-    name?: string;
-    avatarUrl?: string;
-    videoUrl: string;
-    caption: string;
-    likes: number;
-    likedByMe?: boolean;
-    commentsCount: number;
-    audioTitle?: string;
-  }[] = [
-    {
-      id: "reel-1",
-      userId: 1,
-      username: "alex_builder",
-      name: "Alex Builder",
-      avatarUrl: "",
-      videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-      caption: "Building full-stack real-time apps with Go & WebSockets on Nesty! 🚀 Who else loves writing backend in Go? #golang #fullstack #nesty",
-      likes: 54,
-      likedByMe: false,
-      commentsCount: 12,
-      audioTitle: "Nesty Beats • Original Audio",
-    },
-    {
-      id: "reel-2",
-      userId: 2,
-      username: "sarah_frontend",
-      name: "Sarah Chen",
-      avatarUrl: "",
-      videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
-      caption: "Center any element with CSS in 2 lines 🔥 grid place-items center! Save this for your next project. #css #frontend #codingtips",
-      likes: 182,
-      likedByMe: true,
-      commentsCount: 38,
-      audioTitle: "Lo-fi Coding • Deep Focus",
-    },
-    {
-      id: "reel-3",
-      userId: 3,
-      username: "david_cloud",
-      name: "David K.",
-      avatarUrl: "",
-      videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
-      caption: "How we scale WebRTC calling to 100k users with Redis Pub/Sub clusters ⚡ High performance signaling in action. #webrtc #cloud #scaling",
-      likes: 97,
-      likedByMe: false,
-      commentsCount: 19,
-      audioTitle: "Tech Waves • Electronic",
-    },
-  ];
-
-  const [reelsList, setReelsList] = useState(initialReels);
+  const [reelsList, setReelsList] = useState<ReelItem[]>([]);
   const [activeReelIndex, setActiveReelIndex] = useState(0);
-  const [isReelMuted, setIsReelMuted] = useState(false);
   const [createReelModalOpen, setCreateReelModalOpen] = useState(false);
   const [newReelVideoUrl, setNewReelVideoUrl] = useState("");
   const [newReelCaption, setNewReelCaption] = useState("");
@@ -306,28 +530,39 @@ export default function App() {
   const [newReelFile, setNewReelFile] = useState<File | null>(null);
   const [newReelPreview, setNewReelPreview] = useState<string | null>(null);
   const [isSubmittingReel, setIsSubmittingReel] = useState(false);
+
+  // Music & Volume states for Reel Composer
+  const [selectedReelMusic, setSelectedReelMusic] = useState<MusicTrack | null>(null);
+  const [reelMusicPickerOpen, setReelMusicPickerOpen] = useState(false);
+  const [reelMuteOriginal, setReelMuteOriginal] = useState(false);
+  const [reelMusicVolume, setReelMusicVolume] = useState(1);
+  const [reelOriginalVolume, setReelOriginalVolume] = useState(1);
+
+  // Music state for Post Composer
+  const [selectedPostMusic, setSelectedPostMusic] = useState<MusicTrack | null>(null);
+  const [postMusicPickerOpen, setPostMusicPickerOpen] = useState(false);
+
+  // Active audio source tracking
+  const [activePlayingPostId, setActivePlayingPostId] = useState<number | null>(null);
+
   const [reelCommentsModalOpen, setReelCommentsModalOpen] = useState(false);
-  const [activeReelComments, setActiveReelComments] = useState<{ id: string; user: string; text: string; time: string }[]>([
-    { id: "1", user: "dev_john", text: "This is super clean! What library are you using?", time: "2h ago" },
-    { id: "2", user: "anna_engineer", text: "Love the UI animations 🔥", time: "1h ago" },
-  ]);
+  const [activeReelComments, setActiveReelComments] = useState<{ id: string; user: string; text: string; time: string }[]>([]);
   const [newReelComment, setNewReelComment] = useState("");
 
   // GO LIVE STATE
   const [liveStudioOpen, setLiveStudioOpen] = useState(false);
-  const [liveStreamTitle, setLiveStreamTitle] = useState("🔴 Live Coding & Community Hangout");
-  const [liveStreamViewers, setLiveStreamViewers] = useState(14);
+  const [liveStreamTitle, setLiveStreamTitle] = useState("🔴 Live Stream & Hangout");
+  const [liveStreamViewers, setLiveStreamViewers] = useState(0);
   const [liveStreamSeconds, setLiveStreamSeconds] = useState(0);
   const [isLiveMuted, setIsLiveMuted] = useState(false);
   const [isLiveVideoOff, setIsLiveVideoOff] = useState(false);
-  const [liveChatMessages, setLiveChatMessages] = useState<{ id: string; user: string; text: string; time: string }[]>([
-    { id: "1", user: "NestySystem", text: "Welcome to the live stream! Nesters can chat live below.", time: "Just now" },
-    { id: "2", user: "DevAlex", text: "Excited to see the demo! 🚀", time: "Just now" },
-    { id: "3", user: "CodeNinja", text: "Audio and video are super clear!", time: "Just now" },
-  ]);
+  const [liveChatMessages, setLiveChatMessages] = useState<{ id: string; user: string; text: string; time: string }[]>([]);
   const [liveChatInput, setLiveChatInput] = useState("");
   const liveVideoRef = useRef<HTMLVideoElement | null>(null);
   const liveStreamMediaRef = useRef<MediaStream | null>(null);
+
+  // Quoted message state for messaging
+  const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
 
   // GROUP CALL STATE (WEBRTC MULTI-PEER MESH)
   interface GroupCallParticipant {
@@ -835,6 +1070,9 @@ export default function App() {
       return;
     }
 
+    const replyingSnapshot = replyingToMessage;
+    setReplyingToMessage(null);
+
     const tempMsg: ChatMessage = {
       sender_id: user?.id || 0,
       recipient_id: activeChatPartner.id,
@@ -844,6 +1082,24 @@ export default function App() {
       file_name: fileName || undefined,
       file_size: fileSize || undefined,
       created_at: new Date().toISOString(),
+      reply_to_message_id: replyingSnapshot?.id || null,
+      reply_to_message: replyingSnapshot
+        ? {
+            id: replyingSnapshot.id || 0,
+            sender_id: replyingSnapshot.sender_id,
+            username:
+              replyingSnapshot.sender_id === user?.id
+                ? user?.username || "You"
+                : activeChatPartner.username,
+            sender_name:
+              replyingSnapshot.sender_id === user?.id
+                ? user?.name || user?.username || "You"
+                : activeChatPartner.name || activeChatPartner.username,
+            content: replyingSnapshot.content,
+            media_url: replyingSnapshot.media_url,
+            media_type: replyingSnapshot.media_type,
+          }
+        : null,
     };
     setChatMessages((prev) => [...prev, tempMsg]);
 
@@ -861,6 +1117,7 @@ export default function App() {
           media_type: mediaType,
           file_name: fileName,
           file_size: fileSize,
+          reply_to_message_id: replyingSnapshot?.id || null,
         }),
       });
       if (res.ok) {
@@ -2951,6 +3208,11 @@ export default function App() {
           content: newPost,
           media_url: uploadedUrl,
           community: selectedCommunity === "home" ? "" : (selectedCommunity || ""),
+          music_track_id: selectedPostMusic ? selectedPostMusic.id : null,
+          music_start_sec: 0,
+          mute_original: selectedPostMusic ? true : false,
+          music_volume: 1,
+          original_volume: selectedPostMusic ? 0 : 1,
         }),
       });
 
@@ -2961,11 +3223,13 @@ export default function App() {
           likes: 0,
           comments: [],
           user: data.user && data.user.username ? data.user : user || { id: 0, username: "Anonymous", email: "" },
+          music_track: data.music_track || selectedPostMusic || null,
         };
         setPosts((prev) => [newPostObj, ...prev]);
         setNewPost("");
         setSelectedFile(null);
         setMediaPreview(null);
+        setSelectedPostMusic(null);
         setPage("feed");
       } else {
         alert("Failed to publish post.");
@@ -3093,7 +3357,7 @@ export default function App() {
         formData.append("file", newReelFile);
         const res = await fetch(`${API_URL}/api/upload`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+          headers: { Authorization: `Bearer ${localStorage.getItem("token") || token}` },
           body: formData,
         });
         if (res.ok) {
@@ -3106,8 +3370,33 @@ export default function App() {
       }
     }
 
-    const newReel = {
-      id: `reel-${Date.now()}`,
+    let createdRemoteReel: any = null;
+    try {
+      const res = await fetch(`${API_URL}/api/reels`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token") || token}`,
+        },
+        body: JSON.stringify({
+          video_url: finalVideoUrl,
+          caption: newReelCaption || "New Reel on Nesty! 🎬 #nesty #developer",
+          music_track_id: selectedReelMusic ? selectedReelMusic.id : null,
+          music_start_sec: 0,
+          mute_original: reelMuteOriginal,
+          music_volume: reelMusicVolume,
+          original_volume: reelOriginalVolume,
+        }),
+      });
+      if (res.ok) {
+        createdRemoteReel = await res.json();
+      }
+    } catch (err) {
+      console.warn("Failed to save reel to backend, using local copy", err);
+    }
+
+    const newReel: ReelItem = {
+      id: createdRemoteReel?.id || `reel-${Date.now()}`,
       userId: user?.id || 1,
       username: user?.username || "You",
       name: user?.name || user?.username || "You",
@@ -3117,7 +3406,15 @@ export default function App() {
       likes: 1,
       likedByMe: true,
       commentsCount: 0,
-      audioTitle: newReelAudio || `Original Audio • ${user?.username || "You"}`,
+      audioTitle: selectedReelMusic
+        ? `${selectedReelMusic.title} • ${selectedReelMusic.artist}`
+        : newReelAudio || `Original Audio • ${user?.username || "You"}`,
+      music_track_id: selectedReelMusic ? (Number(selectedReelMusic.id) || null) : null,
+      music_track: selectedReelMusic,
+      music_start_sec: 0,
+      mute_original: reelMuteOriginal,
+      music_volume: reelMusicVolume,
+      original_volume: reelOriginalVolume,
     };
 
     setReelsList([newReel, ...reelsList]);
@@ -3128,32 +3425,49 @@ export default function App() {
     setNewReelFile(null);
     setNewReelPreview(null);
     setNewReelVideoUrl("");
+    setSelectedReelMusic(null);
+    setReelMuteOriginal(false);
+    setReelMusicVolume(1);
+    setReelOriginalVolume(1);
     setIsSubmittingReel(false);
   };
 
-  const toggleReelLike = (reelId: string | number) => {
-    setReelsList((prev) =>
-      prev.map((r) => {
-        if (r.id === reelId) {
-          const liked = !r.likedByMe;
-          return {
-            ...r,
-            likedByMe: liked,
-            likes: liked ? r.likes + 1 : Math.max(0, r.likes - 1),
-          };
+  // Load remote reels from API
+  useEffect(() => {
+    const fetchReels = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/reels`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.reels && data.reels.length > 0) {
+            const mapped: ReelItem[] = data.reels.map((r: any) => ({
+              id: r.id,
+              userId: r.user_id,
+              username: r.user?.username || "nester",
+              name: r.user?.name || r.user?.username || "Nester",
+              avatarUrl: r.user?.avatar_url || "",
+              videoUrl: r.video_url,
+              caption: r.caption,
+              likes: r.likes || 0,
+              likedByMe: r.liked_by_me || false,
+              commentsCount: r.comments_count || 0,
+              audioTitle: r.music_track ? `${r.music_track.title} • ${r.music_track.artist}` : `Original Audio • ${r.user?.username || "Nester"}`,
+              music_track_id: r.music_track_id,
+              music_track: r.music_track,
+              music_start_sec: r.music_start_sec || 0,
+              mute_original: r.mute_original || false,
+              music_volume: r.music_volume ?? 1,
+              original_volume: r.original_volume ?? 1,
+            }));
+            setReelsList(mapped);
+          }
         }
-        return r;
-      })
-    );
-  };
-
-  const handleNextReel = () => {
-    setActiveReelIndex((prev) => (prev + 1) % reelsList.length);
-  };
-
-  const handlePrevReel = () => {
-    setActiveReelIndex((prev) => (prev - 1 + reelsList.length) % reelsList.length);
-  };
+      } catch (e) {
+        console.warn("Could not load remote reels:", e);
+      }
+    };
+    fetchReels();
+  }, []);
 
   const handleAddReelComment = () => {
     if (!newReelComment.trim()) return;
@@ -3767,25 +4081,6 @@ export default function App() {
     };
   }, [groupCallState]);
 
-  useEffect(() => {
-    if (page !== "reels") return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (createReelModalOpen || reelCommentsModalOpen) return;
-      if (e.key === "ArrowDown" || e.key === "j") {
-        e.preventDefault();
-        handleNextReel();
-      } else if (e.key === "ArrowUp" || e.key === "k") {
-        e.preventDefault();
-        handlePrevReel();
-      } else if (e.key === "m") {
-        e.preventDefault();
-        setIsReelMuted((m) => !m);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [page, reelsList.length, createReelModalOpen, reelCommentsModalOpen]);
-
   // -----------------------------
   // PROFILE VIEW LOGIC
   // -----------------------------
@@ -4261,8 +4556,24 @@ export default function App() {
   const activeChannel = communities.find((c) => c.id === selectedCommunity) || communities[0];
 
   return (
-    <div className="nesty-app">
-      {/* MOBILE TOP BAR */}
+    <div className={`nesty-app ${page === "reels" || page === "reels_create" ? "dedicated-reels-mode" : ""}`}>
+      {page === "reels" ? (
+        <ReelsView
+          apiUrl={API_URL}
+          token={token || ""}
+          currentUserId={user?.id}
+          onNavigate={navigateTo}
+          onOpenProfile={openProfile}
+        />
+      ) : page === "reels_create" ? (
+        <ReelCreateView
+          apiUrl={API_URL}
+          token={token || ""}
+          onNavigate={navigateTo}
+        />
+      ) : (
+        <>
+          {/* MOBILE TOP BAR */}
       <div className="mobile-top-bar">
         <button
           className="hamburger-btn"
@@ -4274,8 +4585,9 @@ export default function App() {
         <div
           className="mobile-bar-title"
           onClick={() => {
+            navigateTo("/");
             setPage("feed");
-            setSelectedCommunity("general");
+            setSelectedCommunity("home");
             setMobileMenuOpen(false);
           }}
         >
@@ -4318,8 +4630,9 @@ export default function App() {
           className="brand-header"
           onClick={() => {
             handleBrandLogoClick();
+            navigateTo("/");
             setPage("feed");
-            setSelectedCommunity("general");
+            setSelectedCommunity("home");
             setMobileMenuOpen(false);
           }}
         >
@@ -4381,6 +4694,7 @@ export default function App() {
             data-nav="home"
             className={`nav-item-btn ${page === "feed" && selectedCommunity === "home" ? "active" : ""}`}
             onClick={() => {
+              navigateTo("/");
               setPage("feed");
               setSelectedCommunity("home");
               setMobileMenuOpen(false);
@@ -4397,8 +4711,9 @@ export default function App() {
 
           <button
             data-nav="reels"
-            className={`nav-item-btn ${page === "reels" ? "active" : ""}`}
+            className={`nav-item-btn ${(page as string) === "reels" ? "active" : ""}`}
             onClick={() => {
+              navigateTo("/reels");
               setPage("reels");
               setMobileMenuOpen(false);
             }}
@@ -4416,7 +4731,6 @@ export default function App() {
               </svg>
             </span>
             <span>Reels</span>
-            <span className="nav-unread-badge" style={{ background: "linear-gradient(135deg, #ec4899, #f43f5e)", marginLeft: "auto", fontSize: "10px", padding: "1px 6px" }}>HOT</span>
           </button>
 
           <button
@@ -4652,51 +4966,30 @@ export default function App() {
             {showFeatured && (
               <div className="drawer-accordion-content">
                 <div className="featured-channels-list">
-                  <div
-                    className="featured-channel-row"
-                    onClick={() => {
-                      setSelectedCommunity("coding-help");
-                      setPage("feed");
-                      setMobileMenuOpen(false);
-                    }}
-                  >
-                    <div className="featured-icon-badge purple">&lt;/&gt;</div>
-                    <div className="featured-channel-text">
-                      <span className="featured-channel-title">Coding Help</span>
-                      <span className="featured-channel-sub">Get community help</span>
+                  {communities.length === 0 ? (
+                    <div style={{ padding: "12px 14px", fontSize: "12px", color: "var(--text-sub)", textAlign: "center" }}>
+                      No communities yet. Create one!
                     </div>
-                    <span className="featured-chevron">›</span>
-                  </div>
-                  <div
-                    className="featured-channel-row"
-                    onClick={() => {
-                      setSelectedCommunity("showcase");
-                      setPage("feed");
-                      setMobileMenuOpen(false);
-                    }}
-                  >
-                    <div className="featured-icon-badge violet">💡</div>
-                    <div className="featured-channel-text">
-                      <span className="featured-channel-title">Project Showcase</span>
-                      <span className="featured-channel-sub">Show what you build</span>
-                    </div>
-                    <span className="featured-chevron">›</span>
-                  </div>
-                  <div
-                    className="featured-channel-row"
-                    onClick={() => {
-                      setSelectedCommunity("opportunities");
-                      setPage("feed");
-                      setMobileMenuOpen(false);
-                    }}
-                  >
-                    <div className="featured-icon-badge orange">💼</div>
-                    <div className="featured-channel-text">
-                      <span className="featured-channel-title">Opportunities</span>
-                      <span className="featured-channel-sub">Jobs & internships</span>
-                    </div>
-                    <span className="featured-chevron">›</span>
-                  </div>
+                  ) : (
+                    communities.map((c) => (
+                      <div
+                        key={c.id}
+                        className="featured-channel-row"
+                        onClick={() => {
+                          setSelectedCommunity(c.id);
+                          setPage("feed");
+                          setMobileMenuOpen(false);
+                        }}
+                      >
+                        <div className="featured-icon-badge purple">#</div>
+                        <div className="featured-channel-text">
+                          <span className="featured-channel-title">{c.name}</span>
+                          <span className="featured-channel-sub">{c.subtitle}</span>
+                        </div>
+                        <span className="featured-chevron">›</span>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             )}
@@ -5127,24 +5420,22 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="group-header-call-actions">
+                <div className="chat-header-actions" style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                   <button
                     type="button"
-                    className="group-call-action-btn audio-call"
+                    className="chat-header-icon-btn"
                     onClick={() => startGroupCall("audio", activeChannel?.id)}
-                    title={`Start Group Audio Call in #${activeChannel?.name}`}
+                    title={`Voice Call in #${activeChannel?.name}`}
                   >
-                    <span className="group-call-icon">📞</span>
-                    <span>Audio Call</span>
+                    📞
                   </button>
                   <button
                     type="button"
-                    className="group-call-action-btn video-call"
+                    className="chat-header-icon-btn"
                     onClick={() => startGroupCall("video", activeChannel?.id)}
-                    title={`Start Group Video Call in #${activeChannel?.name}`}
+                    title={`Video Call in #${activeChannel?.name}`}
                   >
-                    <span className="group-call-icon">📹</span>
-                    <span>Video Call</span>
+                    📹
                   </button>
                 </div>
               </div>
@@ -5187,6 +5478,31 @@ export default function App() {
                 </div>
               )}
 
+              {selectedPostMusic && (
+                <div className="composer-selected-music-badge">
+                  <div className="composer-music-disc">🎵</div>
+                  <div className="composer-music-info">
+                    <span className="composer-music-title">{selectedPostMusic.title}</span>
+                    <span className="composer-music-artist">{selectedPostMusic.artist}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="composer-music-change-btn"
+                    onClick={() => setPostMusicPickerOpen(true)}
+                  >
+                    Change
+                  </button>
+                  <button
+                    type="button"
+                    className="composer-music-remove-btn"
+                    onClick={() => setSelectedPostMusic(null)}
+                    title="Remove music"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
               <div className="inline-creator-actions">
                 <div className="inline-attach-tools">
                   <label className="tool-attach-btn" style={{ cursor: "pointer" }}>
@@ -5207,6 +5523,16 @@ export default function App() {
                       }}
                     />
                   </label>
+
+                  <button
+                    type="button"
+                    className={`tool-attach-btn ${selectedPostMusic ? "active" : ""}`}
+                    onClick={() => setPostMusicPickerOpen(true)}
+                    title="Add background music"
+                  >
+                    <span>🎵</span>
+                    <span>{selectedPostMusic ? "Music Added" : "Add Music"}</span>
+                  </button>
 
                   <button
                     className="tool-attach-btn"
@@ -5259,7 +5585,6 @@ export default function App() {
                 </button>
               </div>
             </div>
-
             {/* POSTS FEED LIST */}
             <div className="nesty-posts-feed">
               {displayedPosts.length === 0 ? (
@@ -5366,20 +5691,18 @@ export default function App() {
                       {renderWithMentions(post.content)}
                     </div>
 
-                    {/* MEDIA OR PHOTO PLACEHOLDER */}
-                    {post.media_url ? (
+                    {/* MEDIA, PHOTO PLACEHOLDER OR AUDIO SOUNDTRACK */}
+                    {post.media_url || post.music_track ? (
                       post.media_url === "photo_placeholder" ? (
                         <div className="mock-photo-placeholder">
                           Photo
                         </div>
                       ) : (
-                        <div className="post-media-container">
-                          {post.media_url.match(/\.(mp4|webm|mov)/i) ? (
-                            <video src={post.media_url} controls />
-                          ) : (
-                            <img src={post.media_url} alt="Attachment" />
-                          )}
-                        </div>
+                        <PostPlaybackMedia
+                          post={post}
+                          activePlayingPostId={activePlayingPostId}
+                          setActivePlayingPostId={setActivePlayingPostId}
+                        />
                       )
                     ) : null}
 
@@ -5715,13 +6038,15 @@ export default function App() {
 
                         <div className="post-content-body">{renderWithMentions(post.content)}</div>
 
-                        {post.media_url ? (
+                        {post.media_url || post.music_track ? (
                           post.media_url === "photo_placeholder" ? (
                             <div className="mock-photo-placeholder">Photo</div>
                           ) : (
-                            <div className="post-media-container">
-                              <img src={post.media_url} alt="" />
-                            </div>
+                            <PostPlaybackMedia
+                              post={post}
+                              activePlayingPostId={activePlayingPostId}
+                              setActivePlayingPostId={setActivePlayingPostId}
+                            />
                           )
                         ) : null}
 
@@ -5852,6 +6177,31 @@ export default function App() {
               </div>
             )}
 
+            {selectedPostMusic && (
+              <div className="composer-selected-music-badge">
+                <div className="composer-music-disc">🎵</div>
+                <div className="composer-music-info">
+                  <span className="composer-music-title">{selectedPostMusic.title}</span>
+                  <span className="composer-music-artist">{selectedPostMusic.artist}</span>
+                </div>
+                <button
+                  type="button"
+                  className="composer-music-change-btn"
+                  onClick={() => setPostMusicPickerOpen(true)}
+                >
+                  Change
+                </button>
+                <button
+                  type="button"
+                  className="composer-music-remove-btn"
+                  onClick={() => setSelectedPostMusic(null)}
+                  title="Remove music"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             <div className="composer-bottom-bar">
               <label className="attach-media-pill-btn">
                 <span>📎</span>
@@ -5869,6 +6219,15 @@ export default function App() {
               </label>
 
               <button
+                type="button"
+                className={`attach-media-pill-btn ${selectedPostMusic ? "active" : ""}`}
+                onClick={() => setPostMusicPickerOpen(true)}
+              >
+                <span>🎵</span>
+                <span>{selectedPostMusic ? "Music Added" : "Add music"}</span>
+              </button>
+
+              <button
                 className="publish-pill-btn"
                 disabled={uploadingMedia || (!newPost.trim() && !selectedFile)}
                 onClick={createPost}
@@ -5880,196 +6239,6 @@ export default function App() {
                 <span>{uploadingMedia ? "Publishing..." : "Publish"}</span>
               </button>
             </div>
-          </div>
-        )}
-
-        {/* VIEW 4: REELS FEED & CREATOR */}
-        {page === "reels" && (
-          <div className="reels-feed-container">
-            {/* REELS TOP CONTROLS */}
-            <div className="reels-top-header">
-              <div className="reels-brand-pill">
-                <span className="reels-play-icon">🎬</span>
-                <span className="reels-brand-title">Nesty Reels</span>
-                <span className="reels-hot-pill">TRENDING</span>
-              </div>
-              <div className="reels-top-actions">
-                <button
-                  type="button"
-                  className="reels-create-btn"
-                  onClick={() => setCreateReelModalOpen(true)}
-                  title="Upload or record a new Reel"
-                >
-                  <span style={{ fontSize: "16px", fontWeight: "bold" }}>+</span>
-                  <span>Create Reel</span>
-                </button>
-                <button
-                  type="button"
-                  className="reels-mute-toggle-btn"
-                  onClick={() => setIsReelMuted(!isReelMuted)}
-                  title={isReelMuted ? "Unmute Audio" : "Mute Audio"}
-                >
-                  {isReelMuted ? "🔇" : "🔊"}
-                </button>
-              </div>
-            </div>
-
-            {reelsList.length === 0 ? (
-              <div className="reels-empty-card">
-                <span style={{ fontSize: "48px" }}>🎬</span>
-                <h3>No reels yet!</h3>
-                <p>Be the first to share a short video or tip with the Nesty community.</p>
-                <button className="reels-create-btn" onClick={() => setCreateReelModalOpen(true)}>
-                  + Post First Reel
-                </button>
-              </div>
-            ) : (
-              <div className="reels-stage-wrapper">
-                {/* PREVIOUS REEL BUTTON */}
-                <button
-                  type="button"
-                  className="reel-nav-float-btn prev-btn"
-                  onClick={handlePrevReel}
-                  title="Previous Reel (Up Arrow)"
-                  aria-label="Previous Reel"
-                >
-                  ▲
-                </button>
-
-                {/* THE ACTIVE REEL CARD */}
-                {(() => {
-                  const currentReel = reelsList[activeReelIndex] || reelsList[0];
-                  return (
-                    <div className="reel-card-main">
-                      {/* VIDEO ELEMENT */}
-                      <video
-                        key={currentReel.id}
-                        src={currentReel.videoUrl}
-                        className="reel-video-viewport"
-                        autoPlay
-                        loop
-                        playsInline
-                        muted={isReelMuted}
-                        onClick={() => setIsReelMuted(!isReelMuted)}
-                      />
-
-                      {/* RIGHT-SIDE ACTION BUTTONS */}
-                      <div className="reel-side-actions">
-                        {/* AUTHOR AVATAR */}
-                        <div
-                          className="reel-side-avatar-wrap"
-                          onClick={() => currentReel.userId && openProfile(currentReel.userId)}
-                          title={`View @${currentReel.username}'s profile`}
-                        >
-                          {currentReel.avatarUrl ? (
-                            <img src={currentReel.avatarUrl} alt="" className="reel-side-avatar-img" />
-                          ) : (
-                            <div className="reel-side-avatar-fallback">
-                              {(currentReel.username || "U").charAt(0).toUpperCase()}
-                            </div>
-                          )}
-                          <div className="reel-author-badge">+</div>
-                        </div>
-
-                        {/* LIKE BUTTON */}
-                        <button
-                          type="button"
-                          className={`reel-side-btn ${currentReel.likedByMe ? "liked" : ""}`}
-                          onClick={() => toggleReelLike(currentReel.id)}
-                          title="Like Reel"
-                        >
-                          <span className="reel-side-icon">{currentReel.likedByMe ? "❤️" : "🤍"}</span>
-                          <span className="reel-side-count">{currentReel.likes}</span>
-                        </button>
-
-                        {/* COMMENT BUTTON */}
-                        <button
-                          type="button"
-                          className="reel-side-btn"
-                          onClick={() => setReelCommentsModalOpen(true)}
-                          title="Comments"
-                        >
-                          <span className="reel-side-icon">💬</span>
-                          <span className="reel-side-count">{currentReel.commentsCount}</span>
-                        </button>
-
-                        {/* SHARE BUTTON */}
-                        <button
-                          type="button"
-                          className="reel-side-btn"
-                          onClick={() => {
-                            if (navigator.share) {
-                              navigator.share({
-                                title: `${currentReel.username} on Nesty Reels`,
-                                text: currentReel.caption,
-                                url: window.location.href,
-                              }).catch(() => {});
-                            } else {
-                              navigator.clipboard?.writeText(window.location.href);
-                              alert("Reel link copied to clipboard!");
-                            }
-                          }}
-                          title="Share Reel"
-                        >
-                          <span className="reel-side-icon">↗</span>
-                          <span className="reel-side-count">Share</span>
-                        </button>
-
-                        {/* MUTE/UNMUTE ICON BUTTON */}
-                        <button
-                          type="button"
-                          className="reel-side-btn"
-                          onClick={() => setIsReelMuted(!isReelMuted)}
-                          title={isReelMuted ? "Unmute" : "Mute"}
-                        >
-                          <span className="reel-side-icon">{isReelMuted ? "🔇" : "🔊"}</span>
-                          <span className="reel-side-count">{isReelMuted ? "Muted" : "Sound"}</span>
-                        </button>
-
-                        {/* ROTATING SOUND DISC */}
-                        <div className={`reel-sound-disc ${isReelMuted ? "paused" : ""}`}>
-                          <span>🎵</span>
-                        </div>
-                      </div>
-
-                      {/* BOTTOM OVERLAY INFO */}
-                      <div className="reel-bottom-info">
-                        <div
-                          className="reel-author-handle-row"
-                          onClick={() => currentReel.userId && openProfile(currentReel.userId)}
-                        >
-                          <span className="reel-author-handle">@{currentReel.username}</span>
-                          <span className="reel-verified-badge">✓</span>
-                          <span className="reel-counter-pill">
-                            {activeReelIndex + 1} / {reelsList.length}
-                          </span>
-                        </div>
-
-                        <p className="reel-caption-text">{currentReel.caption}</p>
-
-                        <div className="reel-audio-pill">
-                          <span className="reel-music-note">🎵</span>
-                          <span className="reel-audio-name">
-                            {currentReel.audioTitle || `Original Audio • ${currentReel.username}`}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                {/* NEXT REEL BUTTON */}
-                <button
-                  type="button"
-                  className="reel-nav-float-btn next-btn"
-                  onClick={handleNextReel}
-                  title="Next Reel (Down Arrow)"
-                  aria-label="Next Reel"
-                >
-                  ▼
-                </button>
-              </div>
-            )}
           </div>
         )}
 
@@ -6125,99 +6294,31 @@ export default function App() {
           </button>
         </div>
 
-        {/* CARD 2: MOBILE APP BARCODE DOWNLOAD (REPLACES ONLINE NOW) */}
-        <div className="apk-download-widget">
-          <div className="apk-widget-badge">
-            <span>📱</span>
-            <span>Android App</span>
-          </div>
-          <h4 className="apk-widget-title">Get Nesty on Mobile</h4>
-          <p className="apk-widget-desc">
-            Scan this barcode with your phone camera to download the APK directly:
-          </p>
-
-          <div className="apk-qr-container">
-            <div className="apk-qr-frame">
-              <img
-                src="/devnest-apk-qr.png"
-                alt="Scan barcode to download Nesty APK"
-                className="apk-qr-image"
-                onError={(e) => {
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAXIAAAFyAQAAAADAX2ykAAACtklEQVR4nO2cTYrkMAyFn8aBXjrQB5ijJEdPjtI3sJcDDm8WlpwEZvqHSaXLg7woUuVvIRCSnySnhPjKWn98CQecd975h/JZdM31aYDMti0zANsf7rHH+Yv5QJIkEEmSvwTAVt0N5AGYSJLpLnucv5rX4MwDROSFAAKx/izAOgI1xOcb7XH+IXws+rDKAExvw/G3b7DH+UfwW83PWMdAdfK32uP8P/MkC/SsTYGYEkCmTTR+I8nlRnucv5Lfqjw+/R4oMwKrz1cRERnvssf56/gBiHuLo4DIAIECIO5fb7PH+Wt5kCkQU62PCrjUXBxOH5HElAK5PJv9zr+/hurVdUwg8gCZ3oaqmPd8LVPaBiLfYY/z1/IgU9NX8fwBAIgkJhZ4/HbJ1/xcszITaq+qimggWM7euWez3/kPVu1N8lAV2c5kjrfGJd2/3fGH/KxJGoFWBAdTzrvmejb7nf8MLzICMucXAlHnC1ywicrp2vi4zx7nr+I1fhcE6lM9cLU02uWW5+cueU3NC2BjwMNxfBZZ0f3bH6+n7sSzTAZaEEN3XT/3yKvftIm1e9pci0hL0q6vOuSbdG4VUGydykNr0uvffvn8Qqyj3rXClDax0G3j/jFQb3I8of3Ov7f06hVakk7HctiC2PuTnfLasKrF7V4GRVIrpVja/Tr3b3+8xa85VLWyLY1a49y/vfHWcLYx0a6qbBJsnPcne+QP9zeIPEKmNAqRhwJkAYFQgPxqUuvZ7Hf+g/XngREAjWnTXK6vuuStv0HaJZ3Wem79SWtM+/nbH6/3r+pUsLYhYXL6sILr5/+BD5S55WdN1wVcsPn92D7509sJ+bVglVCgqmoTO4pDkXvscf5a/nz+2qSwTgXt6EV7xdDzc498e38hD8AuqJqw5oLNdp/Rfuf/vsT/n8F557vlfwOGZ2vbLPzC/QAAAABJRU5ErkJggg==";
-                }}
-              />
-            </div>
-            <div className="apk-qr-label">
-              <span className="apk-qr-dot" />
-              <span>Point phone camera to scan • 6.7 MB</span>
+        {/* CARD 2: COMMUNITIES */}
+        {communities.length > 0 && (
+          <div className="featured-widget">
+            <h4 className="featured-heading">Communities</h4>
+            <div className="featured-channels-list">
+              {communities.map((comm) => (
+                <div
+                  key={comm.id}
+                  className="featured-channel-row"
+                  onClick={() => {
+                    setSelectedCommunity(comm.id);
+                    setPage("feed");
+                  }}
+                >
+                  <div className="featured-icon-badge purple">#</div>
+                  <div className="featured-channel-text">
+                    <span className="featured-channel-title">{comm.name}</span>
+                    <span className="featured-channel-sub">{comm.subtitle}</span>
+                  </div>
+                  <span className="featured-chevron">›</span>
+                </div>
+              ))}
             </div>
           </div>
-
-          <a
-            href="/Nesty.apk"
-            download="Nesty.apk"
-            className="apk-download-direct-btn"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            <span>Download APK Directly</span>
-          </a>
-        </div>
-
-        {/* CARD 3: FEATURED CHANNELS */}
-        <div className="featured-widget">
-          <h4 className="featured-heading">Featured</h4>
-          <div className="featured-channels-list">
-            <div
-              className="featured-channel-row"
-              onClick={() => {
-                setSelectedCommunity("coding-help");
-                setPage("feed");
-              }}
-            >
-              <div className="featured-icon-badge purple">&lt;/&gt;</div>
-              <div className="featured-channel-text">
-                <span className="featured-channel-title">Coding Help</span>
-                <span className="featured-channel-sub">Stuck? Get help from the community.</span>
-              </div>
-              <span className="featured-chevron">›</span>
-            </div>
-
-            <div
-              className="featured-channel-row"
-              onClick={() => {
-                setSelectedCommunity("showcase");
-                setPage("feed");
-              }}
-            >
-              <div className="featured-icon-badge violet">💡</div>
-              <div className="featured-channel-text">
-                <span className="featured-channel-title">Project Showcase</span>
-                <span className="featured-channel-sub">Show off what you're building.</span>
-              </div>
-              <span className="featured-chevron">›</span>
-            </div>
-
-            <div
-              className="featured-channel-row"
-              onClick={() => {
-                setSelectedCommunity("opportunities");
-                setPage("feed");
-              }}
-            >
-              <div className="featured-icon-badge orange">💼</div>
-              <div className="featured-channel-text">
-                <span className="featured-channel-title">Opportunities</span>
-                <span className="featured-channel-sub">Jobs, Internships and more.</span>
-              </div>
-              <span className="featured-chevron">›</span>
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* PERSONAL SCROLL CONTROLS FOR RIGHT SIDEBAR */}
         <div className="sidebar-scroll-bar-ctrl">
@@ -6237,8 +6338,10 @@ export default function App() {
           </button>
         </div>
       </aside>
+    </>
+  )}
 
-      {/* CREATE COMMUNITY MODAL */}
+  {/* CREATE COMMUNITY MODAL */}
       {createCommModalOpen && (
         <div className="modal-overlay-nesty" onClick={() => setCreateCommModalOpen(false)}>
           <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
@@ -6262,20 +6365,56 @@ export default function App() {
               </button>
               <button
                 className="post-pill-submit"
-                onClick={() => {
+                onClick={async () => {
                   if (!newCommName.trim()) return;
-                  const slug = newCommName.toLowerCase().replace(/\s+/g, "-");
+                  const name = newCommName.trim();
+                  const slug = name.toLowerCase().replace(/\s+/g, "-");
+                  const desc = `Discussions and updates for ${name}`;
                   const newChannel: CommunityChannel = {
                     id: slug,
-                    name: newCommName.trim(),
+                    name,
                     badgeClass: "custom",
-                    subtitle: `Discussions and updates for ${newCommName.trim()}`,
+                    subtitle: desc,
                   };
                   setCommunities((prev) => [...prev, newChannel]);
                   setSelectedCommunity(slug);
                   setPage("feed");
                   setNewCommName("");
                   setCreateCommModalOpen(false);
+
+                  try {
+                    const res = await fetch(`${API_URL}/api/communities`, {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                      },
+                      body: JSON.stringify({
+                        name,
+                        description: desc,
+                        badge_class: "custom",
+                      }),
+                    });
+                    if (res.ok) {
+                      const data = await res.json();
+                      if (data.community) {
+                        setCommunities((prev) =>
+                          prev.map((c) =>
+                            c.id === slug
+                              ? {
+                                  id: data.community.slug || String(data.community.id),
+                                  name: data.community.name,
+                                  badgeClass: data.community.badge_class || "custom",
+                                  subtitle: data.community.description,
+                                }
+                              : c
+                          )
+                        );
+                      }
+                    }
+                  } catch (err) {
+                    console.error("Failed to persist community:", err);
+                  }
                 }}
               >
                 Create
@@ -6589,8 +6728,49 @@ export default function App() {
                 const fileSize = msg.file_size || (msg as any).FileSize;
                 const timestamp = msg.created_at || (msg as any).CreatedAt;
                 return (
-                  <div key={msg.id || (msg as any).ID || i} className={`chat-msg-row ${isMine ? "outgoing" : "incoming"}`}>
+                  <div
+                    key={msg.id || (msg as any).ID || i}
+                    id={`chat-msg-${msg.id || (msg as any).ID || i}`}
+                    className={`chat-msg-row ${isMine ? "outgoing" : "incoming"}`}
+                  >
+                    {!isMine && (
+                      <button
+                        type="button"
+                        className="chat-msg-reply-action-btn"
+                        onClick={() => setReplyingToMessage(msg)}
+                        title="Reply to message"
+                      >
+                        ↩
+                      </button>
+                    )}
                     <div className="chat-msg-bubble">
+                      {msg.reply_to_message && (
+                        <div
+                          className="chat-msg-quote-bubble"
+                          onClick={() => {
+                            const target = document.getElementById(`chat-msg-${msg.reply_to_message?.id}`);
+                            if (target) {
+                              target.scrollIntoView({ behavior: "smooth", block: "center" });
+                              target.classList.add("highlighted-quote");
+                              setTimeout(() => target.classList.remove("highlighted-quote"), 2000);
+                            }
+                          }}
+                          title="Click to jump to quoted message"
+                        >
+                          <span className="chat-msg-quote-sender">
+                            {msg.reply_to_message.is_deleted
+                              ? "Original message"
+                              : `@${msg.reply_to_message.username || msg.reply_to_message.sender_name}`}
+                          </span>
+                          <p className="chat-msg-quote-snippet">
+                            {msg.reply_to_message.is_deleted ? (
+                              <span className="chat-msg-quote-unavailable">Original message unavailable</span>
+                            ) : (
+                              msg.reply_to_message.content || (msg.reply_to_message.media_url ? "📷 Attachment" : "Message")
+                            )}
+                          </p>
+                        </div>
+                      )}
                       {mediaUrl && (
                         <>
                           {mediaType === "image" ? (
@@ -6641,6 +6821,16 @@ export default function App() {
                         <span className="chat-msg-time">{timeAgo(timestamp)}</span>
                       )}
                     </div>
+                    {isMine && (
+                      <button
+                        type="button"
+                        className="chat-msg-reply-action-btn"
+                        onClick={() => setReplyingToMessage(msg)}
+                        title="Reply to message"
+                      >
+                        ↩
+                      </button>
+                    )}
                   </div>
                 );
               })
@@ -6655,6 +6845,28 @@ export default function App() {
               sendChatMessage();
             }}
           >
+            {/* REPLY PREVIEW BAR */}
+            {replyingToMessage && (
+              <div className="chat-reply-preview-bar">
+                <div className="chat-reply-preview-info">
+                  <span className="chat-reply-preview-user">
+                    Replying to @{replyingToMessage.sender_id === user?.id ? (user?.username || "You") : (activeChatPartner.username || "User")}
+                  </span>
+                  <span className="chat-reply-preview-text">
+                    {replyingToMessage.content || (replyingToMessage.media_url ? "📷 Attachment" : "Message")}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="chat-reply-preview-cancel"
+                  onClick={() => setReplyingToMessage(null)}
+                  title="Cancel reply"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             {/* Hidden file input for media & docs */}
             <input
               type="file"
@@ -7660,16 +7872,96 @@ export default function App() {
 
               <div>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 700, marginBottom: "6px", color: "var(--text-h)" }}>
-                  🎵 Audio Title / Song Name
+                  🎵 Background Music & Audio Controls
                 </label>
-                <input
-                  type="text"
-                  className="nesty-input-field"
-                  placeholder="Original Audio • My Sound"
-                  value={newReelAudio}
-                  onChange={(e) => setNewReelAudio(e.target.value)}
-                  style={{ width: "100%", padding: "8px 12px", fontSize: "13px" }}
-                />
+
+                {selectedReelMusic ? (
+                  <div className="composer-selected-music-badge" style={{ marginBottom: "10px" }}>
+                    <div className="composer-music-disc">🎵</div>
+                    <div className="composer-music-info">
+                      <span className="composer-music-title">{selectedReelMusic.title}</span>
+                      <span className="composer-music-artist">{selectedReelMusic.artist}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="composer-music-change-btn"
+                      onClick={() => setReelMusicPickerOpen(true)}
+                    >
+                      Change
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-music-remove-btn"
+                      onClick={() => setSelectedReelMusic(null)}
+                      title="Remove music"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="edit-profile-pill-btn"
+                    style={{ width: "100%", padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", marginBottom: "10px", background: "rgba(99, 102, 241, 0.12)", border: "1px dashed var(--primary, #6366f1)", color: "#a5b4fc" }}
+                    onClick={() => setReelMusicPickerOpen(true)}
+                  >
+                    <span>🎵</span>
+                    <span>Add Music Track</span>
+                  </button>
+                )}
+
+                <div className="reel-composer-audio-box">
+                  <div className="sound-toggle-row">
+                    <div className="sound-toggle-label">
+                      <span className="sound-toggle-title">Original Sound</span>
+                      <span className="sound-toggle-sub">
+                        {reelMuteOriginal ? "Muted (remove original audio)" : "Original audio enabled"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className={`switch-toggle-btn ${!reelMuteOriginal ? "active" : ""}`}
+                      onClick={() => setReelMuteOriginal(!reelMuteOriginal)}
+                      title={reelMuteOriginal ? "Enable original sound" : "Mute original sound"}
+                    >
+                      <span className="switch-toggle-knob" />
+                    </button>
+                  </div>
+
+                  {selectedReelMusic && (
+                    <div className="volume-slider-group">
+                      <div className="volume-slider-row">
+                        <span className="volume-slider-name">Music Volume</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={reelMusicVolume}
+                          onChange={(e) => setReelMusicVolume(parseFloat(e.target.value))}
+                          className="volume-slider-input"
+                        />
+                        <span className="volume-slider-val">{Math.round(reelMusicVolume * 100)}%</span>
+                      </div>
+
+                      {!reelMuteOriginal && (
+                        <div className="volume-slider-row">
+                          <span className="volume-slider-name">Original Volume</span>
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={reelOriginalVolume}
+                            onChange={(e) => setReelOriginalVolume(parseFloat(e.target.value))}
+                            className="volume-slider-input"
+                          />
+                          <span className="volume-slider-val">{Math.round(reelOriginalVolume * 100)}%</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "8px" }}>
@@ -8076,6 +8368,26 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* MUSIC PICKER MODAL FOR POSTS */}
+      <MusicPicker
+        isOpen={postMusicPickerOpen}
+        onClose={() => setPostMusicPickerOpen(false)}
+        onSelectTrack={(track) => setSelectedPostMusic(track)}
+        onRemoveMusic={() => setSelectedPostMusic(null)}
+        selectedTrackId={selectedPostMusic?.id}
+        apiUrl={API_URL}
+      />
+
+      {/* MUSIC PICKER MODAL FOR REELS */}
+      <MusicPicker
+        isOpen={reelMusicPickerOpen}
+        onClose={() => setReelMusicPickerOpen(false)}
+        onSelectTrack={(track) => setSelectedReelMusic(track)}
+        onRemoveMusic={() => setSelectedReelMusic(null)}
+        selectedTrackId={selectedReelMusic?.id}
+        apiUrl={API_URL}
+      />
     </div>
   );
 }

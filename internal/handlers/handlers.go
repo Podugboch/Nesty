@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -55,10 +56,23 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/community/stats", h.GetCommunityStats)
 	api.GET("/webrtc/config", h.GetWebRTCConfig)
 	api.GET("/group-calls/active", h.GetActiveGroupCalls)
+	api.GET("/tracks", h.GetTracks)
+	api.GET("/reels", h.GetReels)
+	api.GET("/music/search", h.SearchMusic)
+	api.GET("/communities", h.GetCommunities)
 
 	// PROTECTED ROUTES
 	protected := api.Group("/", utils.JWTMiddleware())
 	{
+		// REELS
+		protected.POST("/reels", h.CreateReel)
+		protected.POST("/reels/:id/like", h.ToggleReelLike)
+		protected.GET("/reels/:id/comments", h.GetReelComments)
+		protected.POST("/reels/:id/comments", h.CreateReelComment)
+		protected.DELETE("/reels/:id", h.DeleteReel)
+
+		// COMMUNITIES
+		protected.POST("/communities", h.CreateCommunity)
 		// USERS
 		protected.GET("/me", h.Me)
 		protected.GET("/users", h.GetUsers)
@@ -131,6 +145,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/heartbeat", utils.JWTMiddleware(), h.Heartbeat)
 	r.GET("/heartbeat", utils.JWTMiddleware(), h.Heartbeat)
 	r.GET("/webrtc/config", h.GetWebRTCConfig)
+	r.GET("/tracks", h.GetTracks)
+	r.GET("/reels", h.GetReels)
+	r.GET("/music/search", h.SearchMusic)
+	r.GET("/communities", h.GetCommunities)
 
 	// WebSocket
 	r.GET("/ws", func(c *gin.Context) {
@@ -158,12 +176,55 @@ func (h *Handler) Ping(c *gin.Context) {
 // ---------------------- POSTS ----------------------
 func (h *Handler) CreatePost(c *gin.Context) {
 	var input struct {
-		Content   string `json:"content"`
-		MediaURL  string `json:"media_url"`
-		Community string `json:"community"`
+		Content        string   `json:"content"`
+		MediaURL       string   `json:"media_url"`
+		Community      string   `json:"community"`
+		MusicTrackID   *uint    `json:"music_track_id"`
+		MusicSource    string   `json:"music_source"`
+		MusicURL       string   `json:"music_url"`
+		MusicTitle     string   `json:"music_title"`
+		MusicArtist    string   `json:"music_artist"`
+		MusicStartSec  float64  `json:"music_start_sec"`
+		MuteOriginal   bool     `json:"mute_original"`
+		MusicVolume    *float64 `json:"music_volume"`
+		OriginalVolume *float64 `json:"original_volume"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validate music_track_id if provided
+	if input.MusicTrackID != nil && *input.MusicTrackID > 0 {
+		var trk model.Track
+		if err := h.DB.First(&trk, *input.MusicTrackID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "selected music track does not exist"})
+			return
+		}
+	}
+
+	// Validate volume ranges (0.0 to 1.0)
+	musicVol := 1.0
+	if input.MusicVolume != nil {
+		if *input.MusicVolume < 0 || *input.MusicVolume > 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "music_volume must be between 0 and 1"})
+			return
+		}
+		musicVol = *input.MusicVolume
+	}
+
+	origVol := 1.0
+	if input.OriginalVolume != nil {
+		if *input.OriginalVolume < 0 || *input.OriginalVolume > 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "original_volume must be between 0 and 1"})
+			return
+		}
+		origVol = *input.OriginalVolume
+	}
+
+	// Validate music_start_sec >= 0
+	if input.MusicStartSec < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "music_start_sec must be non-negative"})
 		return
 	}
 
@@ -174,10 +235,19 @@ func (h *Handler) CreatePost(c *gin.Context) {
 
 	userID := c.GetUint("user_id")
 	post := model.Post{
-		UserID:    userID,
-		Content:   input.Content,
-		MediaURL:  input.MediaURL,
-		Community: comm,
+		UserID:         userID,
+		Content:        input.Content,
+		MediaURL:       input.MediaURL,
+		Community:      comm,
+		MusicTrackID:   input.MusicTrackID,
+		MusicSource:    input.MusicSource,
+		MusicURL:       input.MusicURL,
+		MusicTitle:     input.MusicTitle,
+		MusicArtist:    input.MusicArtist,
+		MusicStartSec:  input.MusicStartSec,
+		MuteOriginal:   input.MuteOriginal,
+		MusicVolume:    musicVol,
+		OriginalVolume: origVol,
 	}
 
 	if err := h.DB.Create(&post).Error; err != nil {
@@ -187,7 +257,7 @@ func (h *Handler) CreatePost(c *gin.Context) {
 
 	h.DB.Preload("User", func(db *gorm.DB) *gorm.DB {
 		return db.Select("id", "username", "name", "email", "avatar_url")
-	}).First(&post, post.ID)
+	}).Preload("MusicTrack").First(&post, post.ID)
 
 	h.processMentions(post.Content, userID, post.ID)
 
@@ -245,6 +315,7 @@ func (h *Handler) GetPosts(c *gin.Context) {
 		Preload("User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		}).
+		Preload("MusicTrack").
 		Preload("Comments.User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		}).
@@ -1039,6 +1110,7 @@ func (h *Handler) GetUserPosts(c *gin.Context) {
 		Preload("Comments.User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		}).
+		Preload("MusicTrack").
 		Preload("Parent"). // 👈 ADD THIS
 		Preload("Parent.User", func(db *gorm.DB) *gorm.DB { // 👈 AND THIS
 			return db.Select("id", "username", "name", "email", "avatar_url")
@@ -1260,6 +1332,69 @@ func (h *Handler) GetChatHistory(c *gin.Context) {
 		Order("created_at ASC").
 		Find(&messages)
 
+	// Populate quoted messages
+	replyIDs := make([]uint, 0)
+	for _, m := range messages {
+		if m.ReplyToMessageID != nil && *m.ReplyToMessageID > 0 {
+			replyIDs = append(replyIDs, *m.ReplyToMessageID)
+		}
+	}
+	if len(replyIDs) > 0 {
+		var parentMsgs []model.Message
+		h.DB.Unscoped().Where("id IN ?", replyIDs).Find(&parentMsgs)
+		parentMap := make(map[uint]model.Message)
+		userIDs := make([]uint, 0)
+		for _, pm := range parentMsgs {
+			parentMap[pm.ID] = pm
+			userIDs = append(userIDs, pm.SenderID)
+		}
+		var users []model.User
+		if len(userIDs) > 0 {
+			h.DB.Select("id, username, name").Where("id IN ?", userIDs).Find(&users)
+		}
+		userMap := make(map[uint]model.User)
+		for _, u := range users {
+			userMap[u.ID] = u
+		}
+		for i := range messages {
+			if messages[i].ReplyToMessageID != nil {
+				if pm, exists := parentMap[*messages[i].ReplyToMessageID]; exists {
+					senderName := "User"
+					username := "user"
+					if u, ok := userMap[pm.SenderID]; ok {
+						if u.Name != "" {
+							senderName = u.Name
+						} else {
+							senderName = u.Username
+						}
+						username = u.Username
+					}
+					isDel := pm.DeletedAt.Valid
+					text := pm.Content
+					if isDel {
+						text = "Original message unavailable"
+					}
+					messages[i].ReplyToMessage = &model.QuotedMessage{
+						ID:         pm.ID,
+						SenderID:   pm.SenderID,
+						Username:   username,
+						SenderName: senderName,
+						Content:    text,
+						MediaURL:   pm.MediaURL,
+						MediaType:  pm.MediaType,
+						IsDeleted:  isDel,
+					}
+				} else {
+					messages[i].ReplyToMessage = &model.QuotedMessage{
+						ID:        *messages[i].ReplyToMessageID,
+						IsDeleted: true,
+						Content:   "Original message unavailable",
+					}
+				}
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, messages)
 }
 
@@ -1309,12 +1444,13 @@ func (h *Handler) GetConversations(c *gin.Context) {
 
 func (h *Handler) SendMessage(c *gin.Context) {
 	var input struct {
-		RecipientID uint   `json:"recipient_id" binding:"required"`
-		Content     string `json:"content"`
-		MediaURL    string `json:"media_url"`
-		MediaType   string `json:"media_type"`
-		FileName    string `json:"file_name"`
-		FileSize    int64  `json:"file_size"`
+		RecipientID      uint   `json:"recipient_id" binding:"required"`
+		Content          string `json:"content"`
+		MediaURL         string `json:"media_url"`
+		MediaType        string `json:"media_type"`
+		FileName         string `json:"file_name"`
+		FileSize         int64  `json:"file_size"`
+		ReplyToMessageID *uint  `json:"reply_to_message_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1330,18 +1466,58 @@ func (h *Handler) SendMessage(c *gin.Context) {
 
 	userID := c.GetUint("user_id")
 	msg := model.Message{
-		SenderID:    userID,
-		RecipientID: input.RecipientID,
-		Content:     content,
-		MediaURL:    mediaURL,
-		MediaType:   input.MediaType,
-		FileName:    input.FileName,
-		FileSize:    input.FileSize,
+		SenderID:         userID,
+		RecipientID:      input.RecipientID,
+		Content:          content,
+		MediaURL:         mediaURL,
+		MediaType:        input.MediaType,
+		FileName:         input.FileName,
+		FileSize:         input.FileSize,
+		ReplyToMessageID: input.ReplyToMessageID,
 	}
 
 	if err := h.DB.Create(&msg).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save message"})
 		return
+	}
+
+	// Resolve quote if replied to a message
+	if input.ReplyToMessageID != nil && *input.ReplyToMessageID > 0 {
+		var parent model.Message
+		if err := h.DB.Unscoped().First(&parent, *input.ReplyToMessageID).Error; err == nil {
+			senderName := "User"
+			username := "user"
+			var parentUser model.User
+			if err := h.DB.Select("id, username, name").First(&parentUser, parent.SenderID).Error; err == nil {
+				if parentUser.Name != "" {
+					senderName = parentUser.Name
+				} else {
+					senderName = parentUser.Username
+				}
+				username = parentUser.Username
+			}
+			isDel := parent.DeletedAt.Valid
+			text := parent.Content
+			if isDel {
+				text = "Original message unavailable"
+			}
+			msg.ReplyToMessage = &model.QuotedMessage{
+				ID:         parent.ID,
+				SenderID:   parent.SenderID,
+				Username:   username,
+				SenderName: senderName,
+				Content:    text,
+				MediaURL:   parent.MediaURL,
+				MediaType:  parent.MediaType,
+				IsDeleted:  isDel,
+			}
+		} else {
+			msg.ReplyToMessage = &model.QuotedMessage{
+				ID:        *input.ReplyToMessageID,
+				IsDeleted: true,
+				Content:   "Original message unavailable",
+			}
+		}
 	}
 
 	// Deliver live message over WebSocket if recipient is online
@@ -1758,4 +1934,449 @@ func (h *Handler) GetActiveGroupCalls(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"calls": calls,
 	})
+}
+
+// ---------------------- MUSIC TRACKS ----------------------
+
+// GetTracks returns a paginated list of royalty-free tracks, with optional query filtering
+func (h *Handler) GetTracks(c *gin.Context) {
+	q := strings.TrimSpace(c.Query("q"))
+	page := 1
+	limit := 20
+
+	if p := c.Query("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+	}
+	if l := c.Query("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
+	var tracks []model.Track
+	var total int64
+
+	dbQuery := h.DB.Model(&model.Track{})
+	if q != "" {
+		searchPattern := "%" + q + "%"
+		dbQuery = dbQuery.Where("title ILIKE ? OR artist ILIKE ?", searchPattern, searchPattern)
+	}
+
+	if err := dbQuery.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count tracks"})
+		return
+	}
+
+	if err := dbQuery.Order("id asc").Offset(offset).Limit(limit).Find(&tracks).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch tracks"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tracks": tracks,
+		"total":  total,
+		"page":   page,
+		"limit":  limit,
+	})
+}
+
+// ---------------------- REELS ----------------------
+
+// CreateReel handles uploading a short-form video reel with optional soundtrack & volume controls
+func (h *Handler) CreateReel(c *gin.Context) {
+	var input struct {
+		VideoURL       string   `json:"video_url"`
+		Caption        string   `json:"caption"`
+		MusicTrackID   *uint    `json:"music_track_id"`
+		MusicSource    string   `json:"music_source"`
+		MusicURL       string   `json:"music_url"`
+		MusicTitle     string   `json:"music_title"`
+		MusicArtist    string   `json:"music_artist"`
+		MusicStartSec  float64  `json:"music_start_sec"`
+		MuteOriginal   bool     `json:"mute_original"`
+		MusicVolume    *float64 `json:"music_volume"`
+		OriginalVolume *float64 `json:"original_volume"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	videoURL := strings.TrimSpace(input.VideoURL)
+	if videoURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "video_url is required"})
+		return
+	}
+
+	// Validate music_track_id if provided
+	if input.MusicTrackID != nil && *input.MusicTrackID > 0 {
+		var trk model.Track
+		if err := h.DB.First(&trk, *input.MusicTrackID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "selected music track does not exist"})
+			return
+		}
+	}
+
+	// Validate volume ranges (0.0 to 1.0)
+	musicVol := 1.0
+	if input.MusicVolume != nil {
+		if *input.MusicVolume < 0 || *input.MusicVolume > 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "music_volume must be between 0 and 1"})
+			return
+		}
+		musicVol = *input.MusicVolume
+	}
+
+	origVol := 1.0
+	if input.OriginalVolume != nil {
+		if *input.OriginalVolume < 0 || *input.OriginalVolume > 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "original_volume must be between 0 and 1"})
+			return
+		}
+		origVol = *input.OriginalVolume
+	}
+
+	// Validate music_start_sec >= 0
+	if input.MusicStartSec < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "music_start_sec must be non-negative"})
+		return
+	}
+
+	userID := c.GetUint("user_id")
+	reel := model.Reel{
+		UserID:         userID,
+		VideoURL:       videoURL,
+		Caption:        input.Caption,
+		MusicTrackID:   input.MusicTrackID,
+		MusicSource:    input.MusicSource,
+		MusicURL:       input.MusicURL,
+		MusicTitle:     input.MusicTitle,
+		MusicArtist:    input.MusicArtist,
+		MusicStartSec:  input.MusicStartSec,
+		MuteOriginal:   input.MuteOriginal,
+		MusicVolume:    musicVol,
+		OriginalVolume: origVol,
+	}
+
+	if err := h.DB.Create(&reel).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create reel"})
+		return
+	}
+
+	h.DB.Preload("User", func(db *gorm.DB) *gorm.DB {
+		return db.Select("id", "username", "name", "email", "avatar_url")
+	}).Preload("MusicTrack").First(&reel, reel.ID)
+
+	c.JSON(http.StatusCreated, reel)
+}
+
+// GetReels returns paginated reels with preloaded user and music soundtrack info
+func (h *Handler) GetReels(c *gin.Context) {
+	page := 1
+	limit := 30
+	if p := c.Query("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+	}
+	if l := c.Query("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 50 {
+		limit = 30
+	}
+	offset := (page - 1) * limit
+
+	var reels []model.Reel
+	if err := h.DB.
+		Preload("User", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "username", "name", "email", "avatar_url")
+		}).
+		Preload("MusicTrack").
+		Order("created_at desc").
+		Offset(offset).
+		Limit(limit).
+		Find(&reels).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch reels"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"reels": reels,
+		"page":  page,
+		"limit": limit,
+	})
+}
+
+// ToggleReelLike toggles a like on a reel
+func (h *Handler) ToggleReelLike(c *gin.Context) {
+	idStr := c.Param("id")
+	reelID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid reel ID"})
+		return
+	}
+	var reel model.Reel
+	if err := h.DB.First(&reel, reelID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "reel not found"})
+		return
+	}
+	reel.Likes++
+	h.DB.Model(&reel).Update("likes", reel.Likes)
+	c.JSON(http.StatusOK, gin.H{"likes": reel.Likes, "liked": true})
+}
+
+// GetReelComments returns comments for a reel
+func (h *Handler) GetReelComments(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"comments": []interface{}{}})
+}
+
+// CreateReelComment creates a comment on a reel
+func (h *Handler) CreateReelComment(c *gin.Context) {
+	idStr := c.Param("id")
+	reelID, _ := strconv.ParseUint(idStr, 10, 32)
+	var reel model.Reel
+	if err := h.DB.First(&reel, reelID).Error; err == nil {
+		reel.CommentsCount++
+		h.DB.Model(&reel).Update("comments_count", reel.CommentsCount)
+	}
+	c.JSON(http.StatusCreated, gin.H{"success": true})
+}
+
+// DeleteReel deletes a reel owned by the user
+func (h *Handler) DeleteReel(c *gin.Context) {
+	idStr := c.Param("id")
+	reelID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid reel ID"})
+		return
+	}
+	userID := c.GetUint("user_id")
+	if err := h.DB.Where("id = ? AND user_id = ?", reelID, userID).Delete(&model.Reel{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete reel"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// SearchMusic proxies Jamendo API with client_id stored on backend .env
+func (h *Handler) SearchMusic(c *gin.Context) {
+	q := strings.TrimSpace(c.Query("q"))
+	genre := strings.TrimSpace(c.Query("genre"))
+	tag := strings.TrimSpace(c.Query("tag"))
+	if tag != "" && genre == "" {
+		genre = tag
+	}
+	order := strings.TrimSpace(c.Query("order"))
+	if order == "" {
+		order = "popularity_total"
+	}
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	offset := 0
+	if o := c.Query("offset"); o != "" {
+		fmt.Sscanf(o, "%d", &offset)
+	}
+
+	clientID := strings.TrimSpace(os.Getenv("JAMENDO_CLIENT_ID"))
+	if clientID == "" {
+		clientID = "3dce8b55" // fallback
+	}
+
+	reqURL := fmt.Sprintf("https://api.jamendo.com/v3.0/tracks/?client_id=%s&format=json&limit=%d&offset=%d&order=%s&audioformat=mp32",
+		clientID, limit, offset, order)
+	if q != "" {
+		reqURL += "&namesearch=" + url.QueryEscape(q)
+	}
+	if genre != "" {
+		reqURL += "&fuzzytags=" + url.QueryEscape(genre)
+	}
+
+	type UnifiedTrack struct {
+		ID          string  `json:"id"`
+		Title       string  `json:"title"`
+		Artist      string  `json:"artist"`
+		AudioURL    string  `json:"audio_url"`
+		CoverURL    *string `json:"cover_url,omitempty"`
+		DurationSec int     `json:"duration_sec"`
+		Source      string  `json:"source"`
+		License     string  `json:"license"`
+		Attribution string  `json:"attribution"`
+	}
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Get(reqURL)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		var jamendoResp struct {
+			Headers struct {
+				Status string `json:"status"`
+				Count  int    `json:"results_count"`
+			} `json:"headers"`
+			Results []struct {
+				ID         string `json:"id"`
+				Name       string `json:"name"`
+				Duration   int    `json:"duration"`
+				ArtistName string `json:"artist_name"`
+				AlbumImage string `json:"album_image"`
+				Audio      string `json:"audio"`
+				LicenseCC  string `json:"license_ccurl"`
+			} `json:"results"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&jamendoResp); err == nil && jamendoResp.Headers.Status == "success" {
+			tracks := make([]UnifiedTrack, 0, len(jamendoResp.Results))
+			for _, item := range jamendoResp.Results {
+				if item.Audio == "" {
+					continue
+				}
+				cover := item.AlbumImage
+				lic := "Creative Commons (CC BY)"
+				if strings.Contains(item.LicenseCC, "nc") {
+					lic = "Creative Commons (CC BY-NC)"
+				}
+				tracks = append(tracks, UnifiedTrack{
+					ID:          "jamendo_" + item.ID,
+					Title:       item.Name,
+					Artist:      item.ArtistName,
+					AudioURL:    item.Audio,
+					CoverURL:    &cover,
+					DurationSec: item.Duration,
+					Source:      "jamendo",
+					License:     lic,
+					Attribution: fmt.Sprintf("Music by %s (Jamendo / %s)", item.ArtistName, lic),
+				})
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"tracks": tracks,
+				"total":  jamendoResp.Headers.Count,
+				"source": "jamendo",
+			})
+			return
+		}
+	}
+
+	// Fallback to local DB tracks if Jamendo is unavailable
+	var dbTracks []model.Track
+	dbQuery := h.DB.Model(&model.Track{})
+	if q != "" {
+		dbQuery = dbQuery.Where("title ILIKE ? OR artist ILIKE ?", "%"+q+"%", "%"+q+"%")
+	}
+	dbQuery.Order("id asc").Limit(limit).Find(&dbTracks)
+
+	tracks := make([]UnifiedTrack, 0, len(dbTracks))
+	for _, t := range dbTracks {
+		tracks = append(tracks, UnifiedTrack{
+			ID:          fmt.Sprintf("%d", t.ID),
+			Title:       t.Title,
+			Artist:      t.Artist,
+			AudioURL:    t.AudioURL,
+			CoverURL:    t.CoverURL,
+			DurationSec: t.DurationSec,
+			Source:      "library",
+			License:     "Creative Commons / Royalty Free",
+			Attribution: fmt.Sprintf("Music: %s - %s", t.Title, t.Artist),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tracks": tracks,
+		"total":  len(tracks),
+		"source": "fallback",
+	})
+}
+
+// ---------------------- COMMUNITIES ----------------------
+
+// GetCommunities returns all real user-created communities from DB
+func (h *Handler) GetCommunities(c *gin.Context) {
+	var communities []model.Community
+	if err := h.DB.Order("created_at asc").Find(&communities).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch communities"})
+		return
+	}
+	userIDs := make([]uint, 0)
+	for _, comm := range communities {
+		if comm.CreatedByID > 0 {
+			userIDs = append(userIDs, comm.CreatedByID)
+		}
+	}
+	if len(userIDs) > 0 {
+		var users []model.User
+		h.DB.Select("id, username, name, avatar_url").Where("id IN ?", userIDs).Find(&users)
+		uMap := make(map[uint]model.User)
+		for _, u := range users {
+			uMap[u.ID] = u
+		}
+		for i := range communities {
+			if u, ok := uMap[communities[i].CreatedByID]; ok {
+				userCopy := u
+				communities[i].CreatedBy = &userCopy
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"communities": communities})
+}
+
+// CreateCommunity creates a new user community
+func (h *Handler) CreateCommunity(c *gin.Context) {
+	var input struct {
+		Name        string `json:"name" binding:"required"`
+		Description string `json:"description"`
+		BadgeClass  string `json:"badge_class"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	slug := strings.ToLower(name)
+	slug = strings.ReplaceAll(slug, " ", "-")
+	reg := regexp.MustCompile(`[^a-z0-9\-_]+`)
+	slug = reg.ReplaceAllString(slug, "")
+	if slug == "" {
+		slug = fmt.Sprintf("comm-%d", time.Now().Unix())
+	}
+
+	userID := c.GetUint("user_id")
+	badge := input.BadgeClass
+	if badge == "" {
+		badge = "general"
+	}
+
+	comm := model.Community{
+		Name:        name,
+		Slug:        slug,
+		Description: input.Description,
+		BadgeClass:  badge,
+		CreatedByID: userID,
+	}
+
+	if err := h.DB.Create(&comm).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create community"})
+		return
+	}
+
+	var creator model.User
+	if err := h.DB.Select("id, username, name, avatar_url").First(&creator, userID).Error; err == nil {
+		comm.CreatedBy = &creator
+	}
+	c.JSON(http.StatusCreated, comm)
 }

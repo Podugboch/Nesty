@@ -15,6 +15,7 @@ import (
 	"piscine-devnest/internal/handlers"
 	"piscine-devnest/internal/model"
 	"piscine-devnest/internal/push"
+	"piscine-devnest/internal/seed"
 	"piscine-devnest/internal/ws"
 )
 
@@ -30,9 +31,17 @@ func Run() error {
 	}
 
 	// 1. FIXED: Set PrepareStmt to false to stop the "SQLSTATE 42P05 already exists" crash
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		PrepareStmt: false, 
-	})
+	var db *gorm.DB
+	var err error
+	for attempts := 1; attempts <= 5; attempts++ {
+		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+			PrepareStmt: false,
+		})
+		if err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
 	if err != nil {
 		return fmt.Errorf("connect db: %w", err)
 	}
@@ -50,15 +59,46 @@ func Run() error {
 		&model.User{},
 		&model.Resource{},
 		&model.Connection{},
+		&model.Track{},
 		&model.Post{},  
+		&model.Reel{},
 		&model.Comment{}, 
 		&model.Follow{}, 
 		&model.Like{}, 
 		&model.Notification{},
 		&model.Message{},
 		&model.Device{},
+		&model.Community{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+
+	// Ensure columns and defaults on posts and reels in case existing tables missed them
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_track_id bigint").Error
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_source text").Error
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_url text").Error
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_title text").Error
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_artist text").Error
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_start_sec double precision DEFAULT 0").Error
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS mute_original boolean DEFAULT false").Error
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_volume double precision DEFAULT 1").Error
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS original_volume double precision DEFAULT 1").Error
+
+	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS music_track_id bigint").Error
+	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS music_source text").Error
+	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS music_url text").Error
+	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS music_title text").Error
+	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS music_artist text").Error
+	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS music_start_sec double precision DEFAULT 0").Error
+	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS mute_original boolean DEFAULT false").Error
+	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS music_volume double precision DEFAULT 1").Error
+	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS original_volume double precision DEFAULT 1").Error
+
+	_ = db.Exec("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_message_id bigint").Error
+
+	// Seed initial royalty-free music tracks if empty
+	if err := seed.SeedTracks(db); err != nil {
+		fmt.Printf("warning: seed tracks: %v\n", err)
 	}
 
 	r := gin.Default()
