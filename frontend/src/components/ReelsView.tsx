@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 export interface ReelTrack {
   id?: number | string;
@@ -79,6 +79,24 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
   const [activeCommentsReel, setActiveCommentsReel] = useState<ReelItem | null>(null);
   const [commentText, setCommentText] = useState("");
   const [commentsList, setCommentsList] = useState<Array<{ id: number | string; user: string; text: string; time: string }>>([]);
+
+  // Share modal state
+  const [shareModalReel, setShareModalReel] = useState<ReelItem | null>(null);
+  const [shareTab, setShareTab] = useState<"nesty" | "platforms">("nesty");
+  const [nestyUsers, setNestyUsers] = useState<Array<{ id: number; username: string; name?: string; avatar_url?: string }>>([]);
+  const [nestyUserSearch, setNestyUserSearch] = useState("");
+  const [sentUserIds, setSentUserIds] = useState<Record<number, boolean>>({});
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const filteredNestyUsers = useMemo(() => {
+    if (!nestyUserSearch.trim()) return nestyUsers;
+    const q = nestyUserSearch.toLowerCase();
+    return nestyUsers.filter(
+      (u) =>
+        u.username.toLowerCase().includes(q) ||
+        (u.name && u.name.toLowerCase().includes(q))
+    );
+  }, [nestyUsers, nestyUserSearch]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRefs = useRef<Map<number, HTMLVideoElement>>(new Map());
@@ -342,18 +360,159 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
     } catch {}
   };
 
-  const handleShare = (r: ReelItem) => {
-    const shareUrl = `${window.location.origin}/reels`;
-    if (navigator.share) {
-      navigator.share({
-        title: `${getAuthorName(r)} on Nesty Reels`,
-        text: r.caption || "Watch this reel on Nesty!",
-        url: shareUrl,
-      }).catch(() => {});
-    } else {
-      navigator.clipboard?.writeText(shareUrl);
-      alert("Reel link copied to clipboard!");
+  // Comments fetching
+  useEffect(() => {
+    if (!activeCommentsReel) {
+      setCommentsList([]);
+      setCommentText("");
+      return;
     }
+    const fetchComments = async () => {
+      try {
+        const authToken = token || localStorage.getItem("token");
+        const headers: Record<string, string> = {};
+        if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+        const res = await fetch(`${apiUrl}/api/reels/${activeCommentsReel.id}/comments`, { headers });
+        if (res.ok) {
+          const data = await res.json();
+          const list = Array.isArray(data) ? data : data.comments || [];
+          setCommentsList(list.map((c: any) => ({
+            id: c.id,
+            user: c.user?.username || c.username || "User",
+            text: c.content || c.text || "",
+            time: "Recently",
+          })));
+        }
+      } catch {}
+    };
+    fetchComments();
+  }, [activeCommentsReel, apiUrl, token]);
+
+  const handlePostComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!commentText.trim() || !activeCommentsReel) return;
+    const text = commentText.trim();
+    const tempComment = {
+      id: Date.now(),
+      user: "you",
+      text,
+      time: "Just now",
+    };
+    setCommentsList((prev) => [...prev, tempComment]);
+    setCommentText("");
+
+    // Optimistically update commentsCount on active reel
+    setReels((prev) =>
+      prev.map((r) =>
+        r.id === activeCommentsReel.id
+          ? { ...r, comments_count: (r.comments_count || r.commentsCount || 0) + 1 }
+          : r
+      )
+    );
+
+    try {
+      const authToken = token || localStorage.getItem("token");
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+      await fetch(`${apiUrl}/api/reels/${activeCommentsReel.id}/comments`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ content: text, text }),
+      });
+    } catch {}
+  };
+
+  // Share: fetch users
+  useEffect(() => {
+    if (!shareModalReel) return;
+    const fetchShareUsers = async () => {
+      try {
+        const authToken = token || localStorage.getItem("token");
+        const headers: Record<string, string> = {};
+        if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+        const res = await fetch(`${apiUrl}/api/users`, { headers });
+        if (res.ok) {
+          const data = await res.json();
+          const list = Array.isArray(data) ? data : data.users || [];
+          setNestyUsers(list.slice(0, 30));
+        }
+      } catch {}
+    };
+    fetchShareUsers();
+  }, [shareModalReel, apiUrl, token]);
+
+  const handleSendToNestyUser = async (targetUser: { id: number; username: string }) => {
+    if (!shareModalReel) return;
+    try {
+      const authToken = token || localStorage.getItem("token");
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+      const reelUrl = `${window.location.origin}/reels`;
+      const caption = shareModalReel.caption ? ` "${shareModalReel.caption}"` : "";
+      const msgText = `🎬 Check out this reel by @${getAuthorHandle(shareModalReel)}${caption}: ${reelUrl}`;
+      await fetch(`${apiUrl}/api/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          partner_id: targetUser.id,
+          text: msgText,
+        }),
+      });
+      setSentUserIds((prev) => ({ ...prev, [targetUser.id]: true }));
+    } catch {
+      navigator.clipboard?.writeText(`${window.location.origin}/reels`);
+      setSentUserIds((prev) => ({ ...prev, [targetUser.id]: true }));
+    }
+  };
+
+  const handleCopyLink = () => {
+    const url = `${window.location.origin}/reels`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url);
+    }
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const handleShareExternal = (platform: "whatsapp" | "twitter" | "telegram" | "linkedin" | "facebook" | "system") => {
+    const url = `${window.location.origin}/reels`;
+    const author = shareModalReel ? `${getAuthorName(shareModalReel)} (@${getAuthorHandle(shareModalReel)})` : "Nesty";
+    const title = `Watch ${author}'s reel on Nesty!`;
+    const text = shareModalReel?.caption ? `${shareModalReel.caption} — ${title}` : title;
+
+    if (platform === "system") {
+      if (navigator.share) {
+        navigator.share({ title, text, url }).catch(() => {});
+        return;
+      }
+      handleCopyLink();
+      return;
+    }
+
+    let shareUrl = "";
+    if (platform === "whatsapp") {
+      shareUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(text + " " + url)}`;
+    } else if (platform === "twitter") {
+      shareUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`;
+    } else if (platform === "telegram") {
+      shareUrl = `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(text)}`;
+    } else if (platform === "facebook") {
+      shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`;
+    } else if (platform === "linkedin") {
+      shareUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`;
+    }
+
+    if (shareUrl) {
+      window.open(shareUrl, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  const handleHeaderRefresh = () => {
+    fetchReels(true);
+    if (containerRef.current) {
+      containerRef.current.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    setActiveIndex(0);
   };
 
   const getAuthorName = (r: ReelItem): string => {
@@ -415,19 +574,16 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
           <button
             type="button"
             className={`reels-header-refresh-btn ${refreshing ? "spinning" : ""}`}
-            onClick={() => fetchReels(true)}
+            onClick={handleHeaderRefresh}
             disabled={refreshing || loading}
-            title="Refresh Reels Feed"
-            aria-label="Refresh Reels"
+            title="Refresh reels and go to top"
+            aria-label="Refresh reels"
           >
             <span
               className={refreshing ? "reels-spin-anim" : ""}
-              style={{ display: "inline-block", fontSize: "14px" }}
+              style={{ display: "inline-block", fontSize: "16px" }}
             >
               ↻
-            </span>
-            <span className="reels-header-refresh-text">
-              {refreshing ? "Refreshing..." : "Refresh"}
             </span>
           </button>
 
@@ -539,15 +695,24 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
             // Preload next reel
             const shouldPreload = Math.abs(idx - activeIndex) <= 1;
 
+            const isCommentsOpen = isCurrent && activeCommentsReel != null && activeCommentsReel.id === reel.id;
+
             return (
               <div
                 key={reel.id || idx}
-                className={`reel-fullscreen-slide ${isCurrent ? "active-slide" : ""}`}
+                className={`reel-fullscreen-slide ${isCurrent ? "active-slide" : ""} ${isCommentsOpen ? "comments-mode-active" : ""}`}
               >
-                {/* Clickable video canvas with tap play/pause */}
+                {/* Clickable video canvas with tap play/pause (or click to close comments) */}
                 <div
                   className="reel-media-wrapper"
-                  onClick={() => togglePlayPause(idx)}
+                  onClick={() => {
+                    if (isCommentsOpen) {
+                      setActiveCommentsReel(null);
+                    } else {
+                      togglePlayPause(idx);
+                    }
+                  }}
+                  title={isCommentsOpen ? "Click video to close comments" : undefined}
                 >
                   <video
                     ref={(el) => {
@@ -606,6 +771,72 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
                   )}
                 </div>
 
+                {/* Comments Docked Box Under Smaller Video Frame */}
+                {isCommentsOpen && (
+                  <div
+                    className="reels-comments-dock"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="reels-comments-dock-header">
+                      <div className="reels-comments-dock-title">
+                        <span>💬</span>
+                        <span>Comments ({commentsList.length || commentCount})</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="reels-comments-dock-close"
+                        onClick={() => setActiveCommentsReel(null)}
+                        title="Close comments"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <div className="reels-comments-dock-list">
+                      {commentsList.length === 0 ? (
+                        <div style={{ textAlign: "center", padding: "28px 12px", color: "var(--text-muted, #94a3b8)" }}>
+                          <span style={{ fontSize: "28px", display: "block", marginBottom: "6px" }}>💬</span>
+                          <p style={{ margin: 0, fontSize: "13px" }}>No comments yet. Start the conversation!</p>
+                        </div>
+                      ) : (
+                        commentsList.map((c) => (
+                          <div key={c.id} className="reels-comment-row">
+                            <div className="reels-comment-avatar">
+                              {c.user.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="reels-comment-body">
+                              <span className="reels-comment-user">@{c.user}</span>
+                              <p className="reels-comment-text">{c.text}</p>
+                              <span className="reels-comment-time">{c.time}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    <form
+                      className="reels-comments-dock-input-bar"
+                      onSubmit={handlePostComment}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Add a comment..."
+                        value={commentText}
+                        onChange={(e) => setCommentText(e.target.value)}
+                        className="reels-comments-dock-input"
+                        autoFocus
+                      />
+                      <button
+                        type="submit"
+                        className="reels-comments-dock-submit"
+                        disabled={!commentText.trim()}
+                      >
+                        Post
+                      </button>
+                    </form>
+                  </div>
+                )}
+
                 {/* Right Side Vertical Action Bar */}
                 <aside className="reel-vertical-actions">
                   {/* Creator Avatar */}
@@ -639,7 +870,13 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
                   <button
                     type="button"
                     className="reel-action-btn"
-                    onClick={() => setActiveCommentsReel(reel)}
+                    onClick={() => {
+                      if (activeCommentsReel?.id === reel.id) {
+                        setActiveCommentsReel(null);
+                      } else {
+                        setActiveCommentsReel(reel);
+                      }
+                    }}
                     title="Comments"
                   >
                     <span className="reel-action-icon">💬</span>
@@ -650,7 +887,7 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
                   <button
                     type="button"
                     className="reel-action-btn"
-                    onClick={() => handleShare(reel)}
+                    onClick={() => setShareModalReel(reel)}
                     title="Share Reel"
                   >
                     <span className="reel-action-icon">↗</span>
@@ -705,83 +942,170 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
         </div>
       )}
 
-
-
-      {/* Comments Bottom Sheet Drawer */}
-      {activeCommentsReel && (
-        <div
-          className="reels-comments-overlay"
-          onClick={() => setActiveCommentsReel(null)}
-        >
-          <div
-            className="reels-comments-sheet"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="reels-comments-header">
-              <h4>Comments ({commentsList.length})</h4>
+      {/* Share Modal Dialog */}
+      {shareModalReel && (
+        <div className="reels-share-overlay" onClick={() => setShareModalReel(null)}>
+          <div className="reels-share-modal-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="reels-share-header">
+              <div className="reels-share-title">
+                <span>↗</span>
+                <span>Share Reel</span>
+              </div>
               <button
                 type="button"
-                className="reels-comments-close-btn"
-                onClick={() => setActiveCommentsReel(null)}
+                className="reels-share-close-btn"
+                onClick={() => setShareModalReel(null)}
               >
                 ✕
               </button>
             </div>
 
-            <div className="reels-comments-list">
-              {commentsList.length === 0 ? (
-                <div className="reels-comments-empty">
-                  <span>💬</span>
-                  <p>No comments yet. Start the conversation!</p>
-                </div>
-              ) : (
-                commentsList.map((c) => (
-                  <div key={c.id} className="reels-comment-row">
-                    <div className="reels-comment-avatar">
-                      {c.user.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="reels-comment-body">
-                      <span className="reels-comment-user">@{c.user}</span>
-                      <p className="reels-comment-text">{c.text}</p>
-                      <span className="reels-comment-time">{c.time}</span>
-                    </div>
-                  </div>
-                ))
-              )}
+            <div className="reels-share-tabs">
+              <button
+                type="button"
+                className={`reels-share-tab-btn ${shareTab === "nesty" ? "active" : ""}`}
+                onClick={() => setShareTab("nesty")}
+              >
+                Share to Nesty Users
+              </button>
+              <button
+                type="button"
+                className={`reels-share-tab-btn ${shareTab === "platforms" ? "active" : ""}`}
+                onClick={() => setShareTab("platforms")}
+              >
+                Share Across Platforms
+              </button>
             </div>
 
-            <form
-              className="reels-comment-input-bar"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!commentText.trim()) return;
-                setCommentsList((prev) => [
-                  ...prev,
-                  {
-                    id: Date.now(),
-                    user: "you",
-                    text: commentText.trim(),
-                    time: "Just now",
-                  },
-                ]);
-                setCommentText("");
-              }}
-            >
-              <input
-                type="text"
-                placeholder="Add a comment..."
-                value={commentText}
-                onChange={(e) => setCommentText(e.target.value)}
-                className="reels-comment-field"
-              />
-              <button
-                type="submit"
-                className="reels-comment-post-btn"
-                disabled={!commentText.trim()}
-              >
-                Post
-              </button>
-            </form>
+            {shareTab === "nesty" ? (
+              <>
+                <div className="reels-share-search-box">
+                  <input
+                    type="text"
+                    placeholder="Search Nesty user by name or handle..."
+                    value={nestyUserSearch}
+                    onChange={(e) => setNestyUserSearch(e.target.value)}
+                    className="reels-share-search-input"
+                    autoFocus
+                  />
+                </div>
+                <div className="reels-share-users-list">
+                  {filteredNestyUsers.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: "30px 10px", color: "var(--text-muted, #94a3b8)", fontSize: "13px" }}>
+                      No users found.
+                    </div>
+                  ) : (
+                    filteredNestyUsers.map((u) => {
+                      const isSent = !!sentUserIds[u.id];
+                      return (
+                        <div key={u.id} className="reels-share-user-row">
+                          <div className="reels-share-user-info">
+                            <div className="reels-share-user-avatar">
+                              {u.avatar_url ? (
+                                <img src={u.avatar_url} alt="" />
+                              ) : (
+                                u.username.charAt(0).toUpperCase()
+                              )}
+                            </div>
+                            <div>
+                              <span className="reels-share-user-name">{u.name || u.username}</span>
+                              <span className="reels-share-user-handle">@{u.username}</span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className={`reels-share-send-btn ${isSent ? "sent" : ""}`}
+                            onClick={() => handleSendToNestyUser(u)}
+                            disabled={isSent}
+                          >
+                            {isSent ? "Sent ✓" : "Send"}
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="reels-share-platforms-grid">
+                <button
+                  type="button"
+                  className="reels-share-platform-btn"
+                  onClick={() => handleShareExternal("whatsapp")}
+                >
+                  <div className="reels-share-platform-icon" style={{ background: "#25D366", color: "#fff" }}>
+                    💬
+                  </div>
+                  <span>WhatsApp</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="reels-share-platform-btn"
+                  onClick={() => handleShareExternal("twitter")}
+                >
+                  <div className="reels-share-platform-icon" style={{ background: "#000", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }}>
+                    𝕏
+                  </div>
+                  <span>X (Twitter)</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="reels-share-platform-btn"
+                  onClick={() => handleShareExternal("telegram")}
+                >
+                  <div className="reels-share-platform-icon" style={{ background: "#229ED9", color: "#fff" }}>
+                    ✈️
+                  </div>
+                  <span>Telegram</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="reels-share-platform-btn"
+                  onClick={() => handleShareExternal("facebook")}
+                >
+                  <div className="reels-share-platform-icon" style={{ background: "#1877F2", color: "#fff" }}>
+                    📘
+                  </div>
+                  <span>Facebook</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="reels-share-platform-btn"
+                  onClick={() => handleShareExternal("linkedin")}
+                >
+                  <div className="reels-share-platform-icon" style={{ background: "#0A66C2", color: "#fff" }}>
+                    💼
+                  </div>
+                  <span>LinkedIn</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="reels-share-platform-btn"
+                  onClick={handleCopyLink}
+                >
+                  <div className="reels-share-platform-icon" style={{ background: copiedLink ? "#10b981" : "#475569", color: "#fff" }}>
+                    {copiedLink ? "✓" : "📋"}
+                  </div>
+                  <span>{copiedLink ? "Copied!" : "Copy Link"}</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="reels-share-platform-btn"
+                  onClick={() => handleShareExternal("system")}
+                >
+                  <div className="reels-share-platform-icon" style={{ background: "#6366f1", color: "#fff" }}>
+                    ↗
+                  </div>
+                  <span>More...</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

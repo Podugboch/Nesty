@@ -154,7 +154,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET("/heartbeat", utils.JWTMiddleware(), h.Heartbeat)
 	r.GET("/webrtc/config", h.GetWebRTCConfig)
 	r.GET("/tracks", h.GetTracks)
-	r.GET("/reels", h.GetReels)
 	r.GET("/music/search", h.SearchMusic)
 	r.GET("/communities", h.GetCommunities)
 
