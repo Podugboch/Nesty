@@ -124,7 +124,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, PKPushRegistryDelegate, C
 
     // MARK: - Backend Token Sync
     private func registerVoipTokenWithBackend(token: String) {
-        let apiUrl = "https://piscine-devnest.onrender.com/api/devices"
+        let apiUrl = "https://nesty.onrender.com/api/devices"
         guard let url = URL(string: apiUrl) else { return }
 
         var request = URLRequest(url: url)
