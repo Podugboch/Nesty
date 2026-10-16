@@ -71,6 +71,10 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
   const [pausedMap, setPausedMap] = useState<Record<number, boolean>>({});
   const [pausePulseIndex, setPausePulseIndex] = useState<number | null>(null);
 
+  const [refreshing, setRefreshing] = useState(false);
+  const [pullDistance, setPullDistance] = useState(0);
+  const isPullingRef = useRef(false);
+
   // Comments drawer
   const [activeCommentsReel, setActiveCommentsReel] = useState<ReelItem | null>(null);
   const [commentText, setCommentText] = useState("");
@@ -81,8 +85,12 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
   const audioRefs = useRef<Map<number, HTMLAudioElement>>(new Map());
 
   // Fetch reels from backend
-  const fetchReels = useCallback(async () => {
-    setLoading(true);
+  const fetchReels = useCallback(async (isRefresh = false) => {
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const headers: Record<string, string> = {};
@@ -98,15 +106,84 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
       const list: ReelItem[] = data.reels || (Array.isArray(data) ? data : []);
       setReels(list);
     } catch (err: any) {
-      setError(err.message || "Failed to load reels. Check your connection.");
+      if (!isRefresh) {
+        setError(err.message || "Failed to load reels. Check your connection.");
+      }
     } finally {
       setLoading(false);
+      setRefreshing(false);
+      setPullDistance(0);
     }
   }, [apiUrl, token]);
 
   useEffect(() => {
     fetchReels();
   }, [fetchReels]);
+
+  // Pull-to-refresh touch gesture for mobile
+  useEffect(() => {
+    let startY = 0;
+    let startX = 0;
+    let pulling = false;
+
+    const onTouchStart = (e: TouchEvent) => {
+      const touch = e.touches[0];
+      const scrollY = containerRef.current ? containerRef.current.scrollTop : 0;
+      if (scrollY <= 2 && activeIndex === 0 && !refreshing) {
+        startY = touch.clientY;
+        startX = touch.clientX;
+        pulling = true;
+        isPullingRef.current = true;
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!pulling || refreshing) return;
+      const touch = e.touches[0];
+      const diffY = touch.clientY - startY;
+      const diffX = Math.abs(touch.clientX - startX);
+      const scrollY = containerRef.current ? containerRef.current.scrollTop : 0;
+
+      if (diffY > 0 && diffY > diffX && scrollY <= 2) {
+        const dist = Math.min(diffY * 0.45, 75);
+        setPullDistance(dist);
+        if (e.cancelable && diffY > 10) {
+          e.preventDefault();
+        }
+      } else if (diffY < 0) {
+        pulling = false;
+        isPullingRef.current = false;
+        setPullDistance(0);
+      }
+    };
+
+    const onTouchEnd = () => {
+      if (!pulling) return;
+      pulling = false;
+      isPullingRef.current = false;
+      setPullDistance((curr) => {
+        if (curr >= 45) {
+          fetchReels(true);
+          return 50;
+        }
+        return 0;
+      });
+    };
+
+    const container = containerRef.current;
+    if (container) {
+      container.addEventListener("touchstart", onTouchStart, { passive: true });
+      container.addEventListener("touchmove", onTouchMove, { passive: false });
+      container.addEventListener("touchend", onTouchEnd, { passive: true });
+    }
+    return () => {
+      if (container) {
+        container.removeEventListener("touchstart", onTouchStart);
+        container.removeEventListener("touchmove", onTouchMove);
+        container.removeEventListener("touchend", onTouchEnd);
+      }
+    };
+  }, [activeIndex, refreshing, fetchReels]);
 
   // Sync scroll snap to active index
   const handleScroll = () => {
@@ -334,6 +411,26 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
         </div>
 
         <div className="reels-header-right-actions">
+          {/* Refresh Button */}
+          <button
+            type="button"
+            className={`reels-header-refresh-btn ${refreshing ? "spinning" : ""}`}
+            onClick={() => fetchReels(true)}
+            disabled={refreshing || loading}
+            title="Refresh Reels Feed"
+            aria-label="Refresh Reels"
+          >
+            <span
+              className={refreshing ? "reels-spin-anim" : ""}
+              style={{ display: "inline-block", fontSize: "14px" }}
+            >
+              ↻
+            </span>
+            <span className="reels-header-refresh-text">
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </span>
+          </button>
+
           <button
             type="button"
             className="reels-header-sound-btn"
@@ -355,6 +452,31 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
         </div>
       </header>
 
+      {/* Pull-To-Refresh Indicator Banner */}
+      {(pullDistance > 0 || refreshing) && (
+        <div
+          className="reels-pull-indicator"
+          style={{
+            top: `${60 + (refreshing ? 18 : pullDistance)}px`,
+            opacity: refreshing || pullDistance > 10 ? 1 : 0,
+          }}
+        >
+          <span
+            className={refreshing ? "reels-spin-anim" : ""}
+            style={{ fontSize: "15px", display: "inline-block" }}
+          >
+            {refreshing ? "⏳" : pullDistance >= 45 ? "↻" : "↓"}
+          </span>
+          <span>
+            {refreshing
+              ? "Refreshing reels..."
+              : pullDistance >= 45
+              ? "Release to refresh"
+              : "Pull down to refresh"}
+          </span>
+        </div>
+      )}
+
       {/* Loading Skeletons */}
       {loading && (
         <div className="reels-skeleton-feed">
@@ -374,7 +496,7 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
           <button
             type="button"
             className="reels-action-prime-btn"
-            onClick={fetchReels}
+            onClick={() => fetchReels()}
           >
             Try Again
           </button>
