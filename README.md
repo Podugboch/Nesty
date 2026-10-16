@@ -1,12 +1,11 @@
-# Piscine-DevNest
+# Nesty
 
 🚀 **Live Deployment on Render**: [https://piscine-devnest.onrender.com](https://piscine-devnest.onrender.com)
 
-To create a dedicated platform where Learn2Earn Piscine candidates (past and present) can connect, share knowledge, collaborate, and build a supportive community during and after the Piscine program
-Project Overview: Piscine-DevNest
+Project Overview: Nesty
 Project Name:
 
-Piscine-DevNest
+Nesty
 
 Project Type:
 

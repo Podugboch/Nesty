@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: piscine-devnest
+    name: nesty
     runtime: docker
     plan: free
     region: virginia
