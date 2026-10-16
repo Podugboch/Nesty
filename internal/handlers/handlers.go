@@ -70,7 +70,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// REELS
 		protected.POST("/reels", h.CreateReel)
 		protected.POST("/reels/:id/like", h.ToggleReelLike)
-		protected.GET("/reels/:id/comments", h.GetReelComments)
 		protected.POST("/reels/:id/comments", h.CreateReelComment)
 		protected.DELETE("/reels/:id", h.DeleteReel)
 
