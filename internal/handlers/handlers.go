@@ -245,8 +245,7 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	if input.MusicTrackID != nil && *input.MusicTrackID > 0 {
 		var trk model.Track
 		if err := h.DB.First(&trk, *input.MusicTrackID).Error; err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "selected music track does not exist"})
-			return
+			input.MusicTrackID = nil
 		}
 	}
 
@@ -338,11 +337,53 @@ func (h *Handler) UploadMedia(c *gin.Context) {
 	}
 
 	contentType := header.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
+	ext := filepath.Ext(header.Filename)
+
+	if ext == "" {
+		if strings.HasPrefix(contentType, "video/") {
+			if strings.Contains(contentType, "webm") {
+				ext = ".webm"
+			} else {
+				ext = ".mp4"
+			}
+		} else if strings.HasPrefix(contentType, "image/") {
+			if strings.Contains(contentType, "png") {
+				ext = ".png"
+			} else if strings.Contains(contentType, "webp") {
+				ext = ".webp"
+			} else {
+				ext = ".jpg"
+			}
+		}
 	}
 
-	ext := filepath.Ext(header.Filename)
+	if contentType == "" || contentType == "application/octet-stream" {
+		switch strings.ToLower(ext) {
+		case ".mp4", ".m4v":
+			contentType = "video/mp4"
+		case ".webm":
+			contentType = "video/webm"
+		case ".mov":
+			contentType = "video/quicktime"
+		case ".ogg", ".ogv":
+			contentType = "video/ogg"
+		case ".3gp":
+			contentType = "video/3gpp"
+		case ".png":
+			contentType = "image/png"
+		case ".jpg", ".jpeg":
+			contentType = "image/jpeg"
+		case ".gif":
+			contentType = "image/gif"
+		case ".webp":
+			contentType = "image/webp"
+		case ".mp3":
+			contentType = "audio/mpeg"
+		default:
+			contentType = "application/octet-stream"
+		}
+	}
+
 	filename := fmt.Sprintf("%d_%s%s", time.Now().UnixNano(), uuid.New().String()[:8], ext)
 
 	publicURL, err := storage.UploadToSupabase("media", filename, data, contentType)
@@ -2214,8 +2255,7 @@ func (h *Handler) CreateReel(c *gin.Context) {
 	if input.MusicTrackID != nil && *input.MusicTrackID > 0 {
 		var trk model.Track
 		if err := h.DB.First(&trk, *input.MusicTrackID).Error; err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "selected music track does not exist"})
-			return
+			input.MusicTrackID = nil
 		}
 	}
 

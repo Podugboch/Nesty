@@ -14,7 +14,7 @@ const API_URL: string = (() => {
   if (typeof window !== "undefined") {
     const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
     if (isCapacitor) {
-      return "https://nesty.onrender.com";
+      return "https://piscine-devnest.onrender.com";
     }
     const host = window.location.hostname;
     const port = window.location.port;
@@ -25,7 +25,7 @@ const API_URL: string = (() => {
       return window.location.origin.replace(/\/+$/, "");
     }
   }
-  return "https://nesty.onrender.com";
+  return "https://piscine-devnest.onrender.com";
 })();
 
 const WS_BASE_URL: string = (() => {
@@ -34,7 +34,7 @@ const WS_BASE_URL: string = (() => {
   if (typeof window !== "undefined") {
     const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
     if (isCapacitor) {
-      return "wss://nesty.onrender.com";
+      return "wss://piscine-devnest.onrender.com";
     }
     const host = window.location.hostname;
     const port = window.location.port;
@@ -45,7 +45,7 @@ const WS_BASE_URL: string = (() => {
       return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
     }
   }
-  return "wss://nesty.onrender.com";
+  return "wss://piscine-devnest.onrender.com";
 })();
 
 
@@ -91,6 +91,10 @@ type Post = {
   parent?: Post;
   music_track_id?: number | null;
   music_track?: MusicTrack | null;
+  music_source?: string;
+  music_url?: string;
+  music_title?: string;
+  music_artist?: string;
   music_start_sec?: number;
   mute_original?: boolean;
   music_volume?: number;
@@ -130,8 +134,13 @@ const PostPlaybackMedia: React.FC<{
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
 
-  const hasMusic = !!post.music_track;
-  const isVideo = !!(post.media_url && post.media_url.match(/\.(mp4|webm|mov|ogg)/i));
+  const musicAudioUrl = post.music_track?.audio_url || post.music_url;
+  const hasMusic = !!musicAudioUrl;
+  const isVideo = !!(
+    post.media_url &&
+    (post.media_url.match(/\.(mp4|webm|mov|ogg|m4v|3gp|mkv)($|\?)/i) ||
+     post.media_url.toLowerCase().includes("video"))
+  );
   const isImage = !!(post.media_url && !isVideo && post.media_url !== "photo_placeholder");
 
   // Keep audio volume in sync
@@ -243,7 +252,7 @@ const PostPlaybackMedia: React.FC<{
   return (
     <div ref={containerRef} className="post-media-with-audio-wrap">
       {/* ♪ Title – Artist Soundtrack Badge */}
-      {hasMusic && post.music_track && (
+      {hasMusic && (
         <div
           className="post-soundtrack-pill"
           onClick={isImage ? toggleImageAudio : undefined}
@@ -252,7 +261,7 @@ const PostPlaybackMedia: React.FC<{
         >
           <span className="post-soundtrack-note">♪</span>
           <span className="post-soundtrack-text">
-            {post.music_track.title} – {post.music_track.artist}
+            {post.music_track ? `${post.music_track.title} – ${post.music_track.artist}` : (post.music_title ? `${post.music_title} – ${post.music_artist || "Soundtrack"}` : "Soundtrack")}
           </span>
           {isImage && (
             <span style={{ fontSize: "11px", marginLeft: "4px", opacity: 0.8 }}>
@@ -263,10 +272,10 @@ const PostPlaybackMedia: React.FC<{
       )}
 
       {/* Hidden audio element for music soundtrack */}
-      {hasMusic && post.music_track && (
+      {hasMusic && musicAudioUrl && (
         <audio
           ref={audioRef}
-          src={post.music_track.audio_url}
+          src={musicAudioUrl}
           loop
           preload="auto"
           style={{ display: "none" }}
@@ -3642,6 +3651,12 @@ export default function App() {
     try {
       let uploadedUrl = "";
       if (selectedFile) {
+        if (selectedFile.size > 100 * 1024 * 1024) {
+          alert("Selected file exceeds the 100 MB limit. Please select a smaller file.");
+          setUploadingMedia(false);
+          return;
+        }
+
         const formData = new FormData();
         formData.append("file", selectedFile);
 
@@ -3654,6 +3669,9 @@ export default function App() {
         if (uploadRes.ok) {
           const uploadData = await uploadRes.json();
           uploadedUrl = uploadData.url;
+        } else {
+          const errData = await uploadRes.json().catch(() => ({}));
+          throw new Error(errData.error || `Upload failed (status ${uploadRes.status})`);
         }
       }
 
@@ -3667,7 +3685,11 @@ export default function App() {
           content: newPost,
           media_url: uploadedUrl,
           community: selectedCommunity === "home" ? "" : (selectedCommunity || ""),
-          music_track_id: selectedPostMusic ? selectedPostMusic.id : null,
+          music_track_id: selectedPostMusic && typeof selectedPostMusic.id === "number" ? selectedPostMusic.id : null,
+          music_source: selectedPostMusic?.source || (selectedPostMusic ? "library" : ""),
+          music_url: selectedPostMusic?.audio_url || "",
+          music_title: selectedPostMusic?.title || "",
+          music_artist: selectedPostMusic?.artist || "",
           music_start_sec: 0,
           mute_original: selectedPostMusic ? true : false,
           music_volume: 1,
@@ -3691,10 +3713,12 @@ export default function App() {
         setSelectedPostMusic(null);
         setPage("feed");
       } else {
-        alert("Failed to publish post.");
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || "Failed to publish post.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error creating post", err);
+      alert(err.message || "Failed to publish post. Please check your connection and try again.");
     } finally {
       setUploadingMedia(false);
     }
@@ -6289,10 +6313,19 @@ export default function App() {
                 </div>
 
                 {mediaPreview && (
-                  <div style={{ position: "relative", marginBottom: "12px", borderRadius: "12px", overflow: "hidden" }}>
-                    <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "240px", objectFit: "cover" }} />
+                  <div style={{ position: "relative", marginBottom: "12px", borderRadius: "12px", overflow: "hidden", background: "#000" }}>
+                    {selectedFile?.type.startsWith("video/") || selectedFile?.name.match(/\.(mp4|webm|mov|m4v|3gp|mkv)$/i) ? (
+                      <video
+                        src={mediaPreview}
+                        controls
+                        playsInline
+                        style={{ width: "100%", maxHeight: "280px", borderRadius: "12px", display: "block" }}
+                      />
+                    ) : (
+                      <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "240px", objectFit: "cover", display: "block" }} />
+                    )}
                     <button
-                      style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "24px", height: "24px", cursor: "pointer" }}
+                      style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "24px", height: "24px", cursor: "pointer", zIndex: 10 }}
                       onClick={() => { setSelectedFile(null); setMediaPreview(null); }}
                     >
                       ✕
@@ -6327,13 +6360,13 @@ export default function App() {
 
                 <div className="inline-creator-actions">
                   <div className="inline-attach-tools">
-                    <label className="tool-attach-btn" style={{ cursor: "pointer" }}>
+                    <label className="tool-attach-btn" style={{ cursor: "pointer" }} title="Attach photo">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
                         <circle cx="8.5" cy="8.5" r="1.5" />
                         <polyline points="21 15 16 10 5 21" />
                       </svg>
-                      <span>Image</span>
+                      <span>Photo</span>
                       <input
                         type="file"
                         accept="image/*"
@@ -6345,6 +6378,37 @@ export default function App() {
                         }}
                       />
                     </label>
+
+                    <label className="tool-attach-btn" style={{ cursor: "pointer" }} title="Attach video">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="23 7 16 12 23 17 23 7" />
+                        <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                      </svg>
+                      <span>Video</span>
+                      <input
+                        type="file"
+                        accept="video/*"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          setSelectedFile(file);
+                          if (file) setMediaPreview(URL.createObjectURL(file));
+                        }}
+                      />
+                    </label>
+
+                    <button
+                      type="button"
+                      className="tool-attach-btn"
+                      onClick={() => {
+                        navigateTo("/reels/create");
+                        setPage("reels_create");
+                      }}
+                      title="Create a short-form video Reel"
+                    >
+                      <span>🎬</span>
+                      <span>Reel</span>
+                    </button>
 
                     <button
                       type="button"
@@ -7125,9 +7189,33 @@ export default function App() {
           );
         })()}
 
-        {/* VIEW 3: DEDICATED CREATE POST PAGE (MATCHING SCREENSHOT 3) */}
+        {/* VIEW 3: DEDICATED CREATE POST PAGE */}
         {page === "create" && (
           <div className="dedicated-create-card">
+            <div style={{ display: "flex", gap: "8px", marginBottom: "16px", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "12px" }}>
+              <button
+                type="button"
+                className="tool-attach-btn active"
+                style={{ fontWeight: 700 }}
+              >
+                <span>📝</span>
+                <span>Post (Photos & Videos)</span>
+              </button>
+              <button
+                type="button"
+                className="tool-attach-btn"
+                onClick={() => {
+                  navigateTo("/reels/create");
+                  setPage("reels_create");
+                }}
+                style={{ cursor: "pointer" }}
+                title="Create a short-form video Reel with music"
+              >
+                <span>🎬</span>
+                <span>Create Reel</span>
+              </button>
+            </div>
+
             <div className="composer-top-row">
               <div className="avatar-with-dot">
                 {user?.avatar_url ? (
@@ -7146,10 +7234,19 @@ export default function App() {
             </div>
 
             {mediaPreview && (
-              <div style={{ marginBottom: "16px", borderRadius: "12px", overflow: "hidden", position: "relative" }}>
-                <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "320px", objectFit: "cover" }} />
+              <div style={{ marginBottom: "16px", borderRadius: "12px", overflow: "hidden", position: "relative", background: "#000" }}>
+                {selectedFile?.type.startsWith("video/") || selectedFile?.name.match(/\.(mp4|webm|mov|m4v|3gp|mkv)$/i) ? (
+                  <video
+                    src={mediaPreview}
+                    controls
+                    playsInline
+                    style={{ width: "100%", maxHeight: "360px", borderRadius: "12px", display: "block" }}
+                  />
+                ) : (
+                  <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "320px", objectFit: "cover", display: "block" }} />
+                )}
                 <button
-                  style={{ position: "absolute", top: "10px", right: "10px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "26px", height: "26px", cursor: "pointer" }}
+                  style={{ position: "absolute", top: "10px", right: "10px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "26px", height: "26px", cursor: "pointer", zIndex: 10 }}
                   onClick={() => { setSelectedFile(null); setMediaPreview(null); }}
                 >
                   ✕

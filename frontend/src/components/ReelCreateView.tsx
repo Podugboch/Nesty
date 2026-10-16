@@ -259,7 +259,7 @@ export const ReelCreateView: React.FC<ReelCreateViewProps> = ({
       };
 
       if (selectedMusic) {
-        if (typeof selectedMusic.id === "number") {
+        if (typeof selectedMusic.id === "number" && selectedMusic.source === "library") {
           reelPayload.music_track_id = selectedMusic.id;
         }
         reelPayload.music_source = selectedMusic.source || "library";
