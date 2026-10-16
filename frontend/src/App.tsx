@@ -957,6 +957,7 @@ export default function App() {
     name: string;
     username: string;
     isSpeaking?: boolean;
+    isScreenSharing?: boolean;
     avatarUrl?: string;
     stream?: MediaStream;
   }
@@ -986,6 +987,7 @@ export default function App() {
 
   const groupLocalVideoRef = useRef<HTMLVideoElement | null>(null);
   const groupLocalStreamRef = useRef<MediaStream | null>(null);
+  const groupScreenStreamRef = useRef<MediaStream | null>(null);
   const [groupLocalStream, setGroupLocalStream] = useState<MediaStream | null>(null);
   const groupPeersRef = useRef<Map<number, RTCPeerConnection>>(new Map());
   const groupCandidatesQueueRef = useRef<Map<number, RTCIceCandidateInit[]>>(new Map());
@@ -4043,10 +4045,11 @@ export default function App() {
       rtcpMuxPolicy: "require",
     });
 
-    // Attach local stream tracks to this peer
-    if (groupLocalStreamRef.current) {
-      groupLocalStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, groupLocalStreamRef.current!);
+    // Attach active stream tracks to this peer (screen share if active, else camera/mic)
+    const activeStreamToSend = groupScreenStreamRef.current || groupLocalStreamRef.current;
+    if (activeStreamToSend) {
+      activeStreamToSend.getTracks().forEach((track) => {
+        pc.addTrack(track, activeStreamToSend);
       });
     }
 
@@ -4386,6 +4389,27 @@ export default function App() {
           prev ? { ...prev, participants: prev.participants.filter((p) => Number(p.id) !== fromId) } : null
         );
       }
+      return;
+    }
+
+    if (data.type === "group_call_screen_share") {
+      const channelId = data.channel_id;
+      const fromId = Number(data.from_user_id);
+      const isSharing = !!data.is_sharing;
+      const currentCall = groupCallStateRef.current;
+      if (currentCall && currentCall.channelId === channelId) {
+        setGroupCallState((prev) => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            type: isSharing ? "video" : prev.type,
+            participants: prev.participants.map((p) =>
+              Number(p.id) === fromId ? { ...p, isScreenSharing: isSharing } : p
+            ),
+          };
+        });
+      }
+      return;
     }
   };
 
@@ -4492,6 +4516,7 @@ export default function App() {
   };
 
   const leaveGroupCall = () => {
+    stopGroupScreenShare();
     const currentCall = groupCallStateRef.current;
     if (currentCall && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -4607,29 +4632,120 @@ export default function App() {
     }
   };
 
+  const stopGroupScreenShare = () => {
+    if (groupScreenStreamRef.current) {
+      groupScreenStreamRef.current.getTracks().forEach((t) => {
+        try { t.stop(); } catch {}
+      });
+      groupScreenStreamRef.current = null;
+    }
+
+    const currentStream = groupLocalStreamRef.current;
+    const cameraTrack = currentStream ? currentStream.getVideoTracks().find((t) => t.readyState === "live") : null;
+    const isCameraActive = !groupCallStateRef.current?.isVideoOff && !!cameraTrack && cameraTrack.enabled;
+
+    // Restore video track for all active peer connections
+    groupPeersRef.current.forEach(async (pc, peerId) => {
+      try {
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video") ||
+                       pc.getTransceivers().find((t) => t.receiver.track.kind === "video")?.sender ||
+                       pc.getSenders().find((s) => !s.track);
+        if (sender) {
+          if (isCameraActive && cameraTrack) {
+            await sender.replaceTrack(cameraTrack);
+            if (sender.track) sender.track.enabled = true;
+          } else {
+            await sender.replaceTrack(null);
+          }
+        }
+      } catch (e) {
+        console.warn(`[Group Call] Failed to restore camera track for peer ${peerId}`, e);
+      }
+    });
+
+    if (currentStream) {
+      setGroupLocalStream(new MediaStream(currentStream.getTracks()));
+    } else {
+      setGroupLocalStream(null);
+    }
+
+    setGroupCallState((prev) => (prev ? { ...prev, isScreenSharing: false } : null));
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && groupCallStateRef.current) {
+      wsRef.current.send(
+        JSON.stringify({
+          event: "group_call_broadcast",
+          type: "group_call_screen_share",
+          channel_id: groupCallStateRef.current.channelId,
+          from_user_id: user?.id,
+          is_sharing: false,
+        })
+      );
+    }
+  };
+
   const toggleGroupScreenShare = async () => {
     if (!groupCallState) return;
+    if (groupCallState.isScreenSharing) {
+      stopGroupScreenShare();
+      return;
+    }
+
     try {
-      if (!groupCallState.isScreenSharing) {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        const screenTrack = screenStream.getVideoTracks()[0];
-        if (groupLocalVideoRef.current) {
-          groupLocalVideoRef.current.srcObject = screenStream;
-        }
-        screenTrack.onended = () => {
-          if (groupLocalStreamRef.current && groupLocalVideoRef.current) {
-            groupLocalVideoRef.current.srcObject = groupLocalStreamRef.current;
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          cursor: "always",
+        } as any,
+        audio: false,
+      });
+
+      const screenTrack = screenStream.getVideoTracks()[0];
+      if (!screenTrack) return;
+      groupScreenStreamRef.current = screenStream;
+
+      screenTrack.onended = () => {
+        stopGroupScreenShare();
+      };
+
+      // Push screen share track to all active peer connections immediately
+      groupPeersRef.current.forEach(async (pc, peerId) => {
+        try {
+          const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video") ||
+                         pc.getTransceivers().find((t) => t.receiver.track.kind === "video")?.sender ||
+                         pc.getSenders().find((s) => !s.track);
+          if (sender) {
+            await sender.replaceTrack(screenTrack);
+            if (sender.track) sender.track.enabled = true;
+          } else {
+            pc.addTrack(screenTrack, screenStream);
+            createAndSendOfferToPeer(peerId, groupCallState.channelId);
           }
-          setGroupCallState((prev) => (prev ? { ...prev, isScreenSharing: false } : null));
-        };
-        setGroupCallState({ ...groupCallState, isScreenSharing: true });
-      } else {
-        if (groupLocalStreamRef.current && groupLocalVideoRef.current) {
-          groupLocalVideoRef.current.srcObject = groupLocalStreamRef.current;
+        } catch (e) {
+          console.warn(`[Group Call] Failed to transmit screen share track to peer ${peerId}`, e);
         }
-        setGroupCallState({ ...groupCallState, isScreenSharing: false });
+      });
+
+      // Show local preview of the screen share
+      setGroupLocalStream(screenStream);
+      setGroupCallState((prev) => (prev ? { ...prev, type: "video", isScreenSharing: true } : null));
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            event: "group_call_broadcast",
+            type: "group_call_screen_share",
+            channel_id: groupCallState.channelId,
+            from_user_id: user?.id,
+            is_sharing: true,
+          })
+        );
       }
-    } catch {}
+    } catch (err: any) {
+      if (err.name !== "NotAllowedError" && err.name !== "AbortError") {
+        console.error("Failed to share screen:", err);
+        alert("Unable to share screen.");
+      }
+    }
   };
 
   useEffect(() => {
@@ -9169,14 +9285,14 @@ export default function App() {
             </div>
 
             {/* CALL PARTICIPANTS GRID */}
-            <div className={`group-call-grid count-${groupCallState.participants.length + 1}`}>
+            <div className={`group-call-grid count-${groupCallState.participants.length + 1} ${groupCallState.isScreenSharing || groupCallState.participants.some((p) => p.isScreenSharing) ? "has-screen-share" : ""}`}>
               {/* LOCAL PARTICIPANT TILE */}
-              <div className="group-call-tile local-tile">
-                {!groupCallState.isVideoOff && (groupLocalStream || groupLocalStreamRef.current) && (groupLocalStream || groupLocalStreamRef.current)!.getVideoTracks().some((t) => t.enabled) ? (
+              <div className={`group-call-tile local-tile ${groupCallState.isScreenSharing ? "sharing-screen" : ""}`}>
+                {groupCallState.isScreenSharing || (!groupCallState.isVideoOff && (groupLocalStream || groupLocalStreamRef.current) && (groupLocalStream || groupLocalStreamRef.current)!.getVideoTracks().some((t) => t.enabled)) ? (
                   <VideoFeed
                     stream={groupLocalStream || groupLocalStreamRef.current}
                     isMuted={true}
-                    className="group-call-video-feed"
+                    className={`group-call-video-feed ${groupCallState.isScreenSharing ? "screen-share-video" : ""}`}
                   />
                 ) : (
                   <div className="group-call-avatar-placeholder">
@@ -9190,7 +9306,7 @@ export default function App() {
                   </div>
                 )}
                 <div className="group-call-tile-overlay">
-                  <span className="group-participant-name">You {groupCallState.isScreenSharing ? "(Sharing Screen)" : ""}</span>
+                  <span className="group-participant-name">{groupCallState.isScreenSharing ? "🖥️ You (Sharing Screen)" : "You"}</span>
                   {groupCallState.isMuted && <span className="group-tile-muted">🔇</span>}
                 </div>
               </div>
@@ -9199,9 +9315,13 @@ export default function App() {
               {groupCallState.participants.map((p, idx) => {
                 const hasVideo = !!p.stream && p.stream.getVideoTracks().some((t) => t.enabled && t.readyState === "live");
                 return (
-                  <div key={p.id || idx} className="group-call-tile remote-tile">
+                  <div key={p.id || idx} className={`group-call-tile remote-tile ${p.isScreenSharing ? "sharing-screen" : ""}`}>
                     {hasVideo ? (
-                      <VideoFeed stream={p.stream || null} isMuted={false} className="group-call-video-feed" />
+                      <VideoFeed
+                        stream={p.stream || null}
+                        isMuted={false}
+                        className={`group-call-video-feed ${p.isScreenSharing ? "screen-share-video" : ""}`}
+                      />
                     ) : (
                       <div className="group-call-avatar-placeholder">
                         {p.stream && (
@@ -9228,8 +9348,10 @@ export default function App() {
                       </div>
                     )}
                     <div className="group-call-tile-overlay">
-                      <span className="group-participant-name">{p.name || `@${p.username}`}</span>
-                      <span className="group-tile-tag">Active</span>
+                      <span className="group-participant-name">
+                        {p.isScreenSharing ? `🖥️ ${p.name || `@${p.username}`} (Sharing Screen)` : (p.name || `@${p.username}`)}
+                      </span>
+                      <span className="group-tile-tag">{p.isScreenSharing ? "Screen" : "Active"}</span>
                     </div>
                   </div>
                 );
