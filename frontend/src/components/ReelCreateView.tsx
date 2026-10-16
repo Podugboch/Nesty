@@ -159,44 +159,92 @@ export const ReelCreateView: React.FC<ReelCreateViewProps> = ({
     setUploadProgress(10);
 
     try {
-      // 1. Upload Video File with progress
+      const cleanBaseUrl = (apiUrl || "").replace(/\/+$/, "");
+      const uploadEndpoint = cleanBaseUrl ? `${cleanBaseUrl}/api/upload` : "/api/upload";
+      const reelsEndpoint = cleanBaseUrl ? `${cleanBaseUrl}/api/reels` : "/api/reels";
+
+      // 1. Upload Video File with progress (via XHR with fetch fallback)
       const formData = new FormData();
       formData.append("file", videoFile);
 
       const authToken = token || localStorage.getItem("token");
-      const xhr = new XMLHttpRequest();
 
-      const uploadedUrl: string = await new Promise((resolve, reject) => {
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const percent = Math.round((event.loaded / event.total) * 75);
-            setUploadProgress(Math.max(10, percent));
-          }
-        };
-
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const res = JSON.parse(xhr.responseText);
-              const url = res.url || res.media_url || res.file_url;
-              if (url) resolve(url);
-              else reject(new Error("Upload response missing video URL"));
-            } catch (e) {
-              reject(new Error("Failed to parse upload response"));
+      let uploadedUrl: string | null = null;
+      try {
+        uploadedUrl = await new Promise<string>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const percent = Math.round((event.loaded / event.total) * 75);
+              setUploadProgress(Math.max(10, percent));
             }
-          } else {
-            reject(new Error(`Video upload failed (HTTP ${xhr.status})`));
+          };
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const res = JSON.parse(xhr.responseText);
+                const url = res.url || res.media_url || res.file_url;
+                if (url) resolve(url);
+                else reject(new Error("Upload response missing video URL"));
+              } catch (e) {
+                reject(new Error("Failed to parse upload response from server"));
+              }
+            } else {
+              let msg = `Video upload failed (HTTP ${xhr.status})`;
+              try {
+                const errData = JSON.parse(xhr.responseText);
+                if (errData.error) msg = errData.error;
+              } catch (_) {}
+              reject(new Error(msg));
+            }
+          };
+
+          xhr.onerror = () => reject(new Error("xhr_network_error"));
+          xhr.ontimeout = () => reject(new Error("xhr_timeout"));
+
+          xhr.open("POST", uploadEndpoint);
+          if (authToken) {
+            xhr.setRequestHeader("Authorization", `Bearer ${authToken}`);
           }
-        };
-
-        xhr.onerror = () => reject(new Error("Network error during video upload"));
-
-        xhr.open("POST", `${apiUrl}/api/upload`);
-        if (authToken) {
-          xhr.setRequestHeader("Authorization", `Bearer ${authToken}`);
+          xhr.send(formData);
+        });
+      } catch (uploadErr: any) {
+        // If XHR failed due to network error or timeout, attempt standard fetch() fallback
+        if (uploadErr?.message === "xhr_network_error" || uploadErr?.message === "xhr_timeout") {
+          console.warn("XHR upload network error, falling back to fetch...", uploadErr);
+          setUploadProgress(50);
+          const fetchHeaders: Record<string, string> = {};
+          if (authToken) {
+            fetchHeaders["Authorization"] = `Bearer ${authToken}`;
+          }
+          try {
+            const fetchRes = await fetch(uploadEndpoint, {
+              method: "POST",
+              headers: fetchHeaders,
+              body: formData,
+            });
+            if (fetchRes.ok) {
+              const data = await fetchRes.json();
+              uploadedUrl = data.url || data.media_url || data.file_url;
+              if (!uploadedUrl) {
+                throw new Error("Upload response missing video URL");
+              }
+            } else {
+              const errData = await fetchRes.json().catch(() => ({}));
+              throw new Error(errData.error || `Video upload failed (HTTP ${fetchRes.status})`);
+            }
+          } catch (fetchErr: any) {
+            throw new Error(
+              fetchErr.message && !fetchErr.message.includes("fetch")
+                ? fetchErr.message
+                : "Unable to reach server during video upload. Please check your internet connection and try again."
+            );
+          }
+        } else {
+          throw uploadErr;
         }
-        xhr.send(formData);
-      });
+      }
 
       setUploadProgress(85);
 
@@ -220,7 +268,7 @@ export const ReelCreateView: React.FC<ReelCreateViewProps> = ({
         reelPayload.music_artist = selectedMusic.artist;
       }
 
-      const createRes = await fetch(`${apiUrl}/api/reels`, {
+      const createRes = await fetch(reelsEndpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

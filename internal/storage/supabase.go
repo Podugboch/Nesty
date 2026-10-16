@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 )
 
 // UploadToSupabase uploads a file's bytes to the given bucket/path in Supabase Storage
@@ -29,10 +30,12 @@ func UploadToSupabase(bucket string, path string, data []byte, contentType strin
 	req.Header.Set("Authorization", "Bearer "+serviceKey)
 	req.Header.Set("Content-Type", contentType)
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 3 * time.Minute,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("supabase connection error: %w", err)
 	}
 	defer resp.Body.Close()
 

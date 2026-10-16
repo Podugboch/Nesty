@@ -69,11 +69,12 @@ func Run() error {
 		&model.Message{},
 		&model.Device{},
 		&model.Community{},
+		&model.CommunityMember{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
-	// Ensure columns and defaults on posts and reels in case existing tables missed them
+	// Ensure columns and defaults on posts, reels, communities, and community_members
 	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_track_id bigint").Error
 	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_source text").Error
 	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_url text").Error
@@ -96,16 +97,30 @@ func Run() error {
 
 	_ = db.Exec("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_message_id bigint").Error
 
+	_ = db.Exec("ALTER TABLE communities ADD COLUMN IF NOT EXISTS requires_approval boolean DEFAULT false").Error
+	_ = db.Exec("CREATE TABLE IF NOT EXISTS community_members (id bigserial PRIMARY KEY, community_id bigint NOT NULL, user_id bigint NOT NULL, role varchar(20) DEFAULT 'member', status varchar(20) DEFAULT 'active', created_at timestamptz DEFAULT NOW(), updated_at timestamptz DEFAULT NOW())").Error
+	_ = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_community_member_unique ON community_members (community_id, user_id)").Error
+	// Automatically seed the creator of each community as its admin
+	_ = db.Exec(`
+		INSERT INTO community_members (community_id, user_id, role, status, created_at, updated_at)
+		SELECT c.id, c.created_by_id, 'admin', 'active', NOW(), NOW()
+		FROM communities c
+		WHERE c.created_by_id > 0
+		ON CONFLICT (community_id, user_id) DO NOTHING
+	`).Error
+
 	// Seed initial royalty-free music tracks if empty
 	if err := seed.SeedTracks(db); err != nil {
 		fmt.Printf("warning: seed tracks: %v\n", err)
 	}
 
 	r := gin.Default()
+	// Allow large file uploads (up to 100 MiB) without dropping connections
+	r.MaxMultipartMemory = 100 << 20
 
 	corsConfig := cors.DefaultConfig()
 	corsConfig.AllowAllOrigins = true
-	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Authorization", "Accept"}
+	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Authorization", "Accept", "X-Requested-With", "Range"}
 	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 	r.Use(cors.New(corsConfig))
 

@@ -60,6 +60,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/reels", h.GetReels)
 	api.GET("/music/search", h.SearchMusic)
 	api.GET("/communities", h.GetCommunities)
+	api.GET("/communities/:slug", h.GetCommunity)
 
 	// PROTECTED ROUTES
 	protected := api.Group("/", utils.JWTMiddleware())
@@ -73,6 +74,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// COMMUNITIES
 		protected.POST("/communities", h.CreateCommunity)
+		protected.POST("/communities/:slug/join", h.JoinCommunity)
+		protected.POST("/communities/:slug/leave", h.LeaveCommunity)
+		protected.GET("/communities/:slug/members", h.GetCommunityMembers)
+		protected.POST("/communities/:slug/members/:user_id/approve", h.ApproveCommunityMember)
+		protected.POST("/communities/:slug/members/:user_id/reject", h.RejectCommunityMember)
+		protected.POST("/communities/:slug/members/:user_id/role", h.UpdateCommunityMemberRole)
+		protected.PUT("/communities/:slug/settings", h.UpdateCommunitySettings)
 		// USERS
 		protected.GET("/me", h.Me)
 		protected.GET("/users", h.GetUsers)
@@ -234,6 +242,18 @@ func (h *Handler) CreatePost(c *gin.Context) {
 	}
 
 	userID := c.GetUint("user_id")
+
+	// If posting to a specific community, ensure user is an active member
+	if comm != "general" && comm != "home" {
+		var community model.Community
+		if err := h.DB.Where("slug = ? OR id::text = ?", comm, comm).First(&community).Error; err == nil {
+			var member model.CommunityMember
+			if err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active'", community.ID, userID).First(&member).Error; err != nil {
+				c.JSON(http.StatusForbidden, gin.H{"error": "You must join this community before posting."})
+				return
+			}
+		}
+	}
 	post := model.Post{
 		UserID:         userID,
 		Content:        input.Content,
@@ -2304,42 +2324,152 @@ func (h *Handler) SearchMusic(c *gin.Context) {
 
 // ---------------------- COMMUNITIES ----------------------
 
-// GetCommunities returns all real user-created communities from DB
+// GetCommunities returns all real user-created communities from DB with membership info
 func (h *Handler) GetCommunities(c *gin.Context) {
 	var communities []model.Community
 	if err := h.DB.Order("created_at asc").Find(&communities).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch communities"})
 		return
 	}
+
+	callerID := uint(0)
+	auth := c.GetHeader("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		tokenString := strings.TrimPrefix(auth, "Bearer ")
+		if claims, err := utils.ParseToken(tokenString); err == nil {
+			callerID = claims.UserID
+		}
+	}
+
 	userIDs := make([]uint, 0)
+	commIDs := make([]uint, 0)
 	for _, comm := range communities {
+		commIDs = append(commIDs, comm.ID)
 		if comm.CreatedByID > 0 {
 			userIDs = append(userIDs, comm.CreatedByID)
 		}
 	}
+
+	uMap := make(map[uint]model.User)
 	if len(userIDs) > 0 {
 		var users []model.User
 		h.DB.Select("id, username, name, avatar_url").Where("id IN ?", userIDs).Find(&users)
-		uMap := make(map[uint]model.User)
 		for _, u := range users {
 			uMap[u.ID] = u
 		}
-		for i := range communities {
-			if u, ok := uMap[communities[i].CreatedByID]; ok {
-				userCopy := u
-				communities[i].CreatedBy = &userCopy
+	}
+
+	// Fetch member counts for all communities
+	type countRow struct {
+		CommunityID uint  `gorm:"column:community_id"`
+		Count       int64 `gorm:"column:count"`
+	}
+	var countRows []countRow
+	if len(commIDs) > 0 {
+		h.DB.Table("community_members").
+			Select("community_id, count(*) as count").
+			Where("community_id IN ? AND status = 'active'", commIDs).
+			Group("community_id").
+			Scan(&countRows)
+	}
+	countMap := make(map[uint]int64)
+	for _, row := range countRows {
+		countMap[row.CommunityID] = row.Count
+	}
+
+	// Fetch caller membership status for all communities
+	roleMap := make(map[uint]string)
+	if callerID > 0 && len(commIDs) > 0 {
+		var myMemberships []model.CommunityMember
+		h.DB.Where("community_id IN ? AND user_id = ?", commIDs, callerID).Find(&myMemberships)
+		for _, m := range myMemberships {
+			if m.Status == "pending" {
+				roleMap[m.CommunityID] = "pending"
+			} else {
+				roleMap[m.CommunityID] = m.Role
 			}
 		}
 	}
+
+	for i := range communities {
+		cid := communities[i].ID
+		if u, ok := uMap[communities[i].CreatedByID]; ok {
+			userCopy := u
+			communities[i].CreatedBy = &userCopy
+		}
+		if cnt, ok := countMap[cid]; ok {
+			communities[i].MemberCount = cnt
+		} else {
+			// If not in table yet, at least 1 (the creator)
+			communities[i].MemberCount = 1
+		}
+
+		if role, ok := roleMap[cid]; ok {
+			communities[i].CurrentUserRole = role
+		} else if callerID > 0 && communities[i].CreatedByID == callerID {
+			communities[i].CurrentUserRole = "admin"
+		} else {
+			communities[i].CurrentUserRole = "none"
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"communities": communities})
 }
 
-// CreateCommunity creates a new user community
+// GetCommunity returns details of a single community
+func (h *Handler) GetCommunity(c *gin.Context) {
+	slug := c.Param("slug")
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	var creator model.User
+	if err := h.DB.Select("id, username, name, avatar_url").First(&creator, comm.CreatedByID).Error; err == nil {
+		comm.CreatedBy = &creator
+	}
+
+	var count int64
+	h.DB.Model(&model.CommunityMember{}).Where("community_id = ? AND status = 'active'", comm.ID).Count(&count)
+	comm.MemberCount = count
+
+	callerID := uint(0)
+	auth := c.GetHeader("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		tokenString := strings.TrimPrefix(auth, "Bearer ")
+		if claims, err := utils.ParseToken(tokenString); err == nil {
+			callerID = claims.UserID
+		}
+	}
+
+	if callerID > 0 {
+		var m model.CommunityMember
+		if err := h.DB.Where("community_id = ? AND user_id = ?", comm.ID, callerID).First(&m).Error; err == nil {
+			if m.Status == "pending" {
+				comm.CurrentUserRole = "pending"
+			} else {
+				comm.CurrentUserRole = m.Role
+			}
+		} else if comm.CreatedByID == callerID {
+			comm.CurrentUserRole = "admin"
+		} else {
+			comm.CurrentUserRole = "none"
+		}
+	} else {
+		comm.CurrentUserRole = "none"
+	}
+
+	c.JSON(http.StatusOK, gin.H{"community": comm})
+}
+
+// CreateCommunity creates a new user community and makes the creator the admin
 func (h *Handler) CreateCommunity(c *gin.Context) {
 	var input struct {
-		Name        string `json:"name" binding:"required"`
-		Description string `json:"description"`
-		BadgeClass  string `json:"badge_class"`
+		Name             string `json:"name" binding:"required"`
+		Description      string `json:"description"`
+		BadgeClass       string `json:"badge_class"`
+		RequiresApproval bool   `json:"requires_approval"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2367,11 +2497,12 @@ func (h *Handler) CreateCommunity(c *gin.Context) {
 	}
 
 	comm := model.Community{
-		Name:        name,
-		Slug:        slug,
-		Description: input.Description,
-		BadgeClass:  badge,
-		CreatedByID: userID,
+		Name:             name,
+		Slug:             slug,
+		Description:      input.Description,
+		BadgeClass:       badge,
+		RequiresApproval: input.RequiresApproval,
+		CreatedByID:      userID,
 	}
 
 	if err := h.DB.Create(&comm).Error; err != nil {
@@ -2379,9 +2510,373 @@ func (h *Handler) CreateCommunity(c *gin.Context) {
 		return
 	}
 
+	// The person who created the community is automatically the admin of the group
+	adminMember := model.CommunityMember{
+		CommunityID: comm.ID,
+		UserID:      userID,
+		Role:        "admin",
+		Status:      "active",
+	}
+	h.DB.Create(&adminMember)
+
+	comm.MemberCount = 1
+	comm.CurrentUserRole = "admin"
+
 	var creator model.User
 	if err := h.DB.Select("id, username, name, avatar_url").First(&creator, userID).Error; err == nil {
 		comm.CreatedBy = &creator
 	}
 	c.JSON(http.StatusCreated, comm)
+}
+
+// JoinCommunity handles a user clicking the Join button
+func (h *Handler) JoinCommunity(c *gin.Context) {
+	slug := c.Param("slug")
+	userID := c.GetUint("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	// Check if already in members
+	var existing model.CommunityMember
+	if err := h.DB.Where("community_id = ? AND user_id = ?", comm.ID, userID).First(&existing).Error; err == nil {
+		if existing.Status == "active" {
+			c.JSON(http.StatusOK, gin.H{
+				"status":  "active",
+				"role":    existing.Role,
+				"message": "You are already a member of this community.",
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "pending",
+			"role":    "member",
+			"message": "Your join request is pending approval by an admin.",
+		})
+		return
+	}
+
+	// Determine status: automatic membership or wait for admin approval
+	targetStatus := "active"
+	targetMessage := "You have joined the community!"
+	if comm.RequiresApproval {
+		targetStatus = "pending"
+		targetMessage = "Your join request has been sent to the group admins for approval."
+	}
+
+	member := model.CommunityMember{
+		CommunityID: comm.ID,
+		UserID:      userID,
+		Role:        "member",
+		Status:      targetStatus,
+	}
+
+	if err := h.DB.Create(&member).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to join community"})
+		return
+	}
+
+	// If pending, notify admins of the new join request
+	if targetStatus == "pending" {
+		var applicant model.User
+		h.DB.Select("id, username, name").First(&applicant, userID)
+		applicantName := applicant.Name
+		if applicantName == "" {
+			applicantName = applicant.Username
+		}
+
+		var admins []model.CommunityMember
+		h.DB.Where("community_id = ? AND status = 'active' AND (role = 'admin' OR role = 'co_admin')", comm.ID).Find(&admins)
+		for _, admin := range admins {
+			notif := model.Notification{
+				UserID:  admin.UserID,
+				ActorID: userID,
+				Type:    "community_join_request",
+			}
+			h.DB.Create(&notif)
+		}
+	}
+
+	var newCount int64
+	h.DB.Model(&model.CommunityMember{}).Where("community_id = ? AND status = 'active'", comm.ID).Count(&newCount)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":            targetStatus,
+		"role":              "member",
+		"requires_approval": comm.RequiresApproval,
+		"member_count":      newCount,
+		"message":           targetMessage,
+	})
+}
+
+// LeaveCommunity allows a member to leave a community
+func (h *Handler) LeaveCommunity(c *gin.Context) {
+	slug := c.Param("slug")
+	userID := c.GetUint("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	var m model.CommunityMember
+	if err := h.DB.Where("community_id = ? AND user_id = ?", comm.ID, userID).First(&m).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "you are not a member of this community"})
+		return
+	}
+
+	if m.Role == "admin" && comm.CreatedByID == userID {
+		// Main creator cannot leave without transferring or deleting
+		c.JSON(http.StatusBadRequest, gin.H{"error": "The community creator/admin cannot leave the group."})
+		return
+	}
+
+	h.DB.Delete(&m)
+
+	var newCount int64
+	h.DB.Model(&model.CommunityMember{}).Where("community_id = ? AND status = 'active'", comm.ID).Count(&newCount)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":       "none",
+		"member_count": newCount,
+		"message":      "You have left the community.",
+	})
+}
+
+// GetCommunityMembers returns active members and, for admins/co-admins, pending join requests
+func (h *Handler) GetCommunityMembers(c *gin.Context) {
+	slug := c.Param("slug")
+	callerID := c.GetUint("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	callerRole := "none"
+	var callerMembership model.CommunityMember
+	if err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active'", comm.ID, callerID).First(&callerMembership).Error; err == nil {
+		callerRole = callerMembership.Role
+	} else if comm.CreatedByID == callerID {
+		callerRole = "admin"
+	}
+
+	var activeMembers []model.CommunityMember
+	h.DB.Preload("User", func(db *gorm.DB) *gorm.DB {
+		return db.Select("id, username, name, avatar_url, bio")
+	}).Where("community_id = ? AND status = 'active'", comm.ID).
+		Order("CASE WHEN role = 'admin' THEN 1 WHEN role = 'co_admin' THEN 2 ELSE 3 END, created_at asc").
+		Find(&activeMembers)
+
+	var pendingMembers []model.CommunityMember
+	if callerRole == "admin" || callerRole == "co_admin" {
+		h.DB.Preload("User", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, username, name, avatar_url, bio")
+		}).Where("community_id = ? AND status = 'pending'", comm.ID).
+			Order("created_at asc").
+			Find(&pendingMembers)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"community_id":      comm.ID,
+		"community_name":    comm.Name,
+		"requires_approval": comm.RequiresApproval,
+		"caller_role":       callerRole,
+		"members":           activeMembers,
+		"pending":           pendingMembers,
+	})
+}
+
+// ApproveCommunityMember admits a pending user to the community (admin or co-admin)
+func (h *Handler) ApproveCommunityMember(c *gin.Context) {
+	slug := c.Param("slug")
+	callerID := c.GetUint("user_id")
+	targetUserIDStr := c.Param("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	// Verify caller is admin or co-admin
+	var callerMember model.CommunityMember
+	err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active' AND (role = 'admin' OR role = 'co_admin')", comm.ID, callerID).First(&callerMember).Error
+	if err != nil && comm.CreatedByID != callerID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only admins or co-admins can admit members"})
+		return
+	}
+
+	var targetMember model.CommunityMember
+	if err := h.DB.Where("community_id = ? AND user_id = ?", comm.ID, targetUserIDStr).First(&targetMember).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "membership request not found"})
+		return
+	}
+
+	targetMember.Status = "active"
+	if err := h.DB.Save(&targetMember).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to admit member"})
+		return
+	}
+
+	// Notify the admitted user
+	notif := model.Notification{
+		UserID:  targetMember.UserID,
+		ActorID: callerID,
+		Type:    "community_join_approved",
+	}
+	h.DB.Create(&notif)
+
+	var newCount int64
+	h.DB.Model(&model.CommunityMember{}).Where("community_id = ? AND status = 'active'", comm.ID).Count(&newCount)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":      "Member admitted successfully.",
+		"member_count": newCount,
+	})
+}
+
+// RejectCommunityMember declines a pending user's join request (admin or co-admin)
+func (h *Handler) RejectCommunityMember(c *gin.Context) {
+	slug := c.Param("slug")
+	callerID := c.GetUint("user_id")
+	targetUserIDStr := c.Param("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	// Verify caller is admin or co-admin
+	var callerMember model.CommunityMember
+	err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active' AND (role = 'admin' OR role = 'co_admin')", comm.ID, callerID).First(&callerMember).Error
+	if err != nil && comm.CreatedByID != callerID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only admins or co-admins can reject membership requests"})
+		return
+	}
+
+	h.DB.Where("community_id = ? AND user_id = ? AND status = 'pending'", comm.ID, targetUserIDStr).Delete(&model.CommunityMember{})
+
+	c.JSON(http.StatusOK, gin.H{"message": "Join request declined."})
+}
+
+// UpdateCommunityMemberRole allows the group admin to make other people co-admins
+func (h *Handler) UpdateCommunityMemberRole(c *gin.Context) {
+	slug := c.Param("slug")
+	callerID := c.GetUint("user_id")
+	targetUserIDStr := c.Param("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	// Only the main admin can promote/demote co-admins
+	var callerMember model.CommunityMember
+	err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active' AND role = 'admin'", comm.ID, callerID).First(&callerMember).Error
+	if err != nil && comm.CreatedByID != callerID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the group admin can assign co-admins"})
+		return
+	}
+
+	var input struct {
+		Role string `json:"role" binding:"required"` // "co_admin" or "member"
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	newRole := input.Role
+	if newRole != "co_admin" && newRole != "member" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "role must be 'co_admin' or 'member'"})
+		return
+	}
+
+	var targetMember model.CommunityMember
+	if err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active'", comm.ID, targetUserIDStr).First(&targetMember).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "member not found in this community"})
+		return
+	}
+
+	if targetMember.UserID == comm.CreatedByID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot change role of the group creator"})
+		return
+	}
+
+	targetMember.Role = newRole
+	if err := h.DB.Save(&targetMember).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update member role"})
+		return
+	}
+
+	// Notify the member
+	roleLabel := "Co-Admin"
+	if newRole == "member" {
+		roleLabel = "Member"
+	}
+	notif := model.Notification{
+		UserID:  targetMember.UserID,
+		ActorID: callerID,
+		Type:    "community_role_updated",
+	}
+	h.DB.Create(&notif)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": fmt.Sprintf("User role updated to %s.", roleLabel),
+		"role":    newRole,
+	})
+}
+
+// UpdateCommunitySettings updates community settings like requires_approval
+func (h *Handler) UpdateCommunitySettings(c *gin.Context) {
+	slug := c.Param("slug")
+	callerID := c.GetUint("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	// Verify caller is admin or co-admin
+	var callerMember model.CommunityMember
+	err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active' AND (role = 'admin' OR role = 'co_admin')", comm.ID, callerID).First(&callerMember).Error
+	if err != nil && comm.CreatedByID != callerID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only admins or co-admins can update settings"})
+		return
+	}
+
+	var input struct {
+		RequiresApproval *bool  `json:"requires_approval"`
+		Description      string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if input.RequiresApproval != nil {
+		comm.RequiresApproval = *input.RequiresApproval
+	}
+	if strings.TrimSpace(input.Description) != "" {
+		comm.Description = strings.TrimSpace(input.Description)
+	}
+
+	if err := h.DB.Save(&comm).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update settings"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":   "Settings updated successfully.",
+		"community": comm,
+	})
 }

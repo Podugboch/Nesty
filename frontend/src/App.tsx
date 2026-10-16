@@ -5,15 +5,47 @@ import { ReelsView } from "./components/ReelsView";
 import { ReelCreateView } from "./components/ReelCreateView";
 import "./App.css";
 
-const API_URL: string = (import.meta as any).env?.VITE_API_URL ||
-  (typeof window !== "undefined" && window.location.hostname === "localhost" && window.location.port === "5173"
-    ? "http://localhost:8080"
-    : (typeof window !== "undefined" ? window.location.origin : "http://localhost:8080"));
+const API_URL: string = (() => {
+  const envUrl = (import.meta as any).env?.VITE_API_URL;
+  if (envUrl) return envUrl.replace(/\/+$/, "");
+  if (typeof window !== "undefined") {
+    const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
+    if (isCapacitor) {
+      return "https://piscine-devnest.onrender.com";
+    }
+    const host = window.location.hostname;
+    const port = window.location.port;
+    if ((host === "localhost" || host === "127.0.0.1") && port === "5173") {
+      return "http://localhost:8080";
+    }
+    if ((host === "localhost" || host === "127.0.0.1") && (port === "" || port === "80" || port === "443")) {
+      return "https://piscine-devnest.onrender.com";
+    }
+    return window.location.origin.replace(/\/+$/, "");
+  }
+  return "https://piscine-devnest.onrender.com";
+})();
 
-const WS_BASE_URL: string = (import.meta as any).env?.VITE_WS_URL ||
-  (typeof window !== "undefined" && window.location.hostname === "localhost" && window.location.port === "5173"
-    ? `${typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:"}//${typeof window !== "undefined" ? window.location.hostname : "localhost"}:8080`
-    : (typeof window !== "undefined" ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}` : "ws://localhost:8080"));
+const WS_BASE_URL: string = (() => {
+  const envWs = (import.meta as any).env?.VITE_WS_URL;
+  if (envWs) return envWs.replace(/\/+$/, "");
+  if (typeof window !== "undefined") {
+    const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
+    if (isCapacitor) {
+      return "wss://piscine-devnest.onrender.com";
+    }
+    const host = window.location.hostname;
+    const port = window.location.port;
+    if ((host === "localhost" || host === "127.0.0.1") && port === "5173") {
+      return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${host}:8080`;
+    }
+    if ((host === "localhost" || host === "127.0.0.1") && (port === "" || port === "80" || port === "443")) {
+      return "wss://piscine-devnest.onrender.com";
+    }
+    return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+  }
+  return "wss://piscine-devnest.onrender.com";
+})();
 
 
 type User = {
@@ -324,6 +356,20 @@ type CommunityChannel = {
   name: string;
   badgeClass: string;
   subtitle: string;
+  createdById?: number;
+  requiresApproval?: boolean;
+  memberCount?: number;
+  currentUserRole?: "admin" | "co_admin" | "member" | "pending" | "none";
+};
+
+type CommunityMemberItem = {
+  id: number;
+  community_id: number;
+  user_id: number;
+  role: "admin" | "co_admin" | "member";
+  status: "active" | "pending";
+  created_at?: string;
+  user?: User;
 };
 
 // Isolated duration timer: updates every 1s internally without re-rendering App or <video> elements!
@@ -494,29 +540,260 @@ export default function App() {
   // Real user-created communities (no seeded/fake communities)
   const [communities, setCommunities] = useState<CommunityChannel[]>([]);
 
-  useEffect(() => {
-    const fetchCommunities = async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/communities`);
-        if (res.ok) {
-          const data = await res.json();
-          const list = (data.communities || []).map((c: any) => ({
-            id: c.slug || String(c.id),
-            name: c.name,
-            badgeClass: c.badge_class || "custom",
-            subtitle: c.description || `Community channel for ${c.name}`,
-          }));
-          setCommunities(list);
-        }
-      } catch (err) {
-        console.error("Failed to fetch communities:", err);
+  const fetchCommunities = async () => {
+    try {
+      const headers: Record<string, string> = {};
+      const authToken = token || localStorage.getItem("token");
+      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+
+      const res = await fetch(`${API_URL}/api/communities`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        const list: CommunityChannel[] = (data.communities || []).map((c: any) => ({
+          id: c.slug || String(c.id),
+          name: c.name,
+          badgeClass: c.badge_class || "custom",
+          subtitle: c.description || `Community channel for ${c.name}`,
+          createdById: c.created_by_id,
+          requiresApproval: !!c.requires_approval,
+          memberCount: c.member_count || 1,
+          currentUserRole: c.current_user_role || "none",
+        }));
+        setCommunities(list);
       }
-    };
+    } catch (err) {
+      console.error("Failed to fetch communities:", err);
+    }
+  };
+
+  useEffect(() => {
     fetchCommunities();
-  }, []);
+  }, [token]);
 
   const [createCommModalOpen, setCreateCommModalOpen] = useState(false);
   const [newCommName, setNewCommName] = useState("");
+  const [newCommDescription, setNewCommDescription] = useState("");
+  const [newCommRequiresApproval, setNewCommRequiresApproval] = useState(false);
+
+  // Manage Community Modal state (for Admins & Co-Admins)
+  const [manageCommModalOpen, setManageCommModalOpen] = useState(false);
+  const [manageCommSlug, setManageCommSlug] = useState("");
+  const [manageCommMembers, setManageCommMembers] = useState<CommunityMemberItem[]>([]);
+  const [manageCommPending, setManageCommPending] = useState<CommunityMemberItem[]>([]);
+  const [manageCommLoading, setManageCommLoading] = useState(false);
+  const [manageCommRequiresApproval, setManageCommRequiresApproval] = useState(false);
+  const [manageTab, setManageTab] = useState<"pending" | "members">("pending");
+
+  const handleJoinCommunity = async (slug: string) => {
+    const authToken = token || localStorage.getItem("token");
+    if (!authToken) {
+      alert("Please log in to join this community.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_URL}/api/communities/${slug}/join`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        alert(data.message || "Successfully submitted join request.");
+        setCommunities((prev) =>
+          prev.map((c) =>
+            c.id === slug
+              ? {
+                  ...c,
+                  currentUserRole: data.status === "active" ? "member" : "pending",
+                  memberCount: data.member_count ?? (data.status === "active" ? (c.memberCount || 1) + 1 : c.memberCount),
+                }
+              : c
+          )
+        );
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to join community.");
+      }
+    } catch (err) {
+      console.error("Failed to join community", err);
+      alert("Network error joining community. Please try again.");
+    }
+  };
+
+  const handleLeaveCommunity = async (slug: string) => {
+    if (!window.confirm("Are you sure you want to leave this community?")) return;
+    const authToken = token || localStorage.getItem("token");
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${API_URL}/api/communities/${slug}/leave`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        alert(data.message || "You have left the community.");
+        setCommunities((prev) =>
+          prev.map((c) =>
+            c.id === slug
+              ? {
+                  ...c,
+                  currentUserRole: "none",
+                  memberCount: Math.max(1, (c.memberCount || 2) - 1),
+                }
+              : c
+          )
+        );
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to leave community.");
+      }
+    } catch (err) {
+      console.error("Failed to leave community", err);
+    }
+  };
+
+  const openManageCommunity = async (slug: string) => {
+    setManageCommSlug(slug);
+    setManageCommModalOpen(true);
+    setManageCommLoading(true);
+    const comm = communities.find((c) => c.id === slug);
+    if (comm) {
+      setManageCommRequiresApproval(!!comm.requiresApproval);
+    }
+
+    const authToken = token || localStorage.getItem("token");
+    if (!authToken) {
+      setManageCommLoading(false);
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_URL}/api/communities/${slug}/members`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setManageCommMembers(data.members || []);
+        setManageCommPending(data.pending || []);
+        setManageCommRequiresApproval(!!data.requires_approval);
+        if ((data.pending || []).length > 0) {
+          setManageTab("pending");
+        } else {
+          setManageTab("members");
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load community members:", err);
+    } finally {
+      setManageCommLoading(false);
+    }
+  };
+
+  const handleApproveMember = async (slug: string, targetUserId: number) => {
+    const authToken = token || localStorage.getItem("token");
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${API_URL}/api/communities/${slug}/members/${targetUserId}/approve`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const approvedItem = manageCommPending.find((p) => p.user_id === targetUserId);
+        setManageCommPending((prev) => prev.filter((p) => p.user_id !== targetUserId));
+        if (approvedItem) {
+          setManageCommMembers((prev) => [
+            ...prev,
+            { ...approvedItem, status: "active", role: "member" },
+          ]);
+        }
+        setCommunities((prev) =>
+          prev.map((c) =>
+            c.id === slug ? { ...c, memberCount: data.member_count ?? (c.memberCount || 1) + 1 } : c
+          )
+        );
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to approve member.");
+      }
+    } catch (err) {
+      console.error("Failed to approve member:", err);
+    }
+  };
+
+  const handleRejectMember = async (slug: string, targetUserId: number) => {
+    const authToken = token || localStorage.getItem("token");
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${API_URL}/api/communities/${slug}/members/${targetUserId}/reject`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        setManageCommPending((prev) => prev.filter((p) => p.user_id !== targetUserId));
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to reject join request.");
+      }
+    } catch (err) {
+      console.error("Failed to reject member:", err);
+    }
+  };
+
+  const handleToggleMemberRole = async (slug: string, targetUserId: number, newRole: "co_admin" | "member") => {
+    const authToken = token || localStorage.getItem("token");
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${API_URL}/api/communities/${slug}/members/${targetUserId}/role`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ role: newRole }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        alert(data.message || `Role updated to ${newRole}`);
+        setManageCommMembers((prev) =>
+          prev.map((m) => (m.user_id === targetUserId ? { ...m, role: newRole } : m))
+        );
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to update role.");
+      }
+    } catch (err) {
+      console.error("Failed to update role:", err);
+    }
+  };
+
+  const handleUpdateCommunitySettings = async (slug: string, requiresApproval: boolean) => {
+    const authToken = token || localStorage.getItem("token");
+    if (!authToken) return;
+    setManageCommRequiresApproval(requiresApproval);
+    try {
+      const res = await fetch(`${API_URL}/api/communities/${slug}/settings`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ requires_approval: requiresApproval }),
+      });
+      if (res.ok) {
+        setCommunities((prev) =>
+          prev.map((c) => (c.id === slug ? { ...c, requiresApproval } : c))
+        );
+      }
+    } catch (err) {
+      console.error("Failed to update community settings:", err);
+    }
+  };
 
   // -----------------------------
   // REELS STATE (NO FAKE / MOCK ACCOUNTS)
@@ -5386,10 +5663,27 @@ export default function App() {
                   <div className="group-header-details">
                     <div className="group-header-title-line">
                       <h1 className="group-header-name">{activeChannel?.name || "Community Channel"}</h1>
-                      <span className="group-online-chip">
-                        <span className="group-online-dot" />
-                        {liveUserCount} online
-                      </span>
+                      <div className="group-header-badges-row">
+                        {activeChannel?.currentUserRole === "admin" && (
+                          <span className="comm-role-pill admin">👑 Admin</span>
+                        )}
+                        {activeChannel?.currentUserRole === "co_admin" && (
+                          <span className="comm-role-pill co-admin">🛡️ Co-Admin</span>
+                        )}
+                        {activeChannel?.currentUserRole === "member" && (
+                          <span className="comm-role-pill member">✓ Member</span>
+                        )}
+                        {activeChannel?.currentUserRole === "pending" && (
+                          <span className="comm-role-pill pending">⏳ Pending Approval</span>
+                        )}
+                        <span className="group-members-chip">
+                          👥 {activeChannel?.memberCount || 1} {activeChannel?.memberCount === 1 ? "member" : "members"}
+                        </span>
+                        <span className="group-online-chip">
+                          <span className="group-online-dot" />
+                          {liveUserCount} online
+                        </span>
+                      </div>
                     </div>
                     <p className="group-header-desc">{activeChannel?.subtitle || "Community Channel"}</p>
 
@@ -5420,11 +5714,55 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="chat-header-actions" style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <div className="chat-header-actions" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  {activeChannel && (activeChannel.currentUserRole === "admin" || activeChannel.currentUserRole === "co_admin") ? (
+                    <button
+                      type="button"
+                      className="comm-action-btn manage-btn"
+                      onClick={() => openManageCommunity(activeChannel.id)}
+                      title="Manage Community & Requests"
+                    >
+                      ⚙️ Manage
+                    </button>
+                  ) : activeChannel?.currentUserRole === "member" ? (
+                    <button
+                      type="button"
+                      className="comm-action-btn leave-btn"
+                      onClick={() => handleLeaveCommunity(activeChannel.id)}
+                      title="Leave this community"
+                    >
+                      Joined • Leave
+                    </button>
+                  ) : activeChannel?.currentUserRole === "pending" ? (
+                    <button
+                      type="button"
+                      className="comm-action-btn pending-btn"
+                      disabled
+                      title="Waiting for an admin to admit you"
+                    >
+                      ⏳ Request Sent
+                    </button>
+                  ) : activeChannel ? (
+                    <button
+                      type="button"
+                      className="comm-action-btn join-btn"
+                      onClick={() => handleJoinCommunity(activeChannel.id)}
+                      title="Join this community"
+                    >
+                      + Join
+                    </button>
+                  ) : null}
+
                   <button
                     type="button"
                     className="chat-header-icon-btn"
-                    onClick={() => startGroupCall("audio", activeChannel?.id)}
+                    onClick={() => {
+                      if (activeChannel?.currentUserRole !== "admin" && activeChannel?.currentUserRole !== "co_admin" && activeChannel?.currentUserRole !== "member") {
+                        alert("Please join this community to participate in group voice calls.");
+                        return;
+                      }
+                      startGroupCall("audio", activeChannel?.id);
+                    }}
                     title={`Voice Call in #${activeChannel?.name}`}
                   >
                     📞
@@ -5432,7 +5770,13 @@ export default function App() {
                   <button
                     type="button"
                     className="chat-header-icon-btn"
-                    onClick={() => startGroupCall("video", activeChannel?.id)}
+                    onClick={() => {
+                      if (activeChannel?.currentUserRole !== "admin" && activeChannel?.currentUserRole !== "co_admin" && activeChannel?.currentUserRole !== "member") {
+                        alert("Please join this community to participate in group video calls.");
+                        return;
+                      }
+                      startGroupCall("video", activeChannel?.id);
+                    }}
                     title={`Video Call in #${activeChannel?.name}`}
                   >
                     📹
@@ -5441,150 +5785,169 @@ export default function App() {
               </div>
             )}
 
-            {/* INLINE QUICK POST CREATOR */}
-            <div className="inline-creator-card">
-              <div className="inline-creator-top">
-                <div className="avatar-with-dot">
-                  {user?.avatar_url ? (
-                    <img src={user.avatar_url} alt="" />
-                  ) : (
-                    (user?.username || "J").charAt(0).toUpperCase()
-                  )}
-                  <span className="online-dot" />
-                </div>
-                <input
-                  className="inline-input-pill"
-                  placeholder="What's on your mind, Nesters?"
-                  value={newPost}
-                  onChange={(e) => setNewPost(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      createPost();
-                    }
-                  }}
-                />
-              </div>
-
-              {mediaPreview && (
-                <div style={{ position: "relative", marginBottom: "12px", borderRadius: "12px", overflow: "hidden" }}>
-                  <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "240px", objectFit: "cover" }} />
-                  <button
-                    style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "24px", height: "24px", cursor: "pointer" }}
-                    onClick={() => { setSelectedFile(null); setMediaPreview(null); }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-
-              {selectedPostMusic && (
-                <div className="composer-selected-music-badge">
-                  <div className="composer-music-disc">🎵</div>
-                  <div className="composer-music-info">
-                    <span className="composer-music-title">{selectedPostMusic.title}</span>
-                    <span className="composer-music-artist">{selectedPostMusic.artist}</span>
+            {/* CONDITIONAL POST CREATOR: NON-MEMBERS SEE JOIN PROMPT, MEMBERS SEE CREATOR */}
+            {selectedCommunity !== "home" && activeChannel && activeChannel.currentUserRole !== "admin" && activeChannel.currentUserRole !== "co_admin" && activeChannel.currentUserRole !== "member" ? (
+              <div className="community-join-prompt-card">
+                <div className="join-prompt-left">
+                  <div className="join-prompt-icon">🔒</div>
+                  <div className="join-prompt-content">
+                    <h4>Join #{activeChannel.name} to participate</h4>
+                    <p>
+                      {activeChannel.currentUserRole === "pending"
+                        ? "Your request to join this community is awaiting approval from an admin. Once admitted, you can create posts and participate in calls."
+                        : activeChannel.requiresApproval
+                        ? "This community requires admin approval. Click 'Join Community' to submit an admission request to the admins."
+                        : "Join this community to share posts, ask questions, and chat with members."}
+                    </p>
                   </div>
-                  <button
-                    type="button"
-                    className="composer-music-change-btn"
-                    onClick={() => setPostMusicPickerOpen(true)}
-                  >
-                    Change
-                  </button>
-                  <button
-                    type="button"
-                    className="composer-music-remove-btn"
-                    onClick={() => setSelectedPostMusic(null)}
-                    title="Remove music"
-                  >
-                    ✕
-                  </button>
                 </div>
-              )}
-
-              <div className="inline-creator-actions">
-                <div className="inline-attach-tools">
-                  <label className="tool-attach-btn" style={{ cursor: "pointer" }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                      <circle cx="8.5" cy="8.5" r="1.5" />
-                      <polyline points="21 15 16 10 5 21" />
-                    </svg>
-                    <span>Image</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      style={{ display: "none" }}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0] || null;
-                        setSelectedFile(file);
-                        if (file) setMediaPreview(URL.createObjectURL(file));
-                      }}
-                    />
-                  </label>
-
-                  <button
-                    type="button"
-                    className={`tool-attach-btn ${selectedPostMusic ? "active" : ""}`}
-                    onClick={() => setPostMusicPickerOpen(true)}
-                    title="Add background music"
-                  >
-                    <span>🎵</span>
-                    <span>{selectedPostMusic ? "Music Added" : "Add Music"}</span>
+                {activeChannel.currentUserRole === "pending" ? (
+                  <button className="join-comm-action-btn pending" disabled>
+                    ⏳ Waiting for Admin Approval
                   </button>
-
+                ) : (
                   <button
-                    className="tool-attach-btn"
-                    onClick={() => setNewPost((prev) => prev + "```\n// Code snippet\n```")}
+                    className="join-comm-action-btn"
+                    onClick={() => handleJoinCommunity(activeChannel.id)}
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="16 18 22 12 16 6" />
-                      <polyline points="8 6 2 12 8 18" />
-                    </svg>
-                    <span>Code</span>
+                    + Join Community
                   </button>
-
-                  <button
-                    className="tool-attach-btn"
-                    onClick={() => {
-                      const url = prompt("Enter Link URL:");
-                      if (url) setNewPost((prev) => `${prev} ${url}`);
-                    }}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                    </svg>
-                    <span>Link</span>
-                  </button>
-
-                  <button
-                    className="tool-attach-btn"
-                    onClick={() => alert("Poll creation dialog")}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="18" y1="20" x2="18" y2="10" />
-                      <line x1="12" y1="20" x2="12" y2="4" />
-                      <line x1="6" y1="20" x2="6" y2="14" />
-                    </svg>
-                    <span>Poll</span>
-                  </button>
-                </div>
-
-                <button
-                  className="post-pill-submit"
-                  onClick={createPost}
-                  disabled={uploadingMedia || (!newPost.trim() && !selectedFile)}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="22" y1="2" x2="11" y2="13" />
-                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                  </svg>
-                  <span>{uploadingMedia ? "Posting..." : "Post"}</span>
-                </button>
+                )}
               </div>
-            </div>
+            ) : (
+              <div className="inline-creator-card">
+                <div className="inline-creator-top">
+                  <div className="avatar-with-dot">
+                    {user?.avatar_url ? (
+                      <img src={user.avatar_url} alt="" />
+                    ) : (
+                      (user?.username || "J").charAt(0).toUpperCase()
+                    )}
+                    <span className="online-dot" />
+                  </div>
+                  <input
+                    className="inline-input-pill"
+                    placeholder="What's on your mind, Nesters?"
+                    value={newPost}
+                    onChange={(e) => setNewPost(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        createPost();
+                      }
+                    }}
+                  />
+                </div>
+
+                {mediaPreview && (
+                  <div style={{ position: "relative", marginBottom: "12px", borderRadius: "12px", overflow: "hidden" }}>
+                    <img src={mediaPreview} alt="" style={{ width: "100%", maxHeight: "240px", objectFit: "cover" }} />
+                    <button
+                      style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: "50%", width: "24px", height: "24px", cursor: "pointer" }}
+                      onClick={() => { setSelectedFile(null); setMediaPreview(null); }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                {selectedPostMusic && (
+                  <div className="composer-selected-music-badge">
+                    <div className="composer-music-disc">🎵</div>
+                    <div className="composer-music-info">
+                      <span className="composer-music-title">{selectedPostMusic.title}</span>
+                      <span className="composer-music-artist">{selectedPostMusic.artist}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="composer-music-change-btn"
+                      onClick={() => setPostMusicPickerOpen(true)}
+                    >
+                      Change
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-music-remove-btn"
+                      onClick={() => setSelectedPostMusic(null)}
+                      title="Remove music"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                <div className="inline-creator-actions">
+                  <div className="inline-attach-tools">
+                    <label className="tool-attach-btn" style={{ cursor: "pointer" }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                        <circle cx="8.5" cy="8.5" r="1.5" />
+                        <polyline points="21 15 16 10 5 21" />
+                      </svg>
+                      <span>Image</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          setSelectedFile(file);
+                          if (file) setMediaPreview(URL.createObjectURL(file));
+                        }}
+                      />
+                    </label>
+
+                    <button
+                      type="button"
+                      className={`tool-attach-btn ${selectedPostMusic ? "active" : ""}`}
+                      onClick={() => setPostMusicPickerOpen(true)}
+                      title="Add background music"
+                    >
+                      <span>🎵</span>
+                      <span>{selectedPostMusic ? "Music Added" : "Add Music"}</span>
+                    </button>
+
+                    <button
+                      className="tool-attach-btn"
+                      onClick={() => {
+                        const url = prompt("Enter Link URL:");
+                        if (url) setNewPost((prev) => `${prev} ${url}`);
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                      </svg>
+                      <span>Link</span>
+                    </button>
+
+                    <button
+                      className="tool-attach-btn"
+                      onClick={() => alert("Poll creation dialog")}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="20" x2="18" y2="10" />
+                        <line x1="12" y1="20" x2="12" y2="4" />
+                        <line x1="6" y1="20" x2="6" y2="14" />
+                      </svg>
+                      <span>Poll</span>
+                    </button>
+                  </div>
+
+                  <button
+                    className="post-pill-submit"
+                    onClick={createPost}
+                    disabled={uploadingMedia || (!newPost.trim() && !selectedFile)}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="22" y1="2" x2="11" y2="13" />
+                      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                    </svg>
+                    <span>{uploadingMedia ? "Posting..." : "Post"}</span>
+                  </button>
+                </div>
+              </div>
+            )}
             {/* POSTS FEED LIST */}
             <div className="nesty-posts-feed">
               {displayedPosts.length === 0 ? (
@@ -6344,18 +6707,41 @@ export default function App() {
   {/* CREATE COMMUNITY MODAL */}
       {createCommModalOpen && (
         <div className="modal-overlay-nesty" onClick={() => setCreateCommModalOpen(false)}>
-          <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginBottom: "12px", color: "var(--text-h)" }}>Create New Community</h3>
+          <div className="modal-content-card" style={{ maxWidth: "480px" }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginBottom: "8px", color: "var(--text-h)" }}>Create New Community</h3>
             <p style={{ fontSize: "13.5px", color: "var(--text-muted)", marginBottom: "16px" }}>
-              Start a new focused channel for questions, tracks, or local meetups.
+              Start a new focused community channel. As the creator, you will automatically be the group's admin.
             </p>
             <input
               className="auth-input"
               placeholder="e.g. Algorithms, DevOps, Python..."
               value={newCommName}
               onChange={(e) => setNewCommName(e.target.value)}
-              style={{ marginBottom: "16px" }}
+              style={{ marginBottom: "12px" }}
             />
+            <textarea
+              className="auth-input"
+              placeholder="Community description / topics (optional)"
+              value={newCommDescription}
+              onChange={(e) => setNewCommDescription(e.target.value)}
+              style={{ marginBottom: "16px", minHeight: "65px", resize: "vertical" }}
+            />
+
+            <label style={{ display: "flex", alignItems: "flex-start", gap: "10px", marginBottom: "20px", cursor: "pointer", fontSize: "13px", color: "var(--text-h)" }}>
+              <input
+                type="checkbox"
+                checked={newCommRequiresApproval}
+                onChange={(e) => setNewCommRequiresApproval(e.target.checked)}
+                style={{ width: "18px", height: "18px", accentColor: "#10b981", cursor: "pointer", marginTop: "2px" }}
+              />
+              <div>
+                <strong>Require Admin Approval to Join</strong>
+                <p style={{ margin: "2px 0 0 0", fontSize: "12px", color: "var(--text-muted)" }}>
+                  When enabled, users who click Join must wait for an admin or co-admin to admit them. When disabled, members join automatically.
+                </p>
+              </div>
+            </label>
+
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
               <button
                 className="edit-profile-pill-btn"
@@ -6369,56 +6755,218 @@ export default function App() {
                   if (!newCommName.trim()) return;
                   const name = newCommName.trim();
                   const slug = name.toLowerCase().replace(/\s+/g, "-");
-                  const desc = `Discussions and updates for ${name}`;
+                  const desc = newCommDescription.trim() || `Discussions and updates for ${name}`;
                   const newChannel: CommunityChannel = {
                     id: slug,
                     name,
                     badgeClass: "custom",
                     subtitle: desc,
+                    requiresApproval: newCommRequiresApproval,
+                    memberCount: 1,
+                    currentUserRole: "admin",
                   };
                   setCommunities((prev) => [...prev, newChannel]);
                   setSelectedCommunity(slug);
                   setPage("feed");
                   setNewCommName("");
+                  setNewCommDescription("");
+                  setNewCommRequiresApproval(false);
                   setCreateCommModalOpen(false);
 
                   try {
+                    const authToken = token || localStorage.getItem("token");
                     const res = await fetch(`${API_URL}/api/communities`, {
                       method: "POST",
                       headers: {
                         "Content-Type": "application/json",
-                        Authorization: `Bearer ${token}`,
+                        Authorization: `Bearer ${authToken}`,
                       },
                       body: JSON.stringify({
                         name,
                         description: desc,
                         badge_class: "custom",
+                        requires_approval: newCommRequiresApproval,
                       }),
                     });
                     if (res.ok) {
                       const data = await res.json();
-                      if (data.community) {
-                        setCommunities((prev) =>
-                          prev.map((c) =>
-                            c.id === slug
-                              ? {
-                                  id: data.community.slug || String(data.community.id),
-                                  name: data.community.name,
-                                  badgeClass: data.community.badge_class || "custom",
-                                  subtitle: data.community.description,
-                                }
-                              : c
-                          )
-                        );
-                      }
+                      const created = data.community || data;
+                      setCommunities((prev) =>
+                        prev.map((c) =>
+                          c.id === slug
+                            ? {
+                                id: created.slug || String(created.id),
+                                name: created.name,
+                                badgeClass: created.badge_class || "custom",
+                                subtitle: created.description || desc,
+                                createdById: created.created_by_id,
+                                requiresApproval: !!created.requires_approval,
+                                memberCount: 1,
+                                currentUserRole: "admin",
+                              }
+                            : c
+                        )
+                      );
                     }
                   } catch (err) {
                     console.error("Failed to persist community:", err);
                   }
                 }}
               >
-                Create
+                Create Community
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MANAGE COMMUNITY MODAL (ADMINS & CO-ADMINS) */}
+      {manageCommModalOpen && (
+        <div className="modal-overlay-nesty" onClick={() => setManageCommModalOpen(false)}>
+          <div className="modal-content-card manage-comm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="manage-comm-header">
+              <div>
+                <h3>Manage #{activeChannel?.name || "Community"}</h3>
+                <p className="manage-comm-sub">Review membership requests, assign co-admins, and configure group settings.</p>
+              </div>
+              <button className="manage-close-btn" onClick={() => setManageCommModalOpen(false)}>✕</button>
+            </div>
+
+            {/* ADMISSION SETTING CARD */}
+            <div className="manage-setting-card">
+              <div className="manage-setting-info">
+                <strong>Admission Policy</strong>
+                <span>
+                  {manageCommRequiresApproval
+                    ? "Approval Required: users who click Join must be admitted by an admin or co-admin."
+                    : "Automatic: anyone who clicks Join becomes an active member immediately."}
+                </span>
+              </div>
+              <label className="manage-toggle-label">
+                <input
+                  type="checkbox"
+                  checked={manageCommRequiresApproval}
+                  onChange={(e) => handleUpdateCommunitySettings(manageCommSlug, e.target.checked)}
+                />
+                <span>Require Admin Approval</span>
+              </label>
+            </div>
+
+            {/* TABS: PENDING REQUESTS & MEMBERS */}
+            <div className="manage-comm-tabs">
+              <button
+                className={`manage-tab-btn ${manageTab === "pending" ? "active" : ""}`}
+                onClick={() => setManageTab("pending")}
+              >
+                <span>Pending Requests</span>
+                {manageCommPending.length > 0 && (
+                  <span className="manage-pending-badge">{manageCommPending.length}</span>
+                )}
+              </button>
+              <button
+                className={`manage-tab-btn ${manageTab === "members" ? "active" : ""}`}
+                onClick={() => setManageTab("members")}
+              >
+                <span>Members ({manageCommMembers.length})</span>
+              </button>
+            </div>
+
+            <div className="manage-comm-body">
+              {manageCommLoading ? (
+                <div style={{ textAlign: "center", padding: "30px", color: "var(--text-muted)" }}>Loading members...</div>
+              ) : manageTab === "pending" ? (
+                manageCommPending.length === 0 ? (
+                  <div className="manage-empty-state">
+                    <span>🎉</span>
+                    <p>No pending membership requests.</p>
+                  </div>
+                ) : (
+                  <div className="manage-members-list">
+                    {manageCommPending.map((item) => (
+                      <div key={item.id} className="manage-member-row">
+                        <div className="manage-member-user" onClick={() => item.user?.id && openProfile(item.user.id)}>
+                          {item.user?.avatar_url ? (
+                            <img src={item.user.avatar_url} alt="" className="manage-avatar" />
+                          ) : (
+                            <div className="manage-avatar-placeholder">
+                              {(item.user?.name || item.user?.username || "U")[0].toUpperCase()}
+                            </div>
+                          )}
+                          <div className="manage-member-names">
+                            <span className="manage-name">{item.user?.name || item.user?.username}</span>
+                            <span className="manage-username">@{item.user?.username}</span>
+                          </div>
+                        </div>
+                        <div className="manage-member-actions">
+                          <button
+                            className="admit-btn"
+                            onClick={() => handleApproveMember(manageCommSlug, item.user_id)}
+                          >
+                            ✓ Admit
+                          </button>
+                          <button
+                            className="decline-btn"
+                            onClick={() => handleRejectMember(manageCommSlug, item.user_id)}
+                          >
+                            Decline
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              ) : (
+                <div className="manage-members-list">
+                  {manageCommMembers.map((item) => {
+                    const isCreator = activeChannel?.createdById === item.user_id;
+                    const isCallerAdmin = activeChannel?.currentUserRole === "admin";
+                    const isItemCoAdmin = item.role === "co_admin";
+
+                    return (
+                      <div key={item.id} className="manage-member-row">
+                        <div className="manage-member-user" onClick={() => item.user?.id && openProfile(item.user.id)}>
+                          {item.user?.avatar_url ? (
+                            <img src={item.user.avatar_url} alt="" className="manage-avatar" />
+                          ) : (
+                            <div className="manage-avatar-placeholder">
+                              {(item.user?.name || item.user?.username || "U")[0].toUpperCase()}
+                            </div>
+                          )}
+                          <div className="manage-member-names">
+                            <span className="manage-name">
+                              {item.user?.name || item.user?.username}
+                              {item.user_id === user?.id && <span className="manage-you-tag"> (You)</span>}
+                            </span>
+                            <span className="manage-username">@{item.user?.username}</span>
+                          </div>
+                        </div>
+
+                        <div className="manage-member-actions">
+                          <span className={`manage-role-tag ${item.role}`}>
+                            {item.role === "admin" ? "👑 Admin" : item.role === "co_admin" ? "🛡️ Co-Admin" : "Member"}
+                          </span>
+
+                          {/* The Admin of the group can make other people co-admins */}
+                          {isCallerAdmin && !isCreator && item.user_id !== user?.id && (
+                            <button
+                              className={`role-toggle-btn ${isItemCoAdmin ? "demote" : "promote"}`}
+                              onClick={() =>
+                                handleToggleMemberRole(
+                                  manageCommSlug,
+                                  item.user_id,
+                                  isItemCoAdmin ? "member" : "co_admin"
+                                )
+                              }
+                            >
+                              {isItemCoAdmin ? "Remove Co-Admin" : "Make Co-Admin"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>
