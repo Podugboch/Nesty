@@ -1,141 +1,184 @@
-# Nesty
+# Nesty — Easy Connection
 
-🚀 **Live Deployment on Render**: [https://piscine-devnest.onrender.com](https://piscine-devnest.onrender.com)
+<div align="center">
 
-Project Overview: Nesty
-Project Name:
+![Nesty Logo](frontend/public/nesty-logo.png)
 
-Nesty
+**Next-Generation Real-Time Social, Voice/Video Calling & Short-Form Video Platform**
 
-Project Type:
+[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go)](https://golang.org)
+[![React](https://img.shields.io/badge/React-19-61DAFB?style=flat&logo=react)](https://react.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?style=flat&logo=typescript)](https://www.typescriptlang.org)
+[![WebRTC](https://img.shields.io/badge/WebRTC-Real--Time-333333?style=flat&logo=webrtc)](https://webrtc.org)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)](https://www.docker.com)
+[![Render](https://img.shields.io/badge/Deploy-Render-46E3B7?style=flat&logo=render)](https://piscine-devnest.onrender.com)
 
-Social Networking & Collaboration App for Learn2Earn Piscine Candidates and Graduates
+🚀 **Live Deployment**: [https://piscine-devnest.onrender.com](https://piscine-devnest.onrender.com)
 
-Purpose / Objective:
+</div>
 
-To create a dedicated platform where Learn2Earn Piscine candidates can connect, share knowledge, collaborate, and build a supportive community during and after the Piscine program. The app aims to:
+---
 
-Enable candidates to link up with peers.
+## 📖 Overview
 
-Allow candidates to chat privately or in groups.
+**Nesty** is a modern, high-performance social networking and real-time collaboration platform designed for seamless peer-to-peer connection. Built with a robust Go backend and a responsive React/TypeScript frontend, Nesty unites short-form video reels, high-definition voice and video calls, dynamic community channels, live broadcast streaming, and direct messaging in a single, unified experience.
 
-Provide a profile directory to explore other candidates’ skills and experience.
+---
 
-Facilitate resource and knowledge sharing, such as notes, tips, and project guidance.
+## ✨ Key Features
 
-Target Users:
+### 📞 Real-Time Voice & 1080p Video Calling
+- **WebRTC P2P Calling**: Direct, ultra-low-latency 1-on-1 audio and video calls.
+- **Community Group Calls**: Audio and video group conferencing embedded inside community channels with multi-track broadcasting and automatic mesh renegotiation.
+- **Background Call Delivery**: Android lock screen takeover via full-screen intent and native `CallStyle` ring notifications; iOS CallKit integration.
+- **Screen Sharing**: Broadcast high-fps desktop and application windows directly in group calls.
 
-Current and past Learn2Earn Piscine candidates.
+### 📱 Reels & Short-Form Media
+- **Swipeable Vertical Feed**: Fast, full-screen vertical video scroll with smooth snap transitions.
+- **Jamendo Music Integration**: Explore, preview, and license soundtrack audio with independent audio track mixing and video mute controls.
+- **Interactive Comments Dock**: Slide-up comments drawer with synchronized video minimization for seamless discussion.
+- **Cross-Platform Sharing**: Instant share sheet supporting direct messaging to Nesty peers or native system sharing.
+- **Pull-to-Refresh**: Intuitive pull gesture and top refresh navigation for instant feed updates.
 
-Developers seeking mentorship, collaboration, or networking.
+### 🎥 Live Broadcast Studio
+- **Live Video Streaming**: Broadcast directly to the Nesty network with real-time camera controls.
+- **Screen Share**: Broadcast code, presentations, or live coding sessions.
+- **Live Chat Stream**: Synchronized real-time chat with active audience participant counts.
 
-Key Features:
+### 👥 Communities & Anti-Spam Dashboard
+- **Custom Channels**: Create topic-specific channels (General, Coding Help, Showcase, Opportunities, Study Buddies).
+- **Spam-Free Dashboard**: Users only see communities they belong to, created, were invited to, or actively searched for.
+- **Role Hierarchy**: Creator, Admin, Co-Admin, and Member roles with member admission and co-admin elevation.
+- **Invitation Flow**: Search any Nester by handle or name to send invitations with instant Accept/Decline management.
 
-User Authentication & Profiles:
+### 💬 Real-Time Direct Messaging
+- **WebSocket Hub**: Instant messaging with delivery receipts and typing indicators.
+- **Rich Attachments**: Upload photos, videos, and project documents directly in conversation.
+- **Message Reply-To**: Context-aware quoting and reply thread navigation.
 
-Sign-up / Log-in via email, social accounts, or Learn2Earn credentials.
+### ⚡ 100k Concurrent User Scale Architecture
+- **Distributed Pub/Sub**: Redis-backed clustering for WebSocket broadcast across multiple container instances.
+- **Database Connection Pooling**: Optimized PostgreSQL connection management with GORM.
+- **TURN/STUN Relay**: Integrated Coturn NAT-traversal for symmetric firewall environments.
 
-Create a profile with photo, bio, skills, project interests, and contact info.
+---
 
-Profiles visible in a searchable directory.
+## 🛠️ Technology Stack
 
-Networking & Directory:
+| Layer | Technologies |
+|---|---|
+| **Frontend** | React 19, TypeScript, Vite, WebRTC API, Canvas & Web Audio API, CSS3 Variables |
+| **Backend** | Go (Golang) 1.25, Gin Web Framework, GORM ORM, Gorilla WebSocket |
+| **Database & Cache** | PostgreSQL (Supabase), Redis Pub/Sub & Key-Value Store |
+| **Media & CDN** | Supabase Storage (S3-compatible bucket), Jamendo Licensing API |
+| **Mobile Integration** | Android Native (`CallNotificationService`, `TelecomManager`, `CallStyle`), iOS Swift (`CallKit`, `PushKit`) |
+| **DevOps & Hosting** | Multi-Stage Dockerfile, Alpine Linux, Render Web Service |
 
-Browse, search, and filter candidates by skills, batch, or location.
+---
 
-Send connection/friend requests to other candidates.
+## 📂 Repository Structure
 
-Chat System:
+```
+.
+├── cmd/
+│   └── server/
+│       └── main.go                  # Main Go application entry point
+├── frontend/
+│   ├── public/                      # Static assets & brand icons
+│   ├── src/
+│   │   ├── components/              # ReelsView, ReelCreateView, MusicPicker, etc.
+│   │   ├── utils/                   # Time formatting, token helpers
+│   │   ├── App.tsx                  # Core application & real-time WebSocket client
+│   │   ├── App.css                  # Modern responsive styling & dark/light theme
+│   │   ├── ErrorBoundary.tsx        # UI crash boundary
+│   │   └── main.tsx                 # React DOM bootstrap
+│   ├── index.html                   # HTML entry point with viewport configuration
+│   ├── vite.config.ts               # Vite production bundling setup
+│   └── package.json                 # Frontend dependencies & scripts
+├── internal/
+│   ├── app/                         # App lifecycle, database connection & routing setup
+│   ├── handlers/                    # REST API route handlers (Auth, Feed, Reels, Communities)
+│   ├── model/                       # GORM database schemas & relations
+│   ├── push/                        # Push notification services & device registry
+│   ├── seed/                        # Initial soundtrack & system channel seeds
+│   ├── storage/                     # Supabase object storage upload helpers
+│   ├── utils/                       # JWT authentication, bcrypt hashing & validators
+│   └── ws/                          # Real-time WebSocket hub & WebRTC signaling
+├── mobile/
+│   ├── android/                     # Android native calling bridge & background listeners
+│   └── ios/                         # iOS CallKit integration & AppDelegate
+├── Dockerfile                       # Multi-stage production Docker build (Node + Go)
+├── render.yaml                      # Infrastructure-as-code blueprint for Render
+├── go.mod                           # Go module definitions & dependencies
+└── README.md                        # Project documentation
+```
 
-Private messaging between candidates.
+---
 
-Group chats based on Piscine batch, skill sets, or topics.
+## 🚀 Getting Started
 
-Push notifications for new messages.
+### Prerequisites
+- [Go 1.22+](https://go.dev/dl/)
+- [Node.js 20+](https://nodejs.org/) & `npm`
+- [Docker](https://www.docker.com/) (optional, for containerized run)
+- PostgreSQL database (or [Supabase](https://supabase.com/))
 
-Resource Sharing:
+### 1. Clone the Repository
+```bash
+git clone https://github.com/Podugboch/Nesty.git
+cd Nesty
+```
 
-Share notes, code snippets, or links within chats or a shared resource section.
+### 2. Environment Variables
+Create a `.env` file in the project root:
+```env
+PORT=8080
+DATABASE_URL=postgresql://user:password@host:5432/database?sslmode=require
+JWT_SECRET=your_super_secret_jwt_key
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your_supabase_service_role_key
+JAMENDO_CLIENT_ID=your_jamendo_client_id
+```
 
-Option to like/comment on shared resources.
+### 3. Run Backend (Development)
+```bash
+go run cmd/server/main.go
+```
+The backend starts at `http://localhost:8080`.
 
-Admin / Moderation Panel:
+### 4. Run Frontend (Development)
+```bash
+cd frontend
+npm install
+npm run dev
+```
+The Vite development server runs at `http://localhost:5173`.
 
-Approve or remove accounts, manage reports.
+---
 
-Maintain community guidelines and monitor content.
+## 🐳 Docker Deployment
 
-Optional Features (Phase 2):
+Build and run the production image locally using Docker:
 
-Mentorship matching between experienced and new candidates.
+```bash
+# Build multi-stage image
+docker build -t nesty:latest .
 
-Event calendar for workshops, deadlines, or coding challenges.
+# Run container
+docker run -p 8080:8080 --env-file .env nesty:latest
+```
 
-Gamification: badges or reputation points for active contributors.
+---
 
-Technology Stack (Suggested):
+## 🔒 Security & Privacy
 
-Frontend:
+- **Password Hashing**: Industry-standard `bcrypt` password encryption with salting.
+- **JWT Authorization**: Stateless, expiring JSON Web Tokens validated on all protected endpoints.
+- **P2P Encryption**: WebRTC audio and video streams are encrypted end-to-end via DTLS-SRTP.
+- **Scoped Permissions**: Fine-grained role checks (Creator, Admin, Co-Admin, Member) on community moderation actions.
 
-React Native (for cross-platform mobile app)
+---
 
-Tailwind CSS / Styled Components
+## 📄 License
 
-Backend:
-
-Golang (Go) for APIs and business logic
-
-Supabase / Firebase for database, authentication, and real-time chat
-
-Database:
-
-PostgreSQL (or Supabase-managed database)
-
-Real-time Communication:
-
-WebSockets / Firebase Realtime DB for messaging
-
-Hosting / Deployment:
-
-Vercel / Netlify for frontend (if web app)
-
-Supabase / Render / AWS for backend
-
-Expected Outcome:
-
-A fully functional mobile/web app connecting all Piscine candidates.
-
-Easier knowledge exchange and peer support.
-
-Creation of a community-driven learning environment.
-
-
-
-
-
-piscine-devnest/
-│
-├── main.go             # Entry point
-├── go.mod              # Module file
-├── config/
-│   └── config.go       # Database & environment configs
-├── models/
-│   └── user.go         # User model
-│   └── message.go      # Chat model
-│   └── resource.go     # Shared resources model
-├── controllers/
-│   └── userController.go
-│   └── chatController.go
-│   └── resourceController.go
-├── routes/
-│   └── routes.go
-├── middlewares/
-│   └── auth.go         # JWT authentication
-├── utils/
-│   └── hash.go         # Password hashing
-│   └── response.go     # Standardized API responses
-└── db/
-    └── db.go           # Database connection
-
-
-
+This project is licensed under the [MIT License](LICENSE).
