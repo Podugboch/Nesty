@@ -949,6 +949,8 @@ export default function App() {
   const [isLiveVideoOff, setIsLiveVideoOff] = useState(false);
   const [liveChatMessages, setLiveChatMessages] = useState<{ id: string; user: string; text: string; time: string }[]>([]);
   const [liveChatInput, setLiveChatInput] = useState("");
+  const [isLiveChatOpen, setIsLiveChatOpen] = useState(true);
+  const [liveVideoFit, setLiveVideoFit] = useState<"contain" | "cover">("contain");
   const liveVideoRef = useRef<HTMLVideoElement | null>(null);
   const liveStreamMediaRef = useRef<MediaStream | null>(null);
 
@@ -9321,7 +9323,7 @@ export default function App() {
                     className="live-studio-title-input"
                     value={liveStreamTitle}
                     onChange={(e) => setLiveStreamTitle(e.target.value)}
-                    placeholder="Enter Live Stream Topic..."
+                    placeholder="Stream Topic..."
                   />
                   <span className="live-channel-badge">Broadcasting to Nesty</span>
                 </div>
@@ -9330,7 +9332,8 @@ export default function App() {
               <div className="live-top-right">
                 <div className="live-viewers-pill">
                   <span>👁️</span>
-                  <span>{liveStreamViewers} watching</span>
+                  <span className="live-viewers-count">{liveStreamViewers}</span>
+                  <span className="live-viewers-label"> watching</span>
                 </div>
                 <div className="live-duration-pill">
                   ⏱️ {Math.floor(liveStreamSeconds / 60).toString().padStart(2, "0")}:
@@ -9342,7 +9345,8 @@ export default function App() {
                   onClick={stopLiveStream}
                   title="End Broadcast"
                 >
-                  End Stream
+                  <span className="live-end-btn-text">End Stream</span>
+                  <span className="live-end-btn-short">End</span>
                 </button>
               </div>
             </div>
@@ -9356,7 +9360,7 @@ export default function App() {
                   autoPlay
                   playsInline
                   muted
-                  className="live-video-element"
+                  className={`live-video-element ${liveVideoFit === "cover" ? "fit-cover" : "fit-contain"}`}
                 />
                 {isLiveVideoOff && (
                   <div className="live-video-off-backdrop">
@@ -9379,7 +9383,8 @@ export default function App() {
                     }}
                     title={isLiveMuted ? "Unmute Mic" : "Mute Mic"}
                   >
-                    {isLiveMuted ? "🔇 Unmute" : "🎤 Mute"}
+                    <span className="live-btn-icon">{isLiveMuted ? "🔇" : "🎤"}</span>
+                    <span className="live-btn-text">{isLiveMuted ? "Unmute" : "Mute"}</span>
                   </button>
 
                   <button
@@ -9394,13 +9399,18 @@ export default function App() {
                     }}
                     title={isLiveVideoOff ? "Turn Camera On" : "Turn Camera Off"}
                   >
-                    {isLiveVideoOff ? "📷 Start Video" : "📹 Stop Video"}
+                    <span className="live-btn-icon">{isLiveVideoOff ? "📷" : "📹"}</span>
+                    <span className="live-btn-text">{isLiveVideoOff ? "Cam On" : "Cam Off"}</span>
                   </button>
 
                   <button
                     type="button"
                     className="live-ctrl-btn"
                     onClick={async () => {
+                      if (!navigator.mediaDevices?.getDisplayMedia) {
+                        alert("Screen sharing is not supported by mobile web browsers or WebViews due to mobile OS security restrictions. Broadcasting with your camera and microphone is active!");
+                        return;
+                      }
                       try {
                         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
                         if (liveVideoRef.current) {
@@ -9415,52 +9425,85 @@ export default function App() {
                     }}
                     title="Share Screen with Viewers"
                   >
-                    🖥️ Share Screen
+                    <span className="live-btn-icon">🖥️</span>
+                    <span className="live-btn-text">Share</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`live-ctrl-btn ${liveVideoFit === "cover" ? "active" : ""}`}
+                    onClick={() => setLiveVideoFit((prev) => (prev === "contain" ? "cover" : "contain"))}
+                    title={liveVideoFit === "contain" ? "Fill Screen" : "Fit to Screen"}
+                  >
+                    <span className="live-btn-icon">{liveVideoFit === "contain" ? "↔" : "↕"}</span>
+                    <span className="live-btn-text">{liveVideoFit === "contain" ? "Fill" : "Fit"}</span>
                   </button>
                 </div>
               </div>
 
-              {/* LIVE CHAT SIDEBAR */}
-              <div className="live-chat-panel">
-                <div className="live-chat-header">
-                  <span>💬 Live Stream Chat</span>
-                  <span className="live-chat-badge">{liveChatMessages.length} msgs</span>
-                </div>
-
-                <div className="live-chat-messages-scroll">
-                  {liveChatMessages.map((msg) => (
-                    <div key={msg.id} className="live-chat-bubble">
-                      <div className="live-chat-user-line">
-                        <span className="live-chat-username">@{msg.user}</span>
-                        <span className="live-chat-timestamp">{msg.time}</span>
-                      </div>
-                      <div className="live-chat-body">{msg.text}</div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="live-chat-composer">
-                  <input
-                    type="text"
-                    className="live-chat-input"
-                    placeholder="Say something live..."
-                    value={liveChatInput}
-                    onChange={(e) => setLiveChatInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        sendLiveChatMessage();
-                      }
-                    }}
-                  />
+              {/* LIVE CHAT SIDEBAR / COLLAPSIBLE BOTTOM SHEET */}
+              <div className={`live-chat-panel ${isLiveChatOpen ? "open" : "collapsed"}`}>
+                <div
+                  className="live-chat-header"
+                  onClick={() => setIsLiveChatOpen(!isLiveChatOpen)}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <div className="live-chat-header-title">
+                    <span>💬 Live Chat</span>
+                    <span className="live-chat-badge">{liveChatMessages.length}</span>
+                  </div>
                   <button
                     type="button"
-                    className="live-chat-send-btn"
-                    onClick={sendLiveChatMessage}
+                    className="live-chat-toggle-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsLiveChatOpen(!isLiveChatOpen);
+                    }}
+                    title={isLiveChatOpen ? "Hide chat to see full video" : "Show live chat"}
                   >
-                    Send
+                    {isLiveChatOpen ? "▼ Minimize" : "▲ Chat"}
                   </button>
                 </div>
+
+                {isLiveChatOpen && (
+                  <>
+                    <div className="live-chat-messages-scroll">
+                      {liveChatMessages.map((msg) => (
+                        <div key={msg.id} className="live-chat-bubble">
+                          <div className="live-chat-user-line">
+                            <span className="live-chat-username">@{msg.user}</span>
+                            <span className="live-chat-timestamp">{msg.time}</span>
+                          </div>
+                          <div className="live-chat-body">{msg.text}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="live-chat-composer">
+                      <input
+                        type="text"
+                        className="live-chat-input"
+                        placeholder="Say something live..."
+                        value={liveChatInput}
+                        onChange={(e) => setLiveChatInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            sendLiveChatMessage();
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="live-chat-send-btn"
+                        onClick={sendLiveChatMessage}
+                      >
+                        Send
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>
