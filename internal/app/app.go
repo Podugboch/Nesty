@@ -63,7 +63,9 @@ func Run() error {
 		&model.Post{},  
 		&model.Reel{},
 		&model.ReelComment{},
+		&model.ReelCommentLike{},
 		&model.Comment{}, 
+		&model.CommentLike{},
 		&model.Follow{}, 
 		&model.Like{}, 
 		&model.Notification{},
@@ -80,6 +82,19 @@ func Run() error {
 	_ = db.Exec("CREATE TABLE IF NOT EXISTS reel_comments (id bigserial PRIMARY KEY, reel_id bigint NOT NULL, user_id bigint NOT NULL, content text NOT NULL, created_at timestamptz DEFAULT NOW(), updated_at timestamptz DEFAULT NOW())").Error
 	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_reel_comments_reel_id ON reel_comments(reel_id)").Error
 	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_reel_comments_user_id ON reel_comments(user_id)").Error
+
+	// Comment replies and likes schema guarantees
+	_ = db.Exec("ALTER TABLE comments ADD COLUMN IF NOT EXISTS parent_id bigint").Error
+	_ = db.Exec("ALTER TABLE comments ADD COLUMN IF NOT EXISTS likes bigint DEFAULT 0").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_comments_parent_id ON comments(parent_id)").Error
+	_ = db.Exec("CREATE TABLE IF NOT EXISTS comment_likes (id bigserial PRIMARY KEY, user_id bigint NOT NULL, comment_id bigint NOT NULL, created_at timestamptz DEFAULT NOW())").Error
+	_ = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_comment_like ON comment_likes(user_id, comment_id)").Error
+
+	_ = db.Exec("ALTER TABLE reel_comments ADD COLUMN IF NOT EXISTS parent_id bigint").Error
+	_ = db.Exec("ALTER TABLE reel_comments ADD COLUMN IF NOT EXISTS likes bigint DEFAULT 0").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_reel_comments_parent_id ON reel_comments(parent_id)").Error
+	_ = db.Exec("CREATE TABLE IF NOT EXISTS reel_comment_likes (id bigserial PRIMARY KEY, user_id bigint NOT NULL, reel_comment_id bigint NOT NULL, created_at timestamptz DEFAULT NOW())").Error
+	_ = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_reel_comment_like ON reel_comment_likes(user_id, reel_comment_id)").Error
 
 	// Ensure columns and defaults on posts, reels, communities, and community_members
 	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_track_id bigint").Error

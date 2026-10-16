@@ -10,9 +10,19 @@ type Comment struct {
 	UserID    uint       `gorm:"index" json:"user_id"`
 	User      *User      `gorm:"foreignKey:UserID" json:"user"`
 	Content   string     `gorm:"not null" json:"content"`
+	ParentID  *uint      `gorm:"index" json:"parent_id,omitempty"`
+	Likes     int64      `gorm:"default:0" json:"likes"`
+	LikedByMe bool       `gorm:"-" json:"liked_by_me"`
 	CreatedAt time.Time  `json:"created_at"`
 	HiddenAt  *time.Time `gorm:"index" json:"hidden_at,omitempty"`
 	HiddenBy  *uint      `json:"hidden_by,omitempty"`
+}
+
+type CommentLike struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	UserID    uint      `gorm:"not null;index:idx_user_comment_like,unique" json:"user_id"`
+	CommentID uint      `gorm:"not null;index:idx_user_comment_like,unique;constraint:OnDelete:CASCADE" json:"comment_id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Post struct {

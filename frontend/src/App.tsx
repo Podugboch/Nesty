@@ -71,6 +71,9 @@ type Comment = {
   content: string;
   created_at: string;
   user?: User;
+  parent_id?: number | null;
+  likes?: number;
+  liked_by_me?: boolean;
 };
 
 type Post = {
@@ -1080,6 +1083,7 @@ export default function App() {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const chatFileInputRef = useRef<HTMLInputElement | null>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
   const activeChatPartnerRef = useRef<User | null>(null);
 
   const [activeCall, setActiveCall] = useState<CallState | null>(null);
@@ -1180,6 +1184,7 @@ export default function App() {
   const [editText, setEditText] = useState("");
   const [expandedComments, setExpandedComments] = useState<Record<number, boolean>>({});
   const [commentInputs, setCommentInputs] = useState<Record<number, string>>({});
+  const [replyingToPostComment, setReplyingToPostComment] = useState<Record<number, { id: number; username: string } | null>>({});
 
   // -----------------------------
   // PROFILE VIEW
@@ -1563,6 +1568,13 @@ export default function App() {
       setChatMessages((prev) => prev.filter((m) => m !== tempMsg));
       alert("Network error sending message.");
     }
+  };
+
+  const handleQuoteMessage = (msg: ChatMessage) => {
+    setReplyingToMessage(msg);
+    setTimeout(() => {
+      chatInputRef.current?.focus();
+    }, 50);
   };
 
   useEffect(() => {
@@ -3746,6 +3758,8 @@ export default function App() {
   const handleAddComment = async (postId: number) => {
     const text = commentInputs[postId];
     if (!text || !text.trim()) return;
+    const parentReply = replyingToPostComment[postId];
+    const parentId = parentReply?.id || null;
 
     try {
       const res = await fetch(`${API_URL}/api/posts/${postId}/comments`, {
@@ -3754,7 +3768,10 @@ export default function App() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ content: text.trim() }),
+        body: JSON.stringify({
+          content: text.trim(),
+          parent_id: parentId,
+        }),
       });
 
       if (res.ok) {
@@ -3762,6 +3779,9 @@ export default function App() {
         const newComment: Comment = {
           ...commentData,
           user: commentData.user || user || { id: 0, username: "You", email: "" },
+          parent_id: commentData.parent_id || parentId,
+          likes: 0,
+          liked_by_me: false,
         };
         setPosts((prev) =>
           prev.map((p) =>
@@ -3774,9 +3794,84 @@ export default function App() {
           )
         );
         setCommentInputs((prev) => ({ ...prev, [postId]: "" }));
+        setReplyingToPostComment((prev) => ({ ...prev, [postId]: null }));
       }
     } catch (err) {
       console.error("Add comment error", err);
+    }
+  };
+
+  const handleTogglePostCommentLike = async (postId: number, commentId: number) => {
+    const post = posts.find((p) => p.id === postId) || profilePosts.find((p) => p.id === postId);
+    const comment = post?.comments?.find((c) => c.id === commentId);
+    if (!comment) return;
+
+    const wasLiked = !!comment.liked_by_me;
+    const nextLiked = !wasLiked;
+    const nextLikes = Math.max(0, (comment.likes || 0) + (nextLiked ? 1 : -1));
+
+    const updateCommentInList = (list: Post[]) =>
+      list.map((p) => {
+        if (p.id !== postId || !p.comments) return p;
+        return {
+          ...p,
+          comments: p.comments.map((c) =>
+            c.id === commentId ? { ...c, liked_by_me: nextLiked, likes: nextLikes } : c
+          ),
+        };
+      });
+
+    setPosts(updateCommentInList);
+    setProfilePosts(updateCommentInList);
+
+    try {
+      const res = await fetch(`${API_URL}/api/comments/${commentId}/like`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const syncCommentInList = (list: Post[]) =>
+          list.map((p) => {
+            if (p.id !== postId || !p.comments) return p;
+            return {
+              ...p,
+              comments: p.comments.map((c) =>
+                c.id === commentId ? { ...c, liked_by_me: data.liked, likes: data.likes } : c
+              ),
+            };
+          });
+        setPosts(syncCommentInList);
+        setProfilePosts(syncCommentInList);
+      } else {
+        const revertCommentInList = (list: Post[]) =>
+          list.map((p) => {
+            if (p.id !== postId || !p.comments) return p;
+            return {
+              ...p,
+              comments: p.comments.map((c) =>
+                c.id === commentId ? { ...c, liked_by_me: wasLiked, likes: comment.likes } : c
+              ),
+            };
+          });
+        setPosts(revertCommentInList);
+        setProfilePosts(revertCommentInList);
+      }
+    } catch {
+      const revertCommentInList = (list: Post[]) =>
+        list.map((p) => {
+          if (p.id !== postId || !p.comments) return p;
+          return {
+            ...p,
+            comments: p.comments.map((c) =>
+              c.id === commentId ? { ...c, liked_by_me: wasLiked, likes: comment.likes } : c
+            ),
+          };
+        });
+      setPosts(revertCommentInList);
+      setProfilePosts(revertCommentInList);
     }
   };
 
@@ -6460,43 +6555,110 @@ export default function App() {
                     {/* EXPANDABLE COMMENTS */}
                     {expandedComments[post.id] && (
                       <div className="comments-section-nesty">
-                        {(post.comments || []).map((c: Comment) => (
-                          <div key={c.id} className="comment-row">
+                        {(post.comments || []).map((c: Comment) => {
+                          const parentComment = c.parent_id
+                            ? post.comments?.find((p) => p.id === c.parent_id)
+                            : null;
+                          return (
                             <div
-                              className="comment-avatar"
-                              style={{ cursor: "pointer" }}
-                              onClick={() => c.user?.id && openProfile(c.user.id)}
+                              key={c.id}
+                              className={`comment-row ${c.parent_id ? "comment-reply-row" : ""}`}
                             >
-                              {c.user?.avatar_url ? (
-                                <img src={c.user.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                              ) : (
-                                (c.user?.username || "?").charAt(0).toUpperCase()
-                              )}
-                            </div>
-                            <div className="comment-bubble">
-                              <span
-                                className="comment-author-name"
+                              <div
+                                className="comment-avatar"
                                 style={{ cursor: "pointer" }}
                                 onClick={() => c.user?.id && openProfile(c.user.id)}
                               >
-                                @{c.user?.username || "builder"}
-                              </span>
-                              <span>{c.content}</span>
+                                {c.user?.avatar_url ? (
+                                  <img src={c.user.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                                ) : (
+                                  (c.user?.username || "?").charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              <div className="comment-bubble">
+                                <div className="comment-header-row">
+                                  <span
+                                    className="comment-author-name"
+                                    style={{ cursor: "pointer" }}
+                                    onClick={() => c.user?.id && openProfile(c.user.id)}
+                                  >
+                                    @{c.user?.username || "builder"}
+                                  </span>
+                                  {c.parent_id && (
+                                    <span className="comment-reply-badge">
+                                      ↩ {parentComment ? `@${parentComment.user?.username || "builder"}` : "reply"}
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="comment-text-content">{c.content}</span>
+                                <div className="comment-actions-bar">
+                                  <button
+                                    type="button"
+                                    className={`comment-action-like-btn ${c.liked_by_me ? "liked" : ""}`}
+                                    onClick={() => handleTogglePostCommentLike(post.id, c.id)}
+                                    title={c.liked_by_me ? "Unlike comment" : "Like comment"}
+                                  >
+                                    <span>{c.liked_by_me ? "❤️" : "🤍"}</span>
+                                    {(c.likes || 0) > 0 && (
+                                      <span className="comment-likes-num">{c.likes}</span>
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="comment-action-reply-btn"
+                                    onClick={() => {
+                                      setReplyingToPostComment((prev) => ({
+                                        ...prev,
+                                        [post.id]: { id: c.id, username: c.user?.username || "builder" },
+                                      }));
+                                      const inputEl = document.getElementById(`post-comment-input-${post.id}`);
+                                      inputEl?.focus();
+                                    }}
+                                    title="Reply to comment"
+                                  >
+                                    ↩ Reply
+                                  </button>
+                                </div>
+                              </div>
+                              <button
+                                className="comment-report-flag-btn"
+                                title="Report comment"
+                                onClick={() => openReportModal("comment", c.id, c.content)}
+                              >
+                                🚩
+                              </button>
                             </div>
+                          );
+                        })}
+
+                        {/* REPLYING TO COMMENT BANNER */}
+                        {replyingToPostComment[post.id] && (
+                          <div className="post-comment-replying-banner">
+                            <span>
+                              Replying to <strong>@{replyingToPostComment[post.id]?.username}</strong>
+                            </span>
                             <button
-                              className="comment-report-flag-btn"
-                              title="Report comment"
-                              onClick={() => openReportModal("comment", c.id, c.content)}
+                              type="button"
+                              className="post-comment-replying-cancel"
+                              onClick={() =>
+                                setReplyingToPostComment((prev) => ({ ...prev, [post.id]: null }))
+                              }
+                              title="Cancel reply"
                             >
-                              🚩
+                              ✕
                             </button>
                           </div>
-                        ))}
+                        )}
 
                         <div className="comment-form-row">
                           <input
+                            id={`post-comment-input-${post.id}`}
                             className="comment-input-pill"
-                            placeholder="Write a constructive reply..."
+                            placeholder={
+                              replyingToPostComment[post.id]
+                                ? `Reply to @${replyingToPostComment[post.id]?.username}...`
+                                : "Write a constructive reply..."
+                            }
                             value={commentInputs[post.id] || ""}
                             onChange={(e) =>
                               setCommentInputs((prev) => ({ ...prev, [post.id]: e.target.value }))
@@ -6819,43 +6981,110 @@ export default function App() {
                         {/* EXPANDABLE COMMENTS */}
                         {expandedComments[post.id] && (
                           <div className="comments-section-nesty">
-                            {(post.comments || []).map((c) => (
-                              <div key={c.id} className="comment-row">
+                            {(post.comments || []).map((c) => {
+                              const parentComment = c.parent_id
+                                ? post.comments?.find((p) => p.id === c.parent_id)
+                                : null;
+                              return (
                                 <div
-                                  className="comment-avatar"
-                                  style={{ cursor: "pointer" }}
-                                  onClick={() => c.user?.id && openProfile(c.user.id)}
+                                  key={c.id}
+                                  className={`comment-row ${c.parent_id ? "comment-reply-row" : ""}`}
                                 >
-                                  {c.user?.avatar_url ? (
-                                    <img src={c.user.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                                  ) : (
-                                    (c.user?.username || "?").charAt(0).toUpperCase()
-                                  )}
-                                </div>
-                                <div className="comment-bubble">
-                                  <span
-                                    className="comment-author-name"
+                                  <div
+                                    className="comment-avatar"
                                     style={{ cursor: "pointer" }}
                                     onClick={() => c.user?.id && openProfile(c.user.id)}
                                   >
-                                    @{c.user?.username || "builder"}
-                                  </span>
-                                  <span>{c.content}</span>
+                                    {c.user?.avatar_url ? (
+                                      <img src={c.user.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                                    ) : (
+                                      (c.user?.username || "?").charAt(0).toUpperCase()
+                                    )}
+                                  </div>
+                                  <div className="comment-bubble">
+                                    <div className="comment-header-row">
+                                      <span
+                                        className="comment-author-name"
+                                        style={{ cursor: "pointer" }}
+                                        onClick={() => c.user?.id && openProfile(c.user.id)}
+                                      >
+                                        @{c.user?.username || "builder"}
+                                      </span>
+                                      {c.parent_id && (
+                                        <span className="comment-reply-badge">
+                                          ↩ {parentComment ? `@${parentComment.user?.username || "builder"}` : "reply"}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="comment-text-content">{c.content}</span>
+                                    <div className="comment-actions-bar">
+                                      <button
+                                        type="button"
+                                        className={`comment-action-like-btn ${c.liked_by_me ? "liked" : ""}`}
+                                        onClick={() => handleTogglePostCommentLike(post.id, c.id)}
+                                        title={c.liked_by_me ? "Unlike comment" : "Like comment"}
+                                      >
+                                        <span>{c.liked_by_me ? "❤️" : "🤍"}</span>
+                                        {(c.likes || 0) > 0 && (
+                                          <span className="comment-likes-num">{c.likes}</span>
+                                        )}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="comment-action-reply-btn"
+                                        onClick={() => {
+                                          setReplyingToPostComment((prev) => ({
+                                            ...prev,
+                                            [post.id]: { id: c.id, username: c.user?.username || "builder" },
+                                          }));
+                                          const inputEl = document.getElementById(`comm-post-comment-input-${post.id}`);
+                                          inputEl?.focus();
+                                        }}
+                                        title="Reply to comment"
+                                      >
+                                        ↩ Reply
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <button
+                                    className="comment-report-flag-btn"
+                                    title="Report comment"
+                                    onClick={() => openReportModal("comment", c.id, c.content)}
+                                  >
+                                    🚩
+                                  </button>
                                 </div>
+                              );
+                            })}
+
+                            {/* REPLYING TO COMMENT BANNER */}
+                            {replyingToPostComment[post.id] && (
+                              <div className="post-comment-replying-banner">
+                                <span>
+                                  Replying to <strong>@{replyingToPostComment[post.id]?.username}</strong>
+                                </span>
                                 <button
-                                  className="comment-report-flag-btn"
-                                  title="Report comment"
-                                  onClick={() => openReportModal("comment", c.id, c.content)}
+                                  type="button"
+                                  className="post-comment-replying-cancel"
+                                  onClick={() =>
+                                    setReplyingToPostComment((prev) => ({ ...prev, [post.id]: null }))
+                                  }
+                                  title="Cancel reply"
                                 >
-                                  🚩
+                                  ✕
                                 </button>
                               </div>
-                            ))}
+                            )}
 
                             <div className="comment-form-row">
                               <input
+                                id={`comm-post-comment-input-${post.id}`}
                                 className="comment-input-pill"
-                                placeholder="Write a constructive reply..."
+                                placeholder={
+                                  replyingToPostComment[post.id]
+                                    ? `Reply to @${replyingToPostComment[post.id]?.username}...`
+                                    : "Write a constructive reply..."
+                                }
                                 value={commentInputs[post.id] || ""}
                                 onChange={(e) =>
                                   setCommentInputs((prev) => ({ ...prev, [post.id]: e.target.value }))
@@ -7729,40 +7958,50 @@ export default function App() {
                       <button
                         type="button"
                         className="chat-msg-reply-action-btn"
-                        onClick={() => setReplyingToMessage(msg)}
-                        title="Reply to message"
+                        onClick={() => handleQuoteMessage(msg)}
+                        title="Quote / Reply to message"
                       >
                         ↩
                       </button>
                     )}
-                    <div className="chat-msg-bubble">
-                      {msg.reply_to_message && (
-                        <div
-                          className="chat-msg-quote-bubble"
-                          onClick={() => {
-                            const target = document.getElementById(`chat-msg-${msg.reply_to_message?.id}`);
-                            if (target) {
-                              target.scrollIntoView({ behavior: "smooth", block: "center" });
-                              target.classList.add("highlighted-quote");
-                              setTimeout(() => target.classList.remove("highlighted-quote"), 2000);
-                            }
-                          }}
-                          title="Click to jump to quoted message"
-                        >
-                          <span className="chat-msg-quote-sender">
-                            {msg.reply_to_message.is_deleted
-                              ? "Original message"
-                              : `@${msg.reply_to_message.username || msg.reply_to_message.sender_name}`}
-                          </span>
-                          <p className="chat-msg-quote-snippet">
-                            {msg.reply_to_message.is_deleted ? (
-                              <span className="chat-msg-quote-unavailable">Original message unavailable</span>
-                            ) : (
-                              msg.reply_to_message.content || (msg.reply_to_message.media_url ? "📷 Attachment" : "Message")
-                            )}
-                          </p>
-                        </div>
-                      )}
+                    <div
+                      className="chat-msg-bubble"
+                      onDoubleClick={() => handleQuoteMessage(msg)}
+                      title="Double-click to reply"
+                    >
+                      {(() => {
+                        const quote = msg.reply_to_message || (msg.reply_to_message_id ? chatMessages.find(m => m.id === msg.reply_to_message_id) : null);
+                        if (!quote) return null;
+                        const quoteSender = (quote as any).sender_name || (quote as any).username || ((quote as any).sender_id === user?.id ? (user?.username || "You") : (activeChatPartner.username || "User"));
+                        const quoteText = (quote as any).content || ((quote as any).media_url ? "📷 Attachment" : "Message");
+                        return (
+                          <div
+                            className="chat-msg-quote-bubble"
+                            onClick={() => {
+                              const target = document.getElementById(`chat-msg-${(quote as any).id || msg.reply_to_message_id}`);
+                              if (target) {
+                                target.scrollIntoView({ behavior: "smooth", block: "center" });
+                                target.classList.add("highlighted-quote");
+                                setTimeout(() => target.classList.remove("highlighted-quote"), 2000);
+                              }
+                            }}
+                            title="Click to jump to quoted message"
+                          >
+                            <span className="chat-msg-quote-sender">
+                              {(quote as any).is_deleted
+                                ? "Original message"
+                                : `@${quoteSender}`}
+                            </span>
+                            <p className="chat-msg-quote-snippet">
+                              {(quote as any).is_deleted ? (
+                                <span className="chat-msg-quote-unavailable">Original message unavailable</span>
+                              ) : (
+                                quoteText
+                              )}
+                            </p>
+                          </div>
+                        );
+                      })()}
                       {mediaUrl && (
                         <>
                           {mediaType === "image" ? (
@@ -7817,8 +8056,8 @@ export default function App() {
                       <button
                         type="button"
                         className="chat-msg-reply-action-btn"
-                        onClick={() => setReplyingToMessage(msg)}
-                        title="Reply to message"
+                        onClick={() => handleQuoteMessage(msg)}
+                        title="Quote / Reply to message"
                       >
                         ↩
                       </button>
@@ -7912,11 +8151,14 @@ export default function App() {
                 📎
               </button>
               <input
+                ref={chatInputRef}
                 type="text"
                 className="chat-drawer-input"
                 placeholder={
                   isChatUploading
                     ? "Uploading attachment..."
+                    : replyingToMessage
+                    ? `Reply to @${replyingToMessage.sender_id === user?.id ? (user?.username || "You") : (activeChatPartner.username || "User")}...`
                     : `Message @${activeChatPartner.username}...`
                 }
                 value={chatInputText}

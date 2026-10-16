@@ -78,7 +78,17 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
   // Comments drawer
   const [activeCommentsReel, setActiveCommentsReel] = useState<ReelItem | null>(null);
   const [commentText, setCommentText] = useState("");
-  const [commentsList, setCommentsList] = useState<Array<{ id: number | string; user: string; text: string; time: string }>>([]);
+  const [commentsList, setCommentsList] = useState<Array<{
+    id: number | string;
+    user: string;
+    text: string;
+    time: string;
+    parent_id?: number | null;
+    likes: number;
+    liked_by_me?: boolean;
+  }>>([]);
+  const [replyingToComment, setReplyingToComment] = useState<{ id: number | string; user: string } | null>(null);
+  const commentInputRef = useRef<HTMLInputElement>(null);
 
   // Share modal state
   const [shareModalReel, setShareModalReel] = useState<ReelItem | null>(null);
@@ -380,6 +390,9 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
             id: c.id,
             user: c.user?.username || c.user?.name || c.username || "User",
             text: c.content || c.text || "",
+            parent_id: c.parent_id || null,
+            likes: typeof c.likes === "number" ? c.likes : 0,
+            liked_by_me: !!c.liked_by_me,
             time: c.created_at ? new Date(c.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Recently",
           })));
         }
@@ -393,14 +406,19 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
     if (!commentText.trim() || !activeCommentsReel) return;
     const text = commentText.trim();
     const tempId = Date.now();
+    const targetParentId = replyingToComment?.id || null;
     const tempComment = {
       id: tempId,
       user: "you",
       text,
       time: "Just now",
+      parent_id: typeof targetParentId === "number" ? targetParentId : null,
+      likes: 0,
+      liked_by_me: false,
     };
     setCommentsList((prev) => [...prev, tempComment]);
     setCommentText("");
+    setReplyingToComment(null);
 
     // Optimistically update commentsCount on active reel
     setReels((prev) =>
@@ -418,7 +436,11 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
       const res = await fetch(`${apiUrl}/api/reels/${activeCommentsReel.id}/comments`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ content: text, text }),
+        body: JSON.stringify({
+          content: text,
+          text,
+          parent_id: targetParentId ? Number(targetParentId) : null,
+        }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -430,6 +452,9 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
                     id: data.comment.id,
                     user: data.comment.user?.username || data.comment.user?.name || "you",
                     text: data.comment.content || text,
+                    parent_id: data.comment.parent_id || null,
+                    likes: data.comment.likes || 0,
+                    liked_by_me: !!data.comment.liked_by_me,
                     time: "Just now",
                   }
                 : c
@@ -438,6 +463,58 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
         }
       }
     } catch {}
+  };
+
+  const handleToggleReelCommentLike = async (commentId: number | string) => {
+    const target = commentsList.find((c) => c.id === commentId);
+    if (!target) return;
+    const wasLiked = !!target.liked_by_me;
+    const nextLiked = !wasLiked;
+    const nextLikes = Math.max(0, (target.likes || 0) + (nextLiked ? 1 : -1));
+
+    setCommentsList((prev) =>
+      prev.map((c) =>
+        c.id === commentId
+          ? { ...c, liked_by_me: nextLiked, likes: nextLikes }
+          : c
+      )
+    );
+
+    try {
+      const authToken = token || localStorage.getItem("token");
+      const headers: Record<string, string> = {};
+      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+      const res = await fetch(`${apiUrl}/api/reel-comments/${commentId}/like`, {
+        method: "POST",
+        headers,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCommentsList((prev) =>
+          prev.map((c) =>
+            c.id === commentId
+              ? { ...c, liked_by_me: data.liked, likes: data.likes }
+              : c
+          )
+        );
+      } else {
+        setCommentsList((prev) =>
+          prev.map((c) =>
+            c.id === commentId
+              ? { ...c, liked_by_me: wasLiked, likes: target.likes }
+              : c
+          )
+        );
+      }
+    } catch {
+      setCommentsList((prev) =>
+        prev.map((c) =>
+          c.id === commentId
+            ? { ...c, liked_by_me: wasLiked, likes: target.likes }
+            : c
+        )
+      );
+    }
   };
 
   // Share: fetch users
@@ -941,28 +1018,93 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
                   </p>
                 </div>
               ) : (
-                commentsList.map((c) => (
-                  <div key={c.id} className="reels-comment-row">
-                    <div className="reels-comment-avatar">
-                      {c.user.charAt(0).toUpperCase()}
+                commentsList.map((c) => {
+                  const parentComment = c.parent_id
+                    ? commentsList.find((p) => p.id === c.parent_id)
+                    : null;
+                  return (
+                    <div
+                      key={c.id}
+                      className={`reels-comment-row ${c.parent_id ? "reels-comment-reply-row" : ""}`}
+                    >
+                      <div className="reels-comment-avatar">
+                        {c.user.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="reels-comment-body">
+                        <div className="reels-comment-header-row">
+                          <span className="reels-comment-user">@{c.user}</span>
+                          {c.parent_id && (
+                            <span className="reels-comment-reply-badge">
+                              ↩ {parentComment ? `@${parentComment.user}` : "reply"}
+                            </span>
+                          )}
+                        </div>
+                        <p className="reels-comment-text">{c.text}</p>
+                        <div className="reels-comment-actions-row">
+                          <span className="reels-comment-time">{c.time}</span>
+                          <button
+                            type="button"
+                            className={`reels-comment-like-btn ${c.liked_by_me ? "liked" : ""}`}
+                            onClick={() => handleToggleReelCommentLike(c.id)}
+                            title={c.liked_by_me ? "Unlike comment" : "Like comment"}
+                          >
+                            <span className="reels-comment-heart">
+                              {c.liked_by_me ? "❤️" : "🤍"}
+                            </span>
+                            {c.likes > 0 && (
+                              <span className="reels-comment-likes-count">
+                                {c.likes}
+                              </span>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className="reels-comment-reply-btn"
+                            onClick={() => {
+                              setReplyingToComment({ id: c.id, user: c.user });
+                              commentInputRef.current?.focus();
+                            }}
+                            title="Reply to comment"
+                          >
+                            ↩ Reply
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                    <div className="reels-comment-body">
-                      <span className="reels-comment-user">@{c.user}</span>
-                      <p className="reels-comment-text">{c.text}</p>
-                      <span className="reels-comment-time">{c.time}</span>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
+
+            {/* Replying banner preview above input */}
+            {replyingToComment && (
+              <div className="reels-replying-banner">
+                <span className="reels-replying-text">
+                  Replying to <strong>@{replyingToComment.user}</strong>
+                </span>
+                <button
+                  type="button"
+                  className="reels-replying-cancel"
+                  onClick={() => setReplyingToComment(null)}
+                  title="Cancel reply"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
 
             <form
               className="reels-comments-dock-input-bar"
               onSubmit={handlePostComment}
             >
               <input
+                ref={commentInputRef}
                 type="text"
-                placeholder="Add a comment..."
+                placeholder={
+                  replyingToComment
+                    ? `Reply to @${replyingToComment.user}...`
+                    : "Add a comment..."
+                }
                 value={commentText}
                 onChange={(e) => setCommentText(e.target.value)}
                 className="reels-comments-dock-input"

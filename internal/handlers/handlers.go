@@ -72,6 +72,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.POST("/reels/:id/like", h.ToggleReelLike)
 		protected.POST("/reels/:id/comments", h.CreateReelComment)
 		protected.DELETE("/reels/:id", h.DeleteReel)
+		protected.POST("/reel-comments/:id/like", h.ToggleReelCommentLike)
 
 		// COMMUNITIES
 		protected.POST("/communities", h.CreateCommunity)
@@ -119,6 +120,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// LIKES & COMMENTS ✅ REGISTERED SMOOTHLY
 		protected.POST("/posts/:id/like", h.LikePost)
 		protected.POST("/posts/:id/comments", h.AddComment)
+		protected.POST("/comments/:id/like", h.TogglePostCommentLike)
 
 		//NOTIFICATION
 		protected.GET("/notifications", h.GetNotifications)
@@ -424,8 +426,12 @@ func (h *Handler) GetPosts(c *gin.Context) {
 
 	if len(posts) > 0 {
 		ids := make([]uint, len(posts))
+		var allCommentIDs []uint
 		for i, p := range posts {
 			ids[i] = p.ID
+			for _, cm := range p.Comments {
+				allCommentIDs = append(allCommentIDs, cm.ID)
+			}
 		}
 		var likedIDs []uint
 		h.DB.Model(&model.Like{}).Where("user_id = ? AND post_id IN ?", userID, ids).Pluck("post_id", &likedIDs)
@@ -435,6 +441,20 @@ func (h *Handler) GetPosts(c *gin.Context) {
 		}
 		for i := range posts {
 			posts[i].LikedByMe = likedSet[posts[i].ID]
+		}
+
+		if userID > 0 && len(allCommentIDs) > 0 {
+			var likedCommentIDs []uint
+			h.DB.Model(&model.CommentLike{}).Where("user_id = ? AND comment_id IN ?", userID, allCommentIDs).Pluck("comment_id", &likedCommentIDs)
+			likedCommentSet := make(map[uint]bool, len(likedCommentIDs))
+			for _, cid := range likedCommentIDs {
+				likedCommentSet[cid] = true
+			}
+			for i := range posts {
+				for j := range posts[i].Comments {
+					posts[i].Comments[j].LikedByMe = likedCommentSet[posts[i].Comments[j].ID]
+				}
+			}
 		}
 	}
 
@@ -603,7 +623,8 @@ func (h *Handler) AddComment(c *gin.Context) {
 	userID := c.GetUint("user_id")
 
 	var req struct {
-		Content string `json:"content" binding:"required"`
+		Content  string `json:"content" binding:"required"`
+		ParentID *uint  `json:"parent_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Content required"})
@@ -624,9 +645,10 @@ func (h *Handler) AddComment(c *gin.Context) {
 	}
 
 	comment := model.Comment{
-		PostID:  postID,
-		UserID:  userID,
-		Content: req.Content,
+		PostID:   postID,
+		UserID:   userID,
+		Content:  req.Content,
+		ParentID: req.ParentID,
 	}
 
 	if err := h.DB.Create(&comment).Error; err != nil {
@@ -634,14 +656,74 @@ func (h *Handler) AddComment(c *gin.Context) {
 		return
 	}
 
+	// Update comments count on post
+	h.DB.Model(&post).UpdateColumn("comments_count", gorm.Expr("comments_count + 1"))
+
 	h.DB.Preload("User", func(db *gorm.DB) *gorm.DB {
 		return db.Select("id", "username", "name", "email", "avatar_url")
 	}).First(&comment, comment.ID)
 
-	h.createNotification(post.UserID, userID, "comment", &postID)
+	// If it's a reply to another comment, notify the parent comment owner
+	if req.ParentID != nil && *req.ParentID > 0 {
+		var parentComment model.Comment
+		if err := h.DB.First(&parentComment, *req.ParentID).Error; err == nil {
+			if parentComment.UserID != userID {
+				h.createNotification(parentComment.UserID, userID, "comment_reply", &postID)
+			}
+		}
+	}
+
+	if post.UserID != userID {
+		h.createNotification(post.UserID, userID, "comment", &postID)
+	}
 	h.processMentions(comment.Content, userID, postID)
 
 	c.JSON(http.StatusOK, comment)
+}
+
+func (h *Handler) TogglePostCommentLike(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	idNum, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid comment id"})
+		return
+	}
+	commentID := uint(idNum)
+
+	var comment model.Comment
+	if err := h.DB.First(&comment, commentID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "comment not found"})
+		return
+	}
+
+	var existing model.CommentLike
+	err = h.DB.Where("user_id = ? AND comment_id = ?", userID, commentID).First(&existing).Error
+	liked := false
+	if err == nil {
+		// Unlike
+		if err := h.DB.Delete(&existing).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unlike comment"})
+			return
+		}
+		liked = false
+	} else {
+		// Like
+		like := model.CommentLike{UserID: userID, CommentID: commentID}
+		if err := h.DB.Create(&like).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to like comment"})
+			return
+		}
+		liked = true
+		if comment.UserID != userID {
+			h.createNotification(comment.UserID, userID, "comment_like", &comment.PostID)
+		}
+	}
+
+	var count int64
+	h.DB.Model(&model.CommentLike{}).Where("comment_id = ?", commentID).Count(&count)
+	h.DB.Model(&comment).UpdateColumn("likes", count)
+
+	c.JSON(http.StatusOK, gin.H{"liked": liked, "likes": count})
 }
 
 // ---------------------- FOLLOWERS / FOLLOWING LISTS ----------------------
@@ -1192,8 +1274,12 @@ func (h *Handler) GetUserPosts(c *gin.Context) {
 	requesterID := c.GetUint("user_id")
 	if len(posts) > 0 {
 		ids := make([]uint, len(posts))
+		var allCommentIDs []uint
 		for i, p := range posts {
 			ids[i] = p.ID
+			for _, cm := range p.Comments {
+				allCommentIDs = append(allCommentIDs, cm.ID)
+			}
 		}
 		var likedIDs []uint
 		h.DB.Model(&model.Like{}).Where("user_id = ? AND post_id IN ?", requesterID, ids).Pluck("post_id", &likedIDs)
@@ -1203,6 +1289,20 @@ func (h *Handler) GetUserPosts(c *gin.Context) {
 		}
 		for i := range posts {
 			posts[i].LikedByMe = likedSet[posts[i].ID]
+		}
+
+		if requesterID > 0 && len(allCommentIDs) > 0 {
+			var likedCommentIDs []uint
+			h.DB.Model(&model.CommentLike{}).Where("user_id = ? AND comment_id IN ?", requesterID, allCommentIDs).Pluck("comment_id", &likedCommentIDs)
+			likedCommentSet := make(map[uint]bool, len(likedCommentIDs))
+			for _, cid := range likedCommentIDs {
+				likedCommentSet[cid] = true
+			}
+			for i := range posts {
+				for j := range posts[i].Comments {
+					posts[i].Comments[j].LikedByMe = likedCommentSet[posts[i].Comments[j].ID]
+				}
+			}
 		}
 	}
 
@@ -2242,6 +2342,34 @@ func (h *Handler) GetReelComments(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load comments"})
 		return
 	}
+
+	userID := c.GetUint("user_id")
+	if userID == 0 {
+		authHeader := c.GetHeader("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+			if claims, err := utils.ParseToken(tokenStr); err == nil {
+				userID = claims.UserID
+			}
+		}
+	}
+
+	if userID > 0 && len(comments) > 0 {
+		cIDs := make([]uint, len(comments))
+		for i, c := range comments {
+			cIDs[i] = c.ID
+		}
+		var likedIDs []uint
+		h.DB.Model(&model.ReelCommentLike{}).Where("user_id = ? AND reel_comment_id IN ?", userID, cIDs).Pluck("reel_comment_id", &likedIDs)
+		likedMap := make(map[uint]bool, len(likedIDs))
+		for _, lid := range likedIDs {
+			likedMap[lid] = true
+		}
+		for i := range comments {
+			comments[i].LikedByMe = likedMap[comments[i].ID]
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"comments": comments})
 }
 
@@ -2260,8 +2388,9 @@ func (h *Handler) CreateReelComment(c *gin.Context) {
 	}
 
 	var req struct {
-		Content string `json:"content"`
-		Text    string `json:"text"`
+		Content  string `json:"content"`
+		Text     string `json:"text"`
+		ParentID *uint  `json:"parent_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid comment data"})
@@ -2283,9 +2412,10 @@ func (h *Handler) CreateReelComment(c *gin.Context) {
 	}
 
 	comment := model.ReelComment{
-		ReelID:  uint(reelID),
-		UserID:  userID,
-		Content: content,
+		ReelID:   uint(reelID),
+		UserID:   userID,
+		Content:  content,
+		ParentID: req.ParentID,
 	}
 	if err := h.DB.Create(&comment).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create comment"})
@@ -2297,11 +2427,64 @@ func (h *Handler) CreateReelComment(c *gin.Context) {
 
 	_ = h.DB.Preload("User").First(&comment, comment.ID)
 
+	if req.ParentID != nil && *req.ParentID > 0 {
+		var parentComment model.ReelComment
+		if err := h.DB.First(&parentComment, *req.ParentID).Error; err == nil {
+			if parentComment.UserID != userID {
+				h.createNotification(parentComment.UserID, userID, "reel_comment_reply", nil)
+			}
+		}
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
 		"comment":        comment,
 		"comments_count": reel.CommentsCount,
 		"success":        true,
 	})
+}
+
+// ToggleReelCommentLike toggles like on a reel comment
+func (h *Handler) ToggleReelCommentLike(c *gin.Context) {
+	idStr := c.Param("id")
+	commentID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid reel comment ID"})
+		return
+	}
+	userID := c.GetUint("user_id")
+
+	var comment model.ReelComment
+	if err := h.DB.First(&comment, commentID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "reel comment not found"})
+		return
+	}
+
+	var existing model.ReelCommentLike
+	err = h.DB.Where("user_id = ? AND reel_comment_id = ?", userID, commentID).First(&existing).Error
+	liked := false
+	if err == nil {
+		_ = h.DB.Delete(&existing).Error
+		liked = false
+	} else {
+		like := model.ReelCommentLike{
+			UserID:        userID,
+			ReelCommentID: uint(commentID),
+		}
+		if err := h.DB.Create(&like).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to like reel comment"})
+			return
+		}
+		liked = true
+		if comment.UserID != userID {
+			h.createNotification(comment.UserID, userID, "reel_comment_like", nil)
+		}
+	}
+
+	var count int64
+	h.DB.Model(&model.ReelCommentLike{}).Where("reel_comment_id = ?", commentID).Count(&count)
+	h.DB.Model(&comment).UpdateColumn("likes", count)
+
+	c.JSON(http.StatusOK, gin.H{"liked": liked, "likes": count})
 }
 
 // DeleteReel deletes a reel owned by the user

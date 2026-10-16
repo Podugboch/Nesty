@@ -32,6 +32,16 @@ type ReelComment struct {
 	UserID    uint      `gorm:"index;not null" json:"user_id"`
 	User      *User     `gorm:"foreignKey:UserID" json:"user"`
 	Content   string    `gorm:"not null" json:"content"`
+	ParentID  *uint     `gorm:"index" json:"parent_id,omitempty"`
+	Likes     int64     `gorm:"default:0" json:"likes"`
+	LikedByMe bool      `gorm:"-" json:"liked_by_me"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type ReelCommentLike struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	UserID        uint      `gorm:"not null;index:idx_user_reel_comment_like,unique" json:"user_id"`
+	ReelCommentID uint      `gorm:"not null;index:idx_user_reel_comment_like,unique;constraint:OnDelete:CASCADE" json:"reel_comment_id"`
+	CreatedAt     time.Time `json:"created_at"`
 }
