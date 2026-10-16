@@ -986,6 +986,7 @@ export default function App() {
 
   const groupLocalVideoRef = useRef<HTMLVideoElement | null>(null);
   const groupLocalStreamRef = useRef<MediaStream | null>(null);
+  const [groupLocalStream, setGroupLocalStream] = useState<MediaStream | null>(null);
   const groupPeersRef = useRef<Map<number, RTCPeerConnection>>(new Map());
   const groupCandidatesQueueRef = useRef<Map<number, RTCIceCandidateInit[]>>(new Map());
   const [groupCallDuration, setGroupCallDuration] = useState(0);
@@ -1153,11 +1154,6 @@ export default function App() {
   const titleFlashIntervalRef = useRef<any>(null);
   const originalTitleRef = useRef<string>("Nesty");
   const dynamicIceServersRef = useRef<RTCIceServer[] | null>(null);
-
-  // Hamburger drawer accordion state
-  const [showOverview, setShowOverview] = useState(false);
-  const [showFeatured, setShowFeatured] = useState(false);
-  const [showOnline, setShowOnline] = useState(false);
 
   // Pull-to-refresh state
   const [pullDistance, setPullDistance] = useState(0);
@@ -4080,26 +4076,29 @@ export default function App() {
     };
 
     pc.ontrack = (event) => {
-      setGroupCallState((prev) => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          participants: prev.participants.map((p) => {
-            if (Number(p.id) !== Number(targetUserId)) return p;
-            let currentStream = p.stream;
-            if (event.streams && event.streams[0]) {
-              currentStream = event.streams[0];
-            } else if (currentStream) {
-              if (!currentStream.getTracks().some((t) => t.id === event.track.id)) {
-                currentStream.addTrack(event.track);
+      const updateStream = () => {
+        setGroupCallState((prev) => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            participants: prev.participants.map((p) => {
+              if (Number(p.id) !== Number(targetUserId)) return p;
+              let tracks: MediaStreamTrack[] = [];
+              if (event.streams && event.streams[0]) {
+                tracks = event.streams[0].getTracks();
+              } else {
+                const existingTracks = p.stream ? p.stream.getTracks() : [];
+                tracks = [...existingTracks.filter((t) => t.id !== event.track.id), event.track];
               }
-            } else {
-              currentStream = new MediaStream([event.track]);
-            }
-            return { ...p, stream: currentStream };
-          }),
-        };
-      });
+              const newStream = new MediaStream(tracks);
+              return { ...p, stream: newStream };
+            }),
+          };
+        });
+      };
+
+      event.track.onunmute = updateStream;
+      updateStream();
     };
 
     pc.onconnectionstatechange = () => {
@@ -4172,6 +4171,17 @@ export default function App() {
       });
 
       const pc = createGroupPeerConnection(fromUserId, channelId);
+
+      // WebRTC Perfect Negotiation / Glare handling:
+      if (pc.signalingState === "have-local-offer") {
+        const isPolite = myId < fromUserId;
+        if (!isPolite) {
+          console.warn(`[Group Call] Offer collision with ${fromUserId}: impolite peer ignoring remote offer`);
+          return;
+        }
+        await pc.setLocalDescription({ type: "rollback" });
+      }
+
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
 
       // Flush queued candidates
@@ -4212,6 +4222,10 @@ export default function App() {
 
       const pc = groupPeersRef.current.get(fromUserId);
       if (!pc) return;
+      if (pc.signalingState !== "have-local-offer") {
+        console.warn(`[Group Call] Ignoring answer from ${fromUserId} in signaling state ${pc.signalingState}`);
+        return;
+      }
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
 
       // Flush queued candidates
@@ -4226,6 +4240,7 @@ export default function App() {
       console.error(`[Group Call] Error handling answer from peer ${fromUserId}`, err);
     }
   };
+
 
   const handleIncomingGroupIce = async (fromUserId: number, candidate: RTCIceCandidateInit) => {
     try {
@@ -4411,6 +4426,7 @@ export default function App() {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       groupLocalStreamRef.current = stream;
+      setGroupLocalStream(stream);
 
       // Check if there are already other participants registered in this channel (filter out self!)
       const existingCall = activeGroupCalls[activeComm.id];
@@ -4465,11 +4481,6 @@ export default function App() {
           groupLocalVideoRef.current.srcObject = stream;
         }
       }, 150);
-
-      // Initiate connection to any existing members
-      initialParticipants.forEach((p) => {
-        createAndSendOfferToPeer(Number(p.id), activeComm.id);
-      });
     } catch (err) {
       console.error("Failed to start group call", err);
       alert("Unable to access microphone or camera for group call.");
@@ -4497,6 +4508,7 @@ export default function App() {
       groupLocalStreamRef.current.getTracks().forEach((track) => track.stop());
       groupLocalStreamRef.current = null;
     }
+    setGroupLocalStream(null);
 
     groupPeersRef.current.forEach((pc) => {
       try { pc.close(); } catch {}
@@ -4516,11 +4528,83 @@ export default function App() {
     setGroupCallState({ ...groupCallState, isMuted: newMuted });
   };
 
-  const toggleGroupVideo = () => {
-    if (!groupCallState || !groupLocalStreamRef.current) return;
-    const newOff = !groupCallState.isVideoOff;
-    groupLocalStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = !newOff));
-    setGroupCallState({ ...groupCallState, isVideoOff: newOff });
+  const toggleGroupVideo = async () => {
+    if (!groupCallState) return;
+    const currentStream = groupLocalStreamRef.current;
+
+    if (!groupCallState.isVideoOff) {
+      // Turn camera OFF
+      if (currentStream) {
+        currentStream.getVideoTracks().forEach((t) => {
+          t.enabled = false;
+        });
+      }
+      groupPeersRef.current.forEach((pc) => {
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+        if (sender && sender.track) {
+          sender.track.enabled = false;
+        }
+      });
+      setGroupCallState((prev) => (prev ? { ...prev, isVideoOff: true } : null));
+      return;
+    }
+
+    // Turn camera ON
+    try {
+      let videoTrack: MediaStreamTrack | null = null;
+      const existingTrack = currentStream ? currentStream.getVideoTracks().find((t) => t.readyState === "live") : null;
+
+      if (existingTrack) {
+        existingTrack.enabled = true;
+        videoTrack = existingTrack;
+      } else {
+        // Request camera from browser
+        const camStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        });
+        videoTrack = camStream.getVideoTracks()[0];
+
+        if (currentStream) {
+          currentStream.getVideoTracks().forEach((t) => {
+            currentStream.removeTrack(t);
+            try { t.stop(); } catch {}
+          });
+          currentStream.addTrack(videoTrack);
+        } else {
+          groupLocalStreamRef.current = camStream;
+        }
+      }
+
+      const activeStream = groupLocalStreamRef.current;
+      if (activeStream) {
+        setGroupLocalStream(new MediaStream(activeStream.getTracks()));
+      }
+
+      // Propagate new video track to all active peer connections
+      if (videoTrack) {
+        const streamToSend = groupLocalStreamRef.current!;
+        groupPeersRef.current.forEach(async (pc, peerId) => {
+          try {
+            const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video") ||
+                           pc.getSenders().find((s) => !s.track);
+            if (sender) {
+              await sender.replaceTrack(videoTrack);
+              if (sender.track) sender.track.enabled = true;
+            } else {
+              pc.addTrack(videoTrack!, streamToSend);
+              createAndSendOfferToPeer(peerId, groupCallState.channelId);
+            }
+          } catch (e) {
+            console.warn(`[Group Call] Failed to attach video track for peer ${peerId}`, e);
+          }
+        });
+      }
+
+      setGroupCallState((prev) => (prev ? { ...prev, type: "video", isVideoOff: false } : null));
+    } catch (err) {
+      console.error("Failed to enable camera:", err);
+      alert("Unable to access camera. Please check your camera permissions.");
+    }
   };
 
   const toggleGroupScreenShare = async () => {
@@ -5499,231 +5583,6 @@ export default function App() {
             <span>Create Community</span>
           </button>
 
-          {/* COMMUNITY OVERVIEW, FEATURED CHANNELS, ONLINE NOW (CLICK TO VIEW DETAILS) */}
-          <div className="drawer-accordion-group">
-            <div className="mobile-divider" style={{ margin: "12px 0 8px 0" }} />
-
-            {/* ANDROID APP DOWNLOAD & QR CODE */}
-            <button
-              type="button"
-              className="drawer-menu-item-btn"
-              onClick={() => {
-                setApkModalOpen(true);
-                setMobileMenuOpen(false);
-              }}
-            >
-              <div className="drawer-menu-item-left">
-                <span className="drawer-menu-icon">📱</span>
-                <span className="drawer-menu-title">Download APK & QR Barcode</span>
-              </div>
-              <span className="drawer-menu-chevron" style={{ fontSize: "14px" }}>›</span>
-            </button>
-
-            {/* CALL SETUP & DIAGNOSTICS */}
-            <button
-              type="button"
-              className="drawer-menu-item-btn"
-              onClick={() => {
-                checkCallPermissions();
-                setCallDiagModalOpen(true);
-                setMobileMenuOpen(false);
-              }}
-            >
-              <div className="drawer-menu-item-left">
-                <span className="drawer-menu-icon">⚙️</span>
-                <span className="drawer-menu-title">Call Setup & Diagnostics</span>
-              </div>
-              <span className="drawer-menu-chevron" style={{ fontSize: "14px" }}>›</span>
-            </button>
-
-            {/* 1. COMMUNITY OVERVIEW */}
-            <button
-              type="button"
-              className={`drawer-menu-item-btn ${showOverview ? "expanded" : ""}`}
-              onClick={() => setShowOverview(!showOverview)}
-            >
-              <div className="drawer-menu-item-left">
-                <span className="drawer-menu-icon">🌐</span>
-                <span className="drawer-menu-title">Community overview</span>
-              </div>
-              <span className="drawer-menu-chevron">{showOverview ? "▾" : "›"}</span>
-            </button>
-            {showOverview && (
-              <div className="drawer-accordion-content">
-                <div className="community-widget-card mobile-comm-card">
-                  <div className="community-widget-top">
-                    <img src="/nesty-logo.png" alt="Nesty" className="community-widget-logo-img" />
-                    <span className="community-widget-name">Nesty</span>
-                  </div>
-                  <p className="community-widget-desc">
-                    Connect, share moments, and explore vibrant communities with friends on Nesty.
-                  </p>
-                  <button
-                    className="invite-friends-btn"
-                    onClick={() => {
-                      navigator.clipboard?.writeText(window.location.origin);
-                      alert("Invite link copied to clipboard!");
-                    }}
-                  >
-                    + Invite friends
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* 2. FEATURED CHANNELS */}
-            <button
-              type="button"
-              className={`drawer-menu-item-btn ${showFeatured ? "expanded" : ""}`}
-              onClick={() => setShowFeatured(!showFeatured)}
-            >
-              <div className="drawer-menu-item-left">
-                <span className="drawer-menu-icon">⭐</span>
-                <span className="drawer-menu-title">Featured channels</span>
-              </div>
-              <span className="drawer-menu-chevron">{showFeatured ? "▾" : "›"}</span>
-            </button>
-            {showFeatured && (
-              <div className="drawer-accordion-content">
-                <div className="featured-channels-list">
-                  {dashboardCommunities.length === 0 ? (
-                    <div style={{ padding: "12px 14px", fontSize: "12px", color: "var(--text-sub)", textAlign: "center" }}>
-                      No communities joined yet. Search or create one!
-                    </div>
-                  ) : (
-                    dashboardCommunities.map((c) => (
-                      <div
-                        key={c.id}
-                        className="featured-channel-row"
-                        onClick={() => {
-                          setSelectedCommunity(c.id);
-                          setPage("feed");
-                          setMobileMenuOpen(false);
-                        }}
-                      >
-                        <div className="featured-icon-badge purple">#</div>
-                        <div className="featured-channel-text">
-                          <span className="featured-channel-title">{c.name}</span>
-                          <span className="featured-channel-sub">{c.subtitle}</span>
-                        </div>
-                        {activeGroupCalls[c.id] && (
-                          <span style={{ fontSize: "11px", color: "#ef4444", fontWeight: 700, marginRight: "4px" }}>🔴 LIVE</span>
-                        )}
-                        <span className="featured-chevron">›</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* 3. ONLINE NOW */}
-            <button
-              type="button"
-              className={`drawer-menu-item-btn ${showOnline ? "expanded" : ""}`}
-              onClick={() => {
-                setShowOnline(!showOnline);
-              }}
-            >
-              <div className="drawer-menu-item-left">
-                <span className="drawer-menu-icon">🟢</span>
-                <span className="drawer-menu-title">Online now</span>
-                <span className="nav-unread-badge" style={{ marginLeft: "8px" }}>
-                  {communityStats.online_users.length}
-                </span>
-              </div>
-              <span className="drawer-menu-chevron">{showOnline ? "▾" : "›"}</span>
-            </button>
-            {showOnline && (
-              <div className="drawer-accordion-content online-drawer-accordion-content">
-                <div className="online-users-list mobile-online-list">
-                  {communityStats.online_users.length === 0 ? (
-                    <div style={{ padding: "16px 12px", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
-                      No nesters online right now
-                    </div>
-                  ) : (
-                    communityStats.online_users.map((u, i) => {
-                      const bgColors = ["#134e40", "#78350f", "#b45309", "#334155", "#047857"];
-                      const bgColor = bgColors[i % bgColors.length];
-                      return (
-                        <div key={u.id || i} className="online-user-item">
-                          <div
-                            className="online-user-item-left"
-                            style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0, cursor: "pointer", overflow: "hidden" }}
-                            onClick={() => {
-                              if (u.id) {
-                                openProfile(u.id);
-                                setMobileMenuOpen(false);
-                              }
-                            }}
-                          >
-                            <div className="online-user-avatar" style={{ background: bgColor }}>
-                              {u.avatar_url ? (
-                                <img
-                                  src={u.avatar_url}
-                                  alt={u.username}
-                                  className="online-avatar-img"
-                                  style={{ width: "40px", height: "40px", borderRadius: "50%", objectFit: "cover", flexShrink: 0, maxWidth: "100%" }}
-                                />
-                              ) : (
-                                <span className="online-avatar-initial">{u.username.charAt(0).toUpperCase()}</span>
-                              )}
-                              <span className="online-dot-badge" />
-                            </div>
-                            <div className="online-user-meta" style={{ minWidth: 0, flex: 1, overflow: "hidden" }}>
-                              <span className="online-user-name" style={{ display: "block", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                                {u.name || u.username} {u.id === user?.id ? " (You)" : ""}
-                              </span>
-                            </div>
-                          </div>
-                          {u.id && u.id !== user?.id && (
-                            <div className="online-user-item-actions" style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                              <button
-                                className="scroll-ctrl-btn"
-                                style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-                                title={`Chat with ${u.username}`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  startChatWithUser({ id: u.id!, username: u.username, email: "" });
-                                  setMobileMenuOpen(false);
-                                }}
-                              >
-                                💬
-                              </button>
-                              <button
-                                className="scroll-ctrl-btn"
-                                style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-                                title={`Call ${u.username}`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, false);
-                                  setMobileMenuOpen(false);
-                                }}
-                              >
-                                📞
-                              </button>
-                              <button
-                                className="scroll-ctrl-btn"
-                                style={{ padding: "4px 6px", fontSize: "11px", minWidth: "26px", height: "26px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-                                title={`Video call ${u.username}`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  startCallWithUser({ id: u.id!, username: u.username, email: "", avatar_url: u.avatar_url, name: u.name }, true);
-                                  setMobileMenuOpen(false);
-                                }}
-                              >
-                                📹
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
         </div>
 
         {/* FOOTER: DARK MODE SWITCH & USER CARD */}
@@ -9313,12 +9172,10 @@ export default function App() {
             <div className={`group-call-grid count-${groupCallState.participants.length + 1}`}>
               {/* LOCAL PARTICIPANT TILE */}
               <div className="group-call-tile local-tile">
-                {groupCallState.type === "video" && !groupCallState.isVideoOff ? (
-                  <video
-                    ref={groupLocalVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
+                {!groupCallState.isVideoOff && (groupLocalStream || groupLocalStreamRef.current) && (groupLocalStream || groupLocalStreamRef.current)!.getVideoTracks().some((t) => t.enabled) ? (
+                  <VideoFeed
+                    stream={groupLocalStream || groupLocalStreamRef.current}
+                    isMuted={true}
                     className="group-call-video-feed"
                   />
                 ) : (
@@ -9339,41 +9196,44 @@ export default function App() {
               </div>
 
               {/* REMOTE PARTICIPANTS TILES */}
-              {groupCallState.participants.map((p, idx) => (
-                <div key={p.id || idx} className="group-call-tile remote-tile">
-                  {p.stream && groupCallState.type === "video" ? (
-                    <VideoFeed stream={p.stream} isMuted={false} className="group-call-video-feed" />
-                  ) : (
-                    <div className="group-call-avatar-placeholder">
-                      {p.stream && (
-                        <audio
-                          autoPlay
-                          playsInline
-                          ref={(el) => {
-                            if (el && el.srcObject !== p.stream) el.srcObject = p.stream!;
-                          }}
-                        />
-                      )}
-                      <div className="group-call-avatar-circle remote-pulse">
-                        {p.avatarUrl ? (
-                          <img src={p.avatarUrl} alt="" />
-                        ) : (
-                          (p.username || "N").charAt(0).toUpperCase()
+              {groupCallState.participants.map((p, idx) => {
+                const hasVideo = !!p.stream && p.stream.getVideoTracks().some((t) => t.enabled && t.readyState === "live");
+                return (
+                  <div key={p.id || idx} className="group-call-tile remote-tile">
+                    {hasVideo ? (
+                      <VideoFeed stream={p.stream || null} isMuted={false} className="group-call-video-feed" />
+                    ) : (
+                      <div className="group-call-avatar-placeholder">
+                        {p.stream && (
+                          <audio
+                            autoPlay
+                            playsInline
+                            ref={(el) => {
+                              if (el && el.srcObject !== p.stream) el.srcObject = p.stream!;
+                            }}
+                          />
                         )}
+                        <div className="group-call-avatar-circle remote-pulse">
+                          {p.avatarUrl ? (
+                            <img src={p.avatarUrl} alt="" />
+                          ) : (
+                            (p.username || "N").charAt(0).toUpperCase()
+                          )}
+                        </div>
+                        <div className="speaking-wave-indicator">
+                          <span className="wave-bar bar-1" />
+                          <span className="wave-bar bar-2" />
+                          <span className="wave-bar bar-3" />
+                        </div>
                       </div>
-                      <div className="speaking-wave-indicator">
-                        <span className="wave-bar bar-1" />
-                        <span className="wave-bar bar-2" />
-                        <span className="wave-bar bar-3" />
-                      </div>
+                    )}
+                    <div className="group-call-tile-overlay">
+                      <span className="group-participant-name">{p.name || `@${p.username}`}</span>
+                      <span className="group-tile-tag">Active</span>
                     </div>
-                  )}
-                  <div className="group-call-tile-overlay">
-                    <span className="group-participant-name">{p.name || `@${p.username}`}</span>
-                    <span className="group-tile-tag">Active</span>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* CONTROLS DOCK */}
@@ -9388,17 +9248,15 @@ export default function App() {
                 <span className="dock-btn-text">{groupCallState.isMuted ? "Unmute" : "Mute"}</span>
               </button>
 
-              {groupCallState.type === "video" && (
-                <button
-                  type="button"
-                  className={`group-dock-btn ${groupCallState.isVideoOff ? "active" : ""}`}
-                  onClick={toggleGroupVideo}
-                  title={groupCallState.isVideoOff ? "Turn Camera On" : "Turn Camera Off"}
-                >
-                  <span className="dock-btn-icon">{groupCallState.isVideoOff ? "📷" : "📹"}</span>
-                  <span className="dock-btn-text">{groupCallState.isVideoOff ? "Camera On" : "Camera Off"}</span>
-                </button>
-              )}
+              <button
+                type="button"
+                className={`group-dock-btn ${groupCallState.isVideoOff ? "active" : ""}`}
+                onClick={toggleGroupVideo}
+                title={groupCallState.isVideoOff ? "Turn Camera On" : "Turn Camera Off"}
+              >
+                <span className="dock-btn-icon">{groupCallState.isVideoOff ? "📷" : "📹"}</span>
+                <span className="dock-btn-text">{groupCallState.isVideoOff ? "Camera On" : "Camera Off"}</span>
+              </button>
 
               <button
                 type="button"

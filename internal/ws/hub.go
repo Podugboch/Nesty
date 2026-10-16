@@ -386,7 +386,7 @@ func (h *Hub) RecordGroupCallEvent(userID uint, raw map[string]interface{}) {
 				Name:      userName,
 				AvatarURL: avatarURL,
 			}
-			if callType != "" {
+			if callType == "video" || call.CallType == "" {
 				call.CallType = callType
 			}
 			if channelName != "" {

@@ -378,9 +378,9 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
           const list = Array.isArray(data) ? data : data.comments || [];
           setCommentsList(list.map((c: any) => ({
             id: c.id,
-            user: c.user?.username || c.username || "User",
+            user: c.user?.username || c.user?.name || c.username || "User",
             text: c.content || c.text || "",
-            time: "Recently",
+            time: c.created_at ? new Date(c.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Recently",
           })));
         }
       } catch {}
@@ -392,8 +392,9 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
     e.preventDefault();
     if (!commentText.trim() || !activeCommentsReel) return;
     const text = commentText.trim();
+    const tempId = Date.now();
     const tempComment = {
-      id: Date.now(),
+      id: tempId,
       user: "you",
       text,
       time: "Just now",
@@ -414,11 +415,28 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
       const authToken = token || localStorage.getItem("token");
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-      await fetch(`${apiUrl}/api/reels/${activeCommentsReel.id}/comments`, {
+      const res = await fetch(`${apiUrl}/api/reels/${activeCommentsReel.id}/comments`, {
         method: "POST",
         headers,
         body: JSON.stringify({ content: text, text }),
       });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.comment) {
+          setCommentsList((prev) =>
+            prev.map((c) =>
+              c.id === tempId
+                ? {
+                    id: data.comment.id,
+                    user: data.comment.user?.username || data.comment.user?.name || "you",
+                    text: data.comment.content || text,
+                    time: "Just now",
+                  }
+                : c
+            )
+          );
+        }
+      }
     } catch {}
   };
 
@@ -695,24 +713,15 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
             // Preload next reel
             const shouldPreload = Math.abs(idx - activeIndex) <= 1;
 
-            const isCommentsOpen = isCurrent && activeCommentsReel != null && activeCommentsReel.id === reel.id;
-
             return (
               <div
                 key={reel.id || idx}
-                className={`reel-fullscreen-slide ${isCurrent ? "active-slide" : ""} ${isCommentsOpen ? "comments-mode-active" : ""}`}
+                className={`reel-fullscreen-slide ${isCurrent ? "active-slide" : ""}`}
               >
-                {/* Clickable video canvas with tap play/pause (or click to close comments) */}
+                {/* Clickable video canvas with tap play/pause */}
                 <div
                   className="reel-media-wrapper"
-                  onClick={() => {
-                    if (isCommentsOpen) {
-                      setActiveCommentsReel(null);
-                    } else {
-                      togglePlayPause(idx);
-                    }
-                  }}
-                  title={isCommentsOpen ? "Click video to close comments" : undefined}
+                  onClick={() => togglePlayPause(idx)}
                 >
                   <video
                     ref={(el) => {
@@ -771,72 +780,6 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
                   )}
                 </div>
 
-                {/* Comments Docked Box Under Smaller Video Frame */}
-                {isCommentsOpen && (
-                  <div
-                    className="reels-comments-dock"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="reels-comments-dock-header">
-                      <div className="reels-comments-dock-title">
-                        <span>💬</span>
-                        <span>Comments ({commentsList.length || commentCount})</span>
-                      </div>
-                      <button
-                        type="button"
-                        className="reels-comments-dock-close"
-                        onClick={() => setActiveCommentsReel(null)}
-                        title="Close comments"
-                      >
-                        ✕
-                      </button>
-                    </div>
-
-                    <div className="reels-comments-dock-list">
-                      {commentsList.length === 0 ? (
-                        <div style={{ textAlign: "center", padding: "28px 12px", color: "var(--text-muted, #94a3b8)" }}>
-                          <span style={{ fontSize: "28px", display: "block", marginBottom: "6px" }}>💬</span>
-                          <p style={{ margin: 0, fontSize: "13px" }}>No comments yet. Start the conversation!</p>
-                        </div>
-                      ) : (
-                        commentsList.map((c) => (
-                          <div key={c.id} className="reels-comment-row">
-                            <div className="reels-comment-avatar">
-                              {c.user.charAt(0).toUpperCase()}
-                            </div>
-                            <div className="reels-comment-body">
-                              <span className="reels-comment-user">@{c.user}</span>
-                              <p className="reels-comment-text">{c.text}</p>
-                              <span className="reels-comment-time">{c.time}</span>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-
-                    <form
-                      className="reels-comments-dock-input-bar"
-                      onSubmit={handlePostComment}
-                    >
-                      <input
-                        type="text"
-                        placeholder="Add a comment..."
-                        value={commentText}
-                        onChange={(e) => setCommentText(e.target.value)}
-                        className="reels-comments-dock-input"
-                        autoFocus
-                      />
-                      <button
-                        type="submit"
-                        className="reels-comments-dock-submit"
-                        disabled={!commentText.trim()}
-                      >
-                        Post
-                      </button>
-                    </form>
-                  </div>
-                )}
-
                 {/* Right Side Vertical Action Bar */}
                 <aside className="reel-vertical-actions">
                   {/* Creator Avatar */}
@@ -870,7 +813,8 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
                   <button
                     type="button"
                     className="reel-action-btn"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       if (activeCommentsReel?.id === reel.id) {
                         setActiveCommentsReel(null);
                       } else {
@@ -939,6 +883,100 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Fixed Bottom-Sheet Comments Modal (Zero Scroll Jumping) */}
+      {activeCommentsReel && (
+        <div
+          className="reels-comments-overlay"
+          onClick={() => setActiveCommentsReel(null)}
+        >
+          <div
+            className="reels-comments-sheet"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="reels-comments-dock-header">
+              <div className="reels-comments-dock-title">
+                <span>💬</span>
+                <span>
+                  Comments (
+                  {commentsList.length ||
+                    activeCommentsReel.comments_count ||
+                    activeCommentsReel.commentsCount ||
+                    0}
+                  )
+                </span>
+              </div>
+              <button
+                type="button"
+                className="reels-comments-dock-close"
+                onClick={() => setActiveCommentsReel(null)}
+                title="Close comments"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="reels-comments-dock-list">
+              {commentsList.length === 0 ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "36px 12px",
+                    color: "var(--text-muted, #94a3b8)",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: "28px",
+                      display: "block",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    💬
+                  </span>
+                  <p style={{ margin: 0, fontSize: "13px" }}>
+                    No comments yet. Start the conversation!
+                  </p>
+                </div>
+              ) : (
+                commentsList.map((c) => (
+                  <div key={c.id} className="reels-comment-row">
+                    <div className="reels-comment-avatar">
+                      {c.user.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="reels-comment-body">
+                      <span className="reels-comment-user">@{c.user}</span>
+                      <p className="reels-comment-text">{c.text}</p>
+                      <span className="reels-comment-time">{c.time}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <form
+              className="reels-comments-dock-input-bar"
+              onSubmit={handlePostComment}
+            >
+              <input
+                type="text"
+                placeholder="Add a comment..."
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                className="reels-comments-dock-input"
+                autoFocus
+              />
+              <button
+                type="submit"
+                className="reels-comments-dock-submit"
+                disabled={!commentText.trim()}
+              >
+                Post
+              </button>
+            </form>
+          </div>
         </div>
       )}
 

@@ -7916,43 +7916,25 @@
 }
 
 /* ==========================================================================
-   REELS COMMENTS MODE: VIDEO MOVED UP IN SMALLER FRAME, COMMENTS UNDER
+   REELS COMMENTS BOTTOM SHEET MODAL (OVERLAY OVER PLAYING REEL)
    ========================================================================== */
-.reel-fullscreen-slide.comments-mode-active {
-  display: flex !important;
-  flex-direction: column !important;
-  justify-content: flex-start !important;
-  align-items: center !important;
-  padding-top: 56px !important;
-  background: #000 !important;
+.reels-comments-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 1050;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: fadeIn 0.2s ease;
 }
 
-.reel-fullscreen-slide.comments-mode-active .reel-media-wrapper {
-  height: 35vh !important;
-  max-height: 35vh !important;
-  width: auto !important;
-  aspect-ratio: 9 / 16 !important;
-  max-width: 250px !important;
-  border-radius: 14px !important;
-  overflow: hidden !important;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.8), 0 0 0 1.5px rgba(255, 255, 255, 0.18) !important;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-  margin-bottom: 6px !important;
-  flex-shrink: 0 !important;
-  cursor: pointer !important;
-}
-
-.reel-fullscreen-slide.comments-mode-active .reel-vertical-actions,
-.reel-fullscreen-slide.comments-mode-active .reel-bottom-overlay {
-  display: none !important;
-}
-
-/* Comments Drawer Docked Under Smaller Video Frame */
-.reels-comments-dock {
+.reels-comments-sheet {
   width: 100%;
   max-width: 480px;
-  height: calc(100vh - 35vh - 66px);
-  max-height: calc(100vh - 35vh - 66px);
+  height: 60vh;
+  max-height: 560px;
   background: #0f172a;
   border-top-left-radius: 20px;
   border-top-right-radius: 20px;
@@ -7960,9 +7942,10 @@
   border-bottom: none;
   display: flex;
   flex-direction: column;
-  z-index: 55;
-  box-shadow: 0 -6px 28px rgba(0, 0, 0, 0.6);
+  z-index: 1051;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.7);
   animation: slideUpComments 0.25s ease-out;
+  overflow: hidden;
 }
 
 @keyframes slideUpComments {

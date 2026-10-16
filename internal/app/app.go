@@ -62,6 +62,7 @@ func Run() error {
 		&model.Track{},
 		&model.Post{},  
 		&model.Reel{},
+		&model.ReelComment{},
 		&model.Comment{}, 
 		&model.Follow{}, 
 		&model.Like{}, 
@@ -75,6 +76,10 @@ func Run() error {
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+
+	_ = db.Exec("CREATE TABLE IF NOT EXISTS reel_comments (id bigserial PRIMARY KEY, reel_id bigint NOT NULL, user_id bigint NOT NULL, content text NOT NULL, created_at timestamptz DEFAULT NOW(), updated_at timestamptz DEFAULT NOW())").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_reel_comments_reel_id ON reel_comments(reel_id)").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_reel_comments_user_id ON reel_comments(user_id)").Error
 
 	// Ensure columns and defaults on posts, reels, communities, and community_members
 	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS music_track_id bigint").Error

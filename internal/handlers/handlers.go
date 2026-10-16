@@ -59,6 +59,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/group-calls/active", h.GetActiveGroupCalls)
 	api.GET("/tracks", h.GetTracks)
 	api.GET("/reels", h.GetReels)
+	api.GET("/reels/:id/comments", h.GetReelComments)
 	api.GET("/music/search", h.SearchMusic)
 	api.GET("/communities", h.GetCommunities)
 	api.GET("/communities/:slug", h.GetCommunity)
@@ -2231,19 +2232,77 @@ func (h *Handler) ToggleReelLike(c *gin.Context) {
 
 // GetReelComments returns comments for a reel
 func (h *Handler) GetReelComments(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"comments": []interface{}{}})
+	idStr := c.Param("id")
+	reelID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid reel ID"})
+		return
+	}
+	var comments []model.ReelComment
+	if err := h.DB.Where("reel_id = ?", uint(reelID)).Preload("User").Order("created_at asc").Find(&comments).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load comments"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"comments": comments})
 }
 
 // CreateReelComment creates a comment on a reel
 func (h *Handler) CreateReelComment(c *gin.Context) {
 	idStr := c.Param("id")
-	reelID, _ := strconv.ParseUint(idStr, 10, 32)
-	var reel model.Reel
-	if err := h.DB.First(&reel, reelID).Error; err == nil {
-		reel.CommentsCount++
-		h.DB.Model(&reel).Update("comments_count", reel.CommentsCount)
+	reelID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid reel ID"})
+		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"success": true})
+	userID := c.GetUint("user_id")
+	if userID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		Content string `json:"content"`
+		Text    string `json:"text"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid comment data"})
+		return
+	}
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		content = strings.TrimSpace(req.Text)
+	}
+	if content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "comment cannot be empty"})
+		return
+	}
+
+	var reel model.Reel
+	if err := h.DB.First(&reel, reelID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "reel not found"})
+		return
+	}
+
+	comment := model.ReelComment{
+		ReelID:  uint(reelID),
+		UserID:  userID,
+		Content: content,
+	}
+	if err := h.DB.Create(&comment).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create comment"})
+		return
+	}
+
+	reel.CommentsCount++
+	h.DB.Model(&reel).Update("comments_count", reel.CommentsCount)
+
+	_ = h.DB.Preload("User").First(&comment, comment.ID)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"comment":        comment,
+		"comments_count": reel.CommentsCount,
+		"success":        true,
+	})
 }
 
 // DeleteReel deletes a reel owned by the user
@@ -2259,6 +2318,7 @@ func (h *Handler) DeleteReel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete reel"})
 		return
 	}
+	_ = h.DB.Where("reel_id = ?", reelID).Delete(&model.ReelComment{}).Error
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
