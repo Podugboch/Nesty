@@ -11,7 +11,7 @@ const API_URL: string = (() => {
   if (typeof window !== "undefined") {
     const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
     if (isCapacitor) {
-      return "https://nesty.onrender.com";
+      return "https://piscine-devnest.onrender.com";
     }
     const host = window.location.hostname;
     const port = window.location.port;
@@ -19,11 +19,11 @@ const API_URL: string = (() => {
       return "http://localhost:8080";
     }
     if ((host === "localhost" || host === "127.0.0.1") && (port === "" || port === "80" || port === "443")) {
-      return "https://nesty.onrender.com";
+      return "https://piscine-devnest.onrender.com";
     }
     return window.location.origin.replace(/\/+$/, "");
   }
-  return "https://nesty.onrender.com";
+  return "https://piscine-devnest.onrender.com";
 })();
 
 const WS_BASE_URL: string = (() => {
@@ -32,7 +32,7 @@ const WS_BASE_URL: string = (() => {
   if (typeof window !== "undefined") {
     const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
     if (isCapacitor) {
-      return "wss://nesty.onrender.com";
+      return "wss://piscine-devnest.onrender.com";
     }
     const host = window.location.hostname;
     const port = window.location.port;
@@ -40,11 +40,11 @@ const WS_BASE_URL: string = (() => {
       return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${host}:8080`;
     }
     if ((host === "localhost" || host === "127.0.0.1") && (port === "" || port === "80" || port === "443")) {
-      return "wss://nesty.onrender.com";
+      return "wss://piscine-devnest.onrender.com";
     }
     return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
   }
-  return "wss://nesty.onrender.com";
+  return "wss://piscine-devnest.onrender.com";
 })();
 
 
