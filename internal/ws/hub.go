@@ -350,7 +350,7 @@ func (h *Hub) RecordGroupCallEvent(userID uint, raw map[string]interface{}) {
 
 	call, exists := h.GroupCalls[channelID]
 	switch msgType {
-	case "group_call_start":
+	case "group_call_start", "group_call_join":
 		callType, _ := raw["call_type"].(string)
 		if callType == "" {
 			callType = "audio"
@@ -360,31 +360,37 @@ func (h *Hub) RecordGroupCallEvent(userID uint, raw map[string]interface{}) {
 		username, _ := raw["username"].(string)
 		avatarURL, _ := raw["avatar_url"].(string)
 
-		h.GroupCalls[channelID] = &ActiveGroupCall{
-			ChannelID:    channelID,
-			ChannelName:  channelName,
-			CallType:     callType,
-			HostUserID:   userID,
-			StartedAt:    time.Now(),
-			Participants: map[uint]*GroupCallParticipant{
-				userID: {
-					UserID:    userID,
-					Username:  username,
-					Name:      userName,
-					AvatarURL: avatarURL,
+		if !exists || call == nil {
+			h.GroupCalls[channelID] = &ActiveGroupCall{
+				ChannelID:   channelID,
+				ChannelName: channelName,
+				CallType:    callType,
+				HostUserID:  userID,
+				StartedAt:   time.Now(),
+				Participants: map[uint]*GroupCallParticipant{
+					userID: {
+						UserID:    userID,
+						Username:  username,
+						Name:      userName,
+						AvatarURL: avatarURL,
+					},
 				},
-			},
-		}
-	case "group_call_join":
-		if exists && call != nil {
-			userName, _ := raw["name"].(string)
-			username, _ := raw["username"].(string)
-			avatarURL, _ := raw["avatar_url"].(string)
+			}
+		} else {
+			if call.Participants == nil {
+				call.Participants = make(map[uint]*GroupCallParticipant)
+			}
 			call.Participants[userID] = &GroupCallParticipant{
 				UserID:    userID,
 				Username:  username,
 				Name:      userName,
 				AvatarURL: avatarURL,
+			}
+			if callType != "" {
+				call.CallType = callType
+			}
+			if channelName != "" {
+				call.ChannelName = channelName
 			}
 		}
 	case "group_call_leave":

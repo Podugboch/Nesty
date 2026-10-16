@@ -359,7 +359,7 @@ type CommunityChannel = {
   createdById?: number;
   requiresApproval?: boolean;
   memberCount?: number;
-  currentUserRole?: "admin" | "co_admin" | "member" | "pending" | "none";
+  currentUserRole?: "admin" | "co_admin" | "member" | "pending" | "invited" | "none";
 };
 
 type CommunityMemberItem = {
@@ -367,7 +367,7 @@ type CommunityMemberItem = {
   community_id: number;
   user_id: number;
   role: "admin" | "co_admin" | "member";
-  status: "active" | "pending";
+  status: "active" | "pending" | "invited";
   created_at?: string;
   user?: User;
 };
@@ -575,6 +575,18 @@ export default function App() {
   const [newCommDescription, setNewCommDescription] = useState("");
   const [newCommRequiresApproval, setNewCommRequiresApproval] = useState(false);
 
+  // Track communities searched/viewed by user
+  const [searchedCommunityIds, setSearchedCommunityIds] = useState<Set<string>>(new Set());
+
+  // Incoming community call broadcast notification
+  const [incomingCommunityCall, setIncomingCommunityCall] = useState<{
+    channelId: string;
+    channelName: string;
+    callType: "audio" | "video";
+    callerName: string;
+    callerAvatar?: string;
+  } | null>(null);
+
   // Manage Community Modal state (for Admins & Co-Admins)
   const [manageCommModalOpen, setManageCommModalOpen] = useState(false);
   const [manageCommSlug, setManageCommSlug] = useState("");
@@ -582,7 +594,74 @@ export default function App() {
   const [manageCommPending, setManageCommPending] = useState<CommunityMemberItem[]>([]);
   const [manageCommLoading, setManageCommLoading] = useState(false);
   const [manageCommRequiresApproval, setManageCommRequiresApproval] = useState(false);
-  const [manageTab, setManageTab] = useState<"pending" | "members">("pending");
+  const [manageTab, setManageTab] = useState<"pending" | "members" | "invite">("pending");
+  const [inviteSearchQuery, setInviteSearchQuery] = useState("");
+  const [inviteSearchResults, setInviteSearchResults] = useState<User[]>([]);
+
+
+  const handleAcceptCommunityInvite = async (slug: string) => {
+    try {
+      const authToken = token || localStorage.getItem("token");
+      const res = await fetch(`${API_URL}/api/communities/${slug}/accept-invite`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        alert("Invitation accepted! Welcome to the community.");
+        fetchCommunities();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to accept invitation.");
+      }
+    } catch (err) {
+      console.error("Failed to accept invite", err);
+    }
+  };
+
+  const handleDeclineCommunityInvite = async (slug: string) => {
+    if (!window.confirm("Are you sure you want to decline this invitation?")) return;
+    try {
+      const authToken = token || localStorage.getItem("token");
+      const res = await fetch(`${API_URL}/api/communities/${slug}/decline-invite`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        alert("Invitation declined.");
+        fetchCommunities();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to decline invitation.");
+      }
+    } catch (err) {
+      console.error("Failed to decline invite", err);
+    }
+  };
+
+  const handleInviteCommunityMember = async (slug: string, targetUserId: number) => {
+    try {
+      const authToken = token || localStorage.getItem("token");
+      const res = await fetch(`${API_URL}/api/communities/${slug}/invite`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ user_id: targetUserId }),
+      });
+      if (res.ok) {
+        alert("Invitation sent successfully!");
+        setInviteSearchQuery("");
+        setInviteSearchResults([]);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to send invitation.");
+      }
+    } catch (err) {
+      console.error("Failed to invite member", err);
+      alert("Network error inviting member.");
+    }
+  };
 
   const handleJoinCommunity = async (slug: string) => {
     const authToken = token || localStorage.getItem("token");
@@ -891,6 +970,48 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [searchFocused, setSearchFocused] = useState(false);
+
+  // Communities visible on the user's dashboard:
+  // Must be:
+  // 1) A community the user is a member/admin/co-admin of, OR
+  // 2) A community the user is invited to join (or pending approval), OR
+  // 3) A community the user searched for or opened
+  const dashboardCommunities = useMemo(() => {
+    return communities.filter((c) => {
+      // Actively searching in the search bar
+      if (searchQuery.trim().length > 0) {
+        const q = searchQuery.toLowerCase();
+        if (c.name.toLowerCase().includes(q) || (c.subtitle && c.subtitle.toLowerCase().includes(q))) {
+          return true;
+        }
+      }
+      // Searched or opened in this session
+      if (searchedCommunityIds.has(c.id) || selectedCommunity === c.id) {
+        return true;
+      }
+      // Creator
+      if (user && c.createdById === user.id) {
+        return true;
+      }
+      // Member, Admin, Co-admin
+      if (c.currentUserRole === "admin" || c.currentUserRole === "co_admin" || c.currentUserRole === "member") {
+        return true;
+      }
+      // Invited or Pending
+      if (c.currentUserRole === "invited" || c.currentUserRole === "pending") {
+        return true;
+      }
+      return false;
+    });
+  }, [communities, searchQuery, searchedCommunityIds, selectedCommunity, user]);
+
+  const matchingCommunities = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return communities.filter(
+      (c) => c.name.toLowerCase().includes(q) || (c.subtitle && c.subtitle.toLowerCase().includes(q))
+    );
+  }, [communities, searchQuery]);
 
   // -----------------------------
   // NOTIFICATIONS
@@ -3915,14 +4036,24 @@ export default function App() {
     };
 
     pc.ontrack = (event) => {
-      const remoteStream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
       setGroupCallState((prev) => {
         if (!prev) return null;
         return {
           ...prev,
-          participants: prev.participants.map((p) =>
-            Number(p.id) === Number(targetUserId) ? { ...p, stream: remoteStream } : p
-          ),
+          participants: prev.participants.map((p) => {
+            if (Number(p.id) !== Number(targetUserId)) return p;
+            let currentStream = p.stream;
+            if (event.streams && event.streams[0]) {
+              currentStream = event.streams[0];
+            } else if (currentStream) {
+              if (!currentStream.getTracks().some((t) => t.id === event.track.id)) {
+                currentStream.addTrack(event.track);
+              }
+            } else {
+              currentStream = new MediaStream([event.track]);
+            }
+            return { ...p, stream: currentStream };
+          }),
         };
       });
     };
@@ -3939,6 +4070,9 @@ export default function App() {
 
   const createAndSendOfferToPeer = async (targetUserId: number, channelId: string) => {
     try {
+      const myId = Number(userRef.current?.id || user?.id || 0);
+      if (!targetUserId || !myId || Number(targetUserId) === myId) return;
+
       const pc = createGroupPeerConnection(targetUserId, channelId);
       const offer = await pc.createOffer({
         offerToReceiveAudio: true,
@@ -3954,9 +4088,9 @@ export default function App() {
             to_user_id: targetUserId,
             channel_id: channelId,
             sdp: offer,
-            name: user?.name || user?.username,
-            username: user?.username,
-            avatar_url: user?.avatar_url,
+            name: userRef.current?.name || userRef.current?.username || user?.name || user?.username,
+            username: userRef.current?.username || user?.username,
+            avatar_url: userRef.current?.avatar_url || user?.avatar_url,
           })
         );
       }
@@ -3972,6 +4106,9 @@ export default function App() {
     callerMeta?: { name?: string; username?: string; avatar_url?: string }
   ) => {
     try {
+      const myId = Number(userRef.current?.id || user?.id || 0);
+      if (!fromUserId || !myId || Number(fromUserId) === myId) return;
+
       // Ensure participant is in list
       setGroupCallState((prev) => {
         if (!prev) return null;
@@ -4013,9 +4150,9 @@ export default function App() {
             to_user_id: fromUserId,
             channel_id: channelId,
             sdp: answer,
-            name: user?.name || user?.username,
-            username: user?.username,
-            avatar_url: user?.avatar_url,
+            name: userRef.current?.name || userRef.current?.username || user?.name || user?.username,
+            username: userRef.current?.username || user?.username,
+            avatar_url: userRef.current?.avatar_url || user?.avatar_url,
           })
         );
       }
@@ -4026,6 +4163,9 @@ export default function App() {
 
   const handleIncomingGroupAnswer = async (fromUserId: number, sdp: RTCSessionDescriptionInit) => {
     try {
+      const myId = Number(userRef.current?.id || user?.id || 0);
+      if (!fromUserId || !myId || Number(fromUserId) === myId) return;
+
       const pc = groupPeersRef.current.get(fromUserId);
       if (!pc) return;
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
@@ -4045,6 +4185,9 @@ export default function App() {
 
   const handleIncomingGroupIce = async (fromUserId: number, candidate: RTCIceCandidateInit) => {
     try {
+      const myId = Number(userRef.current?.id || user?.id || 0);
+      if (!fromUserId || !myId || Number(fromUserId) === myId) return;
+
       const pc = groupPeersRef.current.get(fromUserId);
       if (pc && pc.remoteDescription && pc.remoteDescription.type) {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
@@ -4074,6 +4217,9 @@ export default function App() {
       const channelId = data.channel_id;
       if (!channelId) return;
 
+      const fromId = Number(data.from_user_id);
+      const myId = Number(userRef.current?.id || user?.id || 0);
+
       setActiveGroupCalls((prev) => {
         const existing = prev[channelId] || {
           channel_id: channelId,
@@ -4082,9 +4228,9 @@ export default function App() {
           participants: {},
         };
         const parts = { ...existing.participants };
-        if (data.from_user_id) {
-          parts[data.from_user_id] = {
-            user_id: data.from_user_id,
+        if (fromId) {
+          parts[fromId] = {
+            user_id: fromId,
             name: data.name,
             username: data.username,
             avatar_url: data.avatar_url,
@@ -4099,8 +4245,8 @@ export default function App() {
       // If current user is in this channel's call and this broadcast is from someone else:
       const currentCall = groupCallStateRef.current;
       if (currentCall && currentCall.channelId === channelId) {
-        const fromId = Number(data.from_user_id);
-        if (fromId && fromId !== Number(user?.id)) {
+        // STRICT: Never add self to remote participants, never send offer to self!
+        if (fromId && myId && fromId !== myId) {
           setGroupCallState((prev) => {
             if (!prev) return null;
             if (prev.participants.some((p) => Number(p.id) === fromId)) return prev;
@@ -4120,6 +4266,28 @@ export default function App() {
 
           // Existing member initiates offer to newly joined participant
           createAndSendOfferToPeer(fromId, channelId);
+        }
+      } else if (fromId && myId && fromId !== myId && !currentCall) {
+        // Community member broadcast: notify online community members who aren't in the call yet
+        const isMember = communities.some(
+          (c) =>
+            c.id === channelId &&
+            (c.currentUserRole === "admin" ||
+              c.currentUserRole === "co_admin" ||
+              c.currentUserRole === "member" ||
+              c.createdById === myId)
+        );
+        if (isMember) {
+          setIncomingCommunityCall({
+            channelId,
+            channelName: data.channel_name || channelId,
+            callType: data.call_type || "audio",
+            callerName: data.name || data.username || "Community Member",
+            callerAvatar: data.avatar_url,
+          });
+          try {
+            startIncomingRingtone();
+          } catch {}
         }
       }
       return;
@@ -4146,6 +4314,8 @@ export default function App() {
         };
       });
 
+      setIncomingCommunityCall((prev) => (prev && prev.channelId === channelId ? null : prev));
+
       const currentCall = groupCallStateRef.current;
       if (currentCall && currentCall.channelId === channelId) {
         const pc = groupPeersRef.current.get(fromId);
@@ -4162,7 +4332,8 @@ export default function App() {
 
   const handleGroupCallSignal = async (data: any) => {
     const fromId = Number(data.from_user_id);
-    if (!fromId || fromId === Number(user?.id)) return;
+    const myId = Number(userRef.current?.id || user?.id || 0);
+    if (!fromId || !myId || fromId === myId) return;
 
     if (data.signal_type === "offer") {
       await handleIncomingGroupOffer(fromId, data.sdp, data.channel_id, {
@@ -4189,6 +4360,7 @@ export default function App() {
       requestMobileScreenTakeover();
       const targetId = targetChannelId || (selectedCommunity !== "home" ? selectedCommunity : "coding-help");
       const activeComm = communities.find((c) => c.id === targetId) || communities[0];
+      const myId = Number(userRef.current?.id || user?.id || 0);
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: type === "video" ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" } : false,
@@ -4196,13 +4368,13 @@ export default function App() {
       });
       groupLocalStreamRef.current = stream;
 
-      // Check if there are already other participants registered in this channel
+      // Check if there are already other participants registered in this channel (filter out self!)
       const existingCall = activeGroupCalls[activeComm.id];
       const initialParticipants: GroupCallParticipant[] = [];
       if (existingCall && existingCall.participants) {
         Object.values(existingCall.participants).forEach((p: any) => {
-          const uid = Number(p.user_id);
-          if (uid && uid !== Number(user?.id)) {
+          const uid = Number(p.user_id || p.id);
+          if (uid && myId && uid !== myId) {
             initialParticipants.push({
               id: uid,
               name: p.name || p.username || `User #${uid}`,
@@ -4227,19 +4399,19 @@ export default function App() {
       groupCallStateRef.current = stateObj;
       setGroupCallState(stateObj);
 
-      // Announce call join/start to WebSocket hub
+      // Announce call start/join to WebSocket hub
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(
           JSON.stringify({
             event: "group_call_broadcast",
-            type: "group_call_join",
+            type: initialParticipants.length > 0 ? "group_call_join" : "group_call_start",
             channel_id: activeComm.id,
             channel_name: activeComm.name,
             call_type: type,
-            from_user_id: user?.id,
-            name: user?.name || user?.username,
-            username: user?.username,
-            avatar_url: user?.avatar_url,
+            from_user_id: myId,
+            name: userRef.current?.name || userRef.current?.username || user?.name || user?.username,
+            username: userRef.current?.username || user?.username,
+            avatar_url: userRef.current?.avatar_url || user?.avatar_url,
           })
         );
       }
@@ -4941,26 +5113,64 @@ export default function App() {
           />
           <span className="search-shortcut-badge">⌘K</span>
 
-          {searchFocused && searchResults.length > 0 && (
+          {searchFocused && (searchResults.length > 0 || matchingCommunities.length > 0) && (
             <div className="sidebar-search-results">
-              {searchResults.map((u) => (
-                <div
-                  key={u.id}
-                  className="search-result-row"
-                  onMouseDown={() => {
-                    openProfile(u.id);
-                    setSearchQuery("");
-                  }}
-                >
-                  <div className="search-avatar-mini">
-                    {u.avatar_url ? <img src={u.avatar_url} alt="" /> : u.username.charAt(0).toUpperCase()}
+              {matchingCommunities.length > 0 && (
+                <>
+                  <div style={{ padding: "6px 12px 2px", fontSize: "10px", fontWeight: 700, color: "var(--text-muted)", letterSpacing: "0.5px" }}>
+                    COMMUNITIES
                   </div>
-                  <div className="search-user-meta">
-                    <span className="search-user-name">{u.name || u.username}</span>
-                    <span className="search-user-handle">@{u.username}</span>
+                  {matchingCommunities.map((c) => (
+                    <div
+                      key={c.id}
+                      className="search-result-row"
+                      onMouseDown={() => {
+                        setSearchedCommunityIds((prev) => new Set(prev).add(c.id));
+                        setSelectedCommunity(c.id);
+                        setPage("feed");
+                        setSearchQuery("");
+                      }}
+                    >
+                      <div className="featured-icon-badge purple" style={{ width: "24px", height: "24px", fontSize: "12px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "6px" }}>
+                        #
+                      </div>
+                      <div className="search-user-meta">
+                        <span className="search-user-name">{c.name}</span>
+                        <span className="search-user-handle">
+                          {c.memberCount} {c.memberCount === 1 ? "member" : "members"}
+                          {c.currentUserRole !== "none" ? ` • ${c.currentUserRole}` : " • Click to join"}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+              {searchResults.length > 0 && (
+                <>
+                  {matchingCommunities.length > 0 && <div className="mobile-divider" style={{ margin: "4px 0" }} />}
+                  <div style={{ padding: "6px 12px 2px", fontSize: "10px", fontWeight: 700, color: "var(--text-muted)", letterSpacing: "0.5px" }}>
+                    PEOPLE
                   </div>
-                </div>
-              ))}
+                  {searchResults.map((u) => (
+                    <div
+                      key={u.id}
+                      className="search-result-row"
+                      onMouseDown={() => {
+                        openProfile(u.id);
+                        setSearchQuery("");
+                      }}
+                    >
+                      <div className="search-avatar-mini">
+                        {u.avatar_url ? <img src={u.avatar_url} alt="" /> : u.username.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="search-user-meta">
+                        <span className="search-user-name">{u.name || u.username}</span>
+                        <span className="search-user-handle">@{u.username}</span>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -5124,20 +5334,36 @@ export default function App() {
         {/* COMMUNITIES LIST */}
         <div className="communities-section">
           <div className="sidebar-section-label">COMMUNITIES</div>
-          {communities.map((comm) => (
-            <button
-              key={comm.id}
-              className={`comm-item-btn ${page === "feed" && selectedCommunity === comm.id ? "active" : ""}`}
-              onClick={() => {
-                setSelectedCommunity(comm.id);
-                setPage("feed");
-                setMobileMenuOpen(false);
-              }}
-            >
-              <span className={`comm-badge ${comm.badgeClass}`}>#</span>
-              <span>{comm.name}</span>
-            </button>
-          ))}
+          {dashboardCommunities.length === 0 ? (
+            <div style={{ padding: "8px 12px", fontSize: "12px", color: "var(--text-muted)" }}>
+              No communities yet. Search or create one!
+            </div>
+          ) : (
+            dashboardCommunities.map((comm) => (
+              <button
+                key={comm.id}
+                className={`comm-item-btn ${page === "feed" && selectedCommunity === comm.id ? "active" : ""}`}
+                onClick={() => {
+                  setSelectedCommunity(comm.id);
+                  setPage("feed");
+                  setMobileMenuOpen(false);
+                }}
+              >
+                <span className={`comm-badge ${comm.badgeClass}`}>#</span>
+                <span>{comm.name}</span>
+                {comm.currentUserRole === "invited" && (
+                  <span style={{ marginLeft: "auto", fontSize: "10px", background: "rgba(16, 185, 129, 0.15)", color: "#10b981", padding: "2px 6px", borderRadius: "999px", fontWeight: 600 }}>
+                    Invited
+                  </span>
+                )}
+                {activeGroupCalls[comm.id] && (
+                  <span style={{ marginLeft: "auto", fontSize: "10px", color: "#ef4444", fontWeight: 700 }}>
+                    🔴 LIVE
+                  </span>
+                )}
+              </button>
+            ))
+          )}
 
           <button
             className="create-comm-btn"
@@ -5234,12 +5460,12 @@ export default function App() {
             {showFeatured && (
               <div className="drawer-accordion-content">
                 <div className="featured-channels-list">
-                  {communities.length === 0 ? (
+                  {dashboardCommunities.length === 0 ? (
                     <div style={{ padding: "12px 14px", fontSize: "12px", color: "var(--text-sub)", textAlign: "center" }}>
-                      No communities yet. Create one!
+                      No communities joined yet. Search or create one!
                     </div>
                   ) : (
-                    communities.map((c) => (
+                    dashboardCommunities.map((c) => (
                       <div
                         key={c.id}
                         className="featured-channel-row"
@@ -5254,6 +5480,9 @@ export default function App() {
                           <span className="featured-channel-title">{c.name}</span>
                           <span className="featured-channel-sub">{c.subtitle}</span>
                         </div>
+                        {activeGroupCalls[c.id] && (
+                          <span style={{ fontSize: "11px", color: "#ef4444", fontWeight: 700, marginRight: "4px" }}>🔴 LIVE</span>
+                        )}
                         <span className="featured-chevron">›</span>
                       </div>
                     ))
@@ -5733,6 +5962,25 @@ export default function App() {
                     >
                       ⏳ Request Sent
                     </button>
+                  ) : activeChannel?.currentUserRole === "invited" ? (
+                    <div style={{ display: "flex", gap: "6px" }}>
+                      <button
+                        type="button"
+                        className="comm-action-btn join-btn"
+                        onClick={() => handleAcceptCommunityInvite(activeChannel.id)}
+                        title="Accept Invitation to join"
+                      >
+                        ✓ Accept
+                      </button>
+                      <button
+                        type="button"
+                        className="comm-action-btn leave-btn"
+                        onClick={() => handleDeclineCommunityInvite(activeChannel.id)}
+                        title="Decline Invitation"
+                      >
+                        Decline
+                      </button>
+                    </div>
                   ) : activeChannel ? (
                     <button
                       type="button"
@@ -6640,11 +6888,11 @@ export default function App() {
         </div>
 
         {/* CARD 2: COMMUNITIES */}
-        {communities.length > 0 && (
+        {dashboardCommunities.length > 0 && (
           <div className="featured-widget">
-            <h4 className="featured-heading">Communities</h4>
+            <h4 className="featured-heading">Your Communities</h4>
             <div className="featured-channels-list">
-              {communities.map((comm) => (
+              {dashboardCommunities.map((comm) => (
                 <div
                   key={comm.id}
                   className="featured-channel-row"
@@ -6658,6 +6906,9 @@ export default function App() {
                     <span className="featured-channel-title">{comm.name}</span>
                     <span className="featured-channel-sub">{comm.subtitle}</span>
                   </div>
+                  {activeGroupCalls[comm.id] && (
+                    <span style={{ fontSize: "11px", color: "#ef4444", fontWeight: 700, marginRight: "4px" }}>🔴 LIVE</span>
+                  )}
                   <span className="featured-chevron">›</span>
                 </div>
               ))}
@@ -6834,7 +7085,7 @@ export default function App() {
               </label>
             </div>
 
-            {/* TABS: PENDING REQUESTS & MEMBERS */}
+            {/* TABS: PENDING REQUESTS, MEMBERS, INVITE */}
             <div className="manage-comm-tabs">
               <button
                 className={`manage-tab-btn ${manageTab === "pending" ? "active" : ""}`}
@@ -6850,6 +7101,12 @@ export default function App() {
                 onClick={() => setManageTab("members")}
               >
                 <span>Members ({manageCommMembers.length})</span>
+              </button>
+              <button
+                className={`manage-tab-btn ${manageTab === "invite" ? "active" : ""}`}
+                onClick={() => setManageTab("invite")}
+              >
+                <span>+ Invite Users</span>
               </button>
             </div>
 
@@ -6897,7 +7154,7 @@ export default function App() {
                     ))}
                   </div>
                 )
-              ) : (
+              ) : manageTab === "members" ? (
                 <div className="manage-members-list">
                   {manageCommMembers.map((item) => {
                     const isCreator = activeChannel?.createdById === item.user_id;
@@ -6947,6 +7204,76 @@ export default function App() {
                       </div>
                     );
                   })}
+                </div>
+              ) : (
+                <div className="manage-invite-section" style={{ padding: "8px 0" }}>
+                  <div style={{ marginBottom: "12px" }}>
+                    <input
+                      type="text"
+                      className="auth-input"
+                      placeholder="Search Nesters by username or name to invite..."
+                      value={inviteSearchQuery}
+                      onChange={async (e) => {
+                        const val = e.target.value;
+                        setInviteSearchQuery(val);
+                        if (!val.trim()) {
+                          setInviteSearchResults([]);
+                          return;
+                        }
+                        try {
+                          const res = await fetch(`${API_URL}/api/users/search?q=${encodeURIComponent(val)}`, {
+                            headers: { Authorization: `Bearer ${token}` },
+                          });
+                          if (res.ok) {
+                            const data = await res.json();
+                            setInviteSearchResults(data || []);
+                          }
+                        } catch {}
+                      }}
+                      style={{ fontSize: "13px", padding: "9px 12px", width: "100%", boxSizing: "border-box" }}
+                    />
+                  </div>
+                  {inviteSearchResults.length === 0 ? (
+                    <div className="manage-empty-state">
+                      <p>{inviteSearchQuery ? "No Nesters found." : "Type above to search and invite users to this community."}</p>
+                    </div>
+                  ) : (
+                    <div className="manage-members-list">
+                      {inviteSearchResults.map((u) => {
+                        const isAlreadyMember = manageCommMembers.some((m) => m.user_id === u.id);
+                        return (
+                          <div key={u.id} className="manage-member-row">
+                            <div className="manage-member-user" onClick={() => openProfile(u.id)}>
+                              {u.avatar_url ? (
+                                <img src={u.avatar_url} alt="" className="manage-avatar" />
+                              ) : (
+                                <div className="manage-avatar-placeholder">
+                                  {(u.name || u.username || "U")[0].toUpperCase()}
+                                </div>
+                              )}
+                              <div className="manage-member-names">
+                                <span className="manage-name">{u.name || u.username}</span>
+                                <span className="manage-username">@{u.username}</span>
+                              </div>
+                            </div>
+                            <div className="manage-member-actions">
+                              {isAlreadyMember ? (
+                                <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Already Member</span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="admit-btn"
+                                  onClick={() => handleInviteCommunityMember(manageCommSlug, u.id)}
+                                >
+                                  ✉️ Invite
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -8747,6 +9074,44 @@ export default function App() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          FLOATING INCOMING COMMUNITY CALL BANNER
+          ===================================================================== */}
+      {incomingCommunityCall && !groupCallState && (
+        <div className="community-call-banner-top">
+          <div className="comm-call-banner-content">
+            <span className="comm-call-pulse">🔴</span>
+            <div className="comm-call-banner-text">
+              <span className="comm-call-channel-tag">#{incomingCommunityCall.channelName}</span>
+              <span className="comm-call-sub-text">
+                {incomingCommunityCall.callerName} started a Group {incomingCommunityCall.callType === "video" ? "Video" : "Voice"} Call
+              </span>
+            </div>
+          </div>
+          <div className="comm-call-banner-btns">
+            <button
+              type="button"
+              className="comm-call-join-btn"
+              onClick={() => {
+                const call = incomingCommunityCall;
+                setIncomingCommunityCall(null);
+                joinGroupCall(call.channelId, call.channelName, call.callType);
+              }}
+            >
+              {incomingCommunityCall.callType === "video" ? "📹 Join Video" : "📞 Join Audio"}
+            </button>
+            <button
+              type="button"
+              className="comm-call-dismiss-btn"
+              onClick={() => setIncomingCommunityCall(null)}
+              title="Dismiss"
+            >
+              ✕
+            </button>
           </div>
         </div>
       )}

@@ -80,6 +80,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.POST("/communities/:slug/members/:user_id/approve", h.ApproveCommunityMember)
 		protected.POST("/communities/:slug/members/:user_id/reject", h.RejectCommunityMember)
 		protected.POST("/communities/:slug/members/:user_id/role", h.UpdateCommunityMemberRole)
+		protected.POST("/communities/:slug/invite", h.InviteCommunityMember)
+		protected.POST("/communities/:slug/accept-invite", h.AcceptCommunityInvite)
+		protected.POST("/communities/:slug/decline-invite", h.DeclineCommunityInvite)
 		protected.PUT("/communities/:slug/settings", h.UpdateCommunitySettings)
 		// USERS
 		protected.GET("/me", h.Me)
@@ -2384,6 +2387,8 @@ func (h *Handler) GetCommunities(c *gin.Context) {
 		for _, m := range myMemberships {
 			if m.Status == "pending" {
 				roleMap[m.CommunityID] = "pending"
+			} else if m.Status == "invited" {
+				roleMap[m.CommunityID] = "invited"
 			} else {
 				roleMap[m.CommunityID] = m.Role
 			}
@@ -2447,6 +2452,8 @@ func (h *Handler) GetCommunity(c *gin.Context) {
 		if err := h.DB.Where("community_id = ? AND user_id = ?", comm.ID, callerID).First(&m).Error; err == nil {
 			if m.Status == "pending" {
 				comm.CurrentUserRole = "pending"
+			} else if m.Status == "invited" {
+				comm.CurrentUserRole = "invited"
 			} else {
 				comm.CurrentUserRole = m.Role
 			}
@@ -2878,4 +2885,115 @@ func (h *Handler) UpdateCommunitySettings(c *gin.Context) {
 		"message":   "Settings updated successfully.",
 		"community": comm,
 	})
+}
+
+// InviteCommunityMember allows an admin, co-admin, or member to invite another user
+func (h *Handler) InviteCommunityMember(c *gin.Context) {
+	slug := c.Param("slug")
+	callerID := c.GetUint("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	var input struct {
+		UserID uint `json:"user_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	targetUserID := input.UserID
+	if targetUserID == callerID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot invite yourself"})
+		return
+	}
+
+	var existing model.CommunityMember
+	if err := h.DB.Where("community_id = ? AND user_id = ?", comm.ID, targetUserID).First(&existing).Error; err == nil {
+		if existing.Status == "active" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "user is already a member of this community"})
+			return
+		}
+		if existing.Status == "invited" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "user has already been invited"})
+			return
+		}
+		// If pending, approve them
+		existing.Status = "active"
+		h.DB.Save(&existing)
+		c.JSON(http.StatusOK, gin.H{"message": "User admitted to community."})
+		return
+	}
+
+	newMember := model.CommunityMember{
+		CommunityID: comm.ID,
+		UserID:      targetUserID,
+		Role:        "member",
+		Status:      "invited",
+	}
+	if err := h.DB.Create(&newMember).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send invitation"})
+		return
+	}
+
+	// Create notification for target user
+	notif := model.Notification{
+		UserID:  targetUserID,
+		ActorID: callerID,
+		Type:    "community_invite",
+	}
+	h.DB.Create(&notif)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Invitation sent successfully."})
+}
+
+// AcceptCommunityInvite accepts an invitation
+func (h *Handler) AcceptCommunityInvite(c *gin.Context) {
+	slug := c.Param("slug")
+	userID := c.GetUint("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	var m model.CommunityMember
+	if err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'invited'", comm.ID, userID).First(&m).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no active invitation found"})
+		return
+	}
+
+	m.Status = "active"
+	h.DB.Save(&m)
+
+	var newCount int64
+	h.DB.Model(&model.CommunityMember{}).Where("community_id = ? AND status = 'active'", comm.ID).Count(&newCount)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":      "Invitation accepted! Welcome to #" + comm.Name,
+		"status":       "active",
+		"role":         m.Role,
+		"member_count": newCount,
+	})
+}
+
+// DeclineCommunityInvite declines an invitation
+func (h *Handler) DeclineCommunityInvite(c *gin.Context) {
+	slug := c.Param("slug")
+	userID := c.GetUint("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	h.DB.Where("community_id = ? AND user_id = ? AND status = 'invited'", comm.ID, userID).Delete(&model.CommunityMember{})
+
+	c.JSON(http.StatusOK, gin.H{"message": "Invitation declined."})
 }
