@@ -5,6 +5,7 @@ import { ReelsView } from "./components/ReelsView";
 import { ReelCreateView } from "./components/ReelCreateView";
 import { ReportModal, type ReportTargetType } from "./components/ReportModal";
 import { AdminView } from "./components/AdminView";
+import { ZoomableScreenShare } from "./components/ZoomableScreenShare";
 import "./App.css";
 
 const API_URL: string = (() => {
@@ -992,6 +993,10 @@ export default function App() {
   const groupLocalStreamRef = useRef<MediaStream | null>(null);
   const groupScreenStreamRef = useRef<MediaStream | null>(null);
   const [groupLocalStream, setGroupLocalStream] = useState<MediaStream | null>(null);
+  const [fullscreenScreenShare, setFullscreenScreenShare] = useState<{
+    stream: MediaStream | null;
+    sharerName: string;
+  } | null>(null);
   const groupPeersRef = useRef<Map<number, RTCPeerConnection>>(new Map());
   const groupCandidatesQueueRef = useRef<Map<number, RTCIceCandidateInit[]>>(new Map());
   const [groupCallDuration, setGroupCallDuration] = useState(0);
@@ -4638,6 +4643,7 @@ export default function App() {
 
     groupCallStateRef.current = null;
     setGroupCallState(null);
+    setFullscreenScreenShare(null);
     restoreMobileScreenLock();
   };
 
@@ -4765,6 +4771,7 @@ export default function App() {
     }
 
     setGroupCallState((prev) => (prev ? { ...prev, isScreenSharing: false } : null));
+    setFullscreenScreenShare((prev) => (prev?.sharerName === "You" ? null : prev));
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && groupCallStateRef.current) {
       wsRef.current.send(
@@ -4783,6 +4790,11 @@ export default function App() {
     if (!groupCallState) return;
     if (groupCallState.isScreenSharing) {
       stopGroupScreenShare();
+      return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      alert("Screen sharing is not supported by mobile web browsers or WebViews due to mobile OS security restrictions. You can view, zoom, and fit other members' shared screens on this device!");
       return;
     }
 
@@ -9530,11 +9542,23 @@ export default function App() {
             <div className={`group-call-grid count-${groupCallState.participants.length + 1} ${groupCallState.isScreenSharing || groupCallState.participants.some((p) => p.isScreenSharing) ? "has-screen-share" : ""}`}>
               {/* LOCAL PARTICIPANT TILE */}
               <div className={`group-call-tile local-tile ${groupCallState.isScreenSharing ? "sharing-screen" : ""}`}>
-                {groupCallState.isScreenSharing || (!groupCallState.isVideoOff && (groupLocalStream || groupLocalStreamRef.current) && (groupLocalStream || groupLocalStreamRef.current)!.getVideoTracks().some((t) => t.enabled)) ? (
+                {groupCallState.isScreenSharing ? (
+                  <ZoomableScreenShare
+                    stream={groupLocalStream || groupLocalStreamRef.current}
+                    sharerName="You"
+                    isMuted={true}
+                    onExpandFullscreen={() =>
+                      setFullscreenScreenShare({
+                        stream: groupLocalStream || groupLocalStreamRef.current,
+                        sharerName: "You",
+                      })
+                    }
+                  />
+                ) : (!groupCallState.isVideoOff && (groupLocalStream || groupLocalStreamRef.current) && (groupLocalStream || groupLocalStreamRef.current)!.getVideoTracks().some((t) => t.enabled)) ? (
                   <VideoFeed
                     stream={groupLocalStream || groupLocalStreamRef.current}
                     isMuted={true}
-                    className={`group-call-video-feed ${groupCallState.isScreenSharing ? "screen-share-video" : ""}`}
+                    className="group-call-video-feed"
                   />
                 ) : (
                   <div className="group-call-avatar-placeholder">
@@ -9558,11 +9582,23 @@ export default function App() {
                 const hasVideo = !!p.stream && p.stream.getVideoTracks().some((t) => t.enabled && t.readyState === "live");
                 return (
                   <div key={p.id || idx} className={`group-call-tile remote-tile ${p.isScreenSharing ? "sharing-screen" : ""}`}>
-                    {hasVideo ? (
+                    {p.isScreenSharing ? (
+                      <ZoomableScreenShare
+                        stream={p.stream || null}
+                        sharerName={p.name || `@${p.username}`}
+                        isMuted={false}
+                        onExpandFullscreen={() =>
+                          setFullscreenScreenShare({
+                            stream: p.stream || null,
+                            sharerName: p.name || `@${p.username}`,
+                          })
+                        }
+                      />
+                    ) : hasVideo ? (
                       <VideoFeed
                         stream={p.stream || null}
                         isMuted={false}
-                        className={`group-call-video-feed ${p.isScreenSharing ? "screen-share-video" : ""}`}
+                        className="group-call-video-feed"
                       />
                     ) : (
                       <div className="group-call-avatar-placeholder">
@@ -9642,6 +9678,32 @@ export default function App() {
                 <span className="dock-btn-text">Leave</span>
               </button>
             </div>
+
+            {/* FULLSCREEN THEATER MODAL FOR SCREEN SHARING */}
+            {fullscreenScreenShare && (
+              <div className="screen-share-theater-modal">
+                <div className="screen-share-theater-header">
+                  <div className="screen-share-theater-title">
+                    <span>🖥️ {fullscreenScreenShare.sharerName}'s Shared Screen</span>
+                    <span className="screen-share-rotate-tip">💡 Rotate device for landscape view</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="screen-share-theater-close"
+                    onClick={() => setFullscreenScreenShare(null)}
+                  >
+                    ✕ Exit Fullscreen
+                  </button>
+                </div>
+                <ZoomableScreenShare
+                  stream={fullscreenScreenShare.stream}
+                  sharerName={fullscreenScreenShare.sharerName}
+                  isMuted={fullscreenScreenShare.sharerName === "You"}
+                  isFullscreen={true}
+                  onCloseFullscreen={() => setFullscreenScreenShare(null)}
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
