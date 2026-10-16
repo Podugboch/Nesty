@@ -583,29 +583,7 @@ export const ReelsView: React.FC<ReelsViewProps> = ({
         </div>
       )}
 
-      {/* Floating Scroll Nav Arrows for Desktop Mouse Users */}
-      {reels.length > 1 && !loading && (
-        <div className="reels-desktop-nav-arrows">
-          <button
-            type="button"
-            className="reels-arrow-btn"
-            disabled={activeIndex === 0}
-            onClick={() => scrollToIndex(activeIndex - 1)}
-            title="Previous Reel (Up Arrow)"
-          >
-            ▲
-          </button>
-          <button
-            type="button"
-            className="reels-arrow-btn"
-            disabled={activeIndex === reels.length - 1}
-            onClick={() => scrollToIndex(activeIndex + 1)}
-            title="Next Reel (Down Arrow)"
-          >
-            ▼
-          </button>
-        </div>
-      )}
+
 
       {/* Comments Bottom Sheet Drawer */}
       {activeCommentsReel && (
