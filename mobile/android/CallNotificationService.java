@@ -550,7 +550,7 @@ public class CallNotificationService extends Service {
             while (sKeepListening) {
                 SharedPreferences prefs = getSharedPreferences("DevNestPrefs", Context.MODE_PRIVATE);
                 String authToken = prefs.getString("auth_token", "");
-                String apiUrl = prefs.getString("api_url", "https://piscine-devnest.onrender.com");
+                String apiUrl = prefs.getString("api_url", "https://nesty.onrender.com");
 
                 if (authToken.isEmpty()) {
                     SharedPreferences capPrefs = getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);

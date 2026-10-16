@@ -45,7 +45,7 @@ public class IncomingCallReceiver extends BroadcastReceiver {
                 try {
                     SharedPreferences prefs = context.getSharedPreferences("DevNestPrefs", Context.MODE_PRIVATE);
                     String token = prefs.getString("auth_token", "");
-                    String apiUrl = prefs.getString("api_url", "https://piscine-devnest.onrender.com");
+                    String apiUrl = prefs.getString("api_url", "https://nesty.onrender.com");
                     if (token.isEmpty()) {
                         SharedPreferences capPrefs = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
                         token = capPrefs.getString("token", "");

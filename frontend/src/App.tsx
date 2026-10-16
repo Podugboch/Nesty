@@ -11,19 +11,18 @@ const API_URL: string = (() => {
   if (typeof window !== "undefined") {
     const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
     if (isCapacitor) {
-      return "https://piscine-devnest.onrender.com";
+      return "https://nesty.onrender.com";
     }
     const host = window.location.hostname;
     const port = window.location.port;
     if ((host === "localhost" || host === "127.0.0.1") && port === "5173") {
       return "http://localhost:8080";
     }
-    if ((host === "localhost" || host === "127.0.0.1") && (port === "" || port === "80" || port === "443")) {
-      return "https://piscine-devnest.onrender.com";
+    if (window.location.origin && window.location.origin !== "null") {
+      return window.location.origin.replace(/\/+$/, "");
     }
-    return window.location.origin.replace(/\/+$/, "");
   }
-  return "https://piscine-devnest.onrender.com";
+  return "https://nesty.onrender.com";
 })();
 
 const WS_BASE_URL: string = (() => {
@@ -32,19 +31,18 @@ const WS_BASE_URL: string = (() => {
   if (typeof window !== "undefined") {
     const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
     if (isCapacitor) {
-      return "wss://piscine-devnest.onrender.com";
+      return "wss://nesty.onrender.com";
     }
     const host = window.location.hostname;
     const port = window.location.port;
     if ((host === "localhost" || host === "127.0.0.1") && port === "5173") {
       return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${host}:8080`;
     }
-    if ((host === "localhost" || host === "127.0.0.1") && (port === "" || port === "80" || port === "443")) {
-      return "wss://piscine-devnest.onrender.com";
+    if (window.location.host) {
+      return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
     }
-    return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
   }
-  return "wss://piscine-devnest.onrender.com";
+  return "wss://nesty.onrender.com";
 })();
 
 

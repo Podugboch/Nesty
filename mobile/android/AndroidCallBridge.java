@@ -497,7 +497,7 @@ public class AndroidCallBridge {
     @JavascriptInterface
     public void setAuthToken(String token, String apiUrl) {
         if (token == null) token = "";
-        if (apiUrl == null || apiUrl.isEmpty()) apiUrl = "https://piscine-devnest.onrender.com";
+        if (apiUrl == null || apiUrl.isEmpty()) apiUrl = "https://nesty.onrender.com";
         try {
             SharedPreferences prefs = context.getSharedPreferences("DevNestPrefs", Context.MODE_PRIVATE);
             prefs.edit().putString("auth_token", token).putString("api_url", apiUrl).apply();

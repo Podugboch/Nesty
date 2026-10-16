@@ -79,7 +79,7 @@ public class DevNestFirebaseMessagingService extends FirebaseMessagingService {
         prefs.edit().putString("fcm_token", token).putString("devnest_device_token", token).apply();
 
         String tempToken = prefs.getString("auth_token", "");
-        String apiUrl = prefs.getString("api_url", "https://piscine-devnest.onrender.com");
+        String apiUrl = prefs.getString("api_url", "https://nesty.onrender.com");
         if (tempToken.isEmpty()) {
             SharedPreferences capPrefs = getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
             tempToken = capPrefs.getString("token", "");
