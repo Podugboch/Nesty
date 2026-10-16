@@ -3,6 +3,8 @@ import { timeAgo } from "./utils/timeAgo";
 import { MusicPicker, type MusicTrack } from "./components/MusicPicker";
 import { ReelsView } from "./components/ReelsView";
 import { ReelCreateView } from "./components/ReelCreateView";
+import { ReportModal, type ReportTargetType } from "./components/ReportModal";
+import { AdminView } from "./components/AdminView";
 import "./App.css";
 
 const API_URL: string = (() => {
@@ -57,6 +59,10 @@ type User = {
   avatar_url?: string;
   banner_url?: string;
   is_following?: boolean;
+  role?: "user" | "moderator" | "admin" | "super_admin";
+  status?: "active" | "suspended" | "banned";
+  suspended_until?: string | null;
+  status_reason?: string;
 };
 
 type Comment = {
@@ -488,9 +494,10 @@ export default function App() {
   // NAVIGATION & COMMUNITIES (HOME IS NOT A COMMUNITY - IT'S THE ALGORITHMIC FEED)
   // -----------------------------
   // URL Route Synchronization
-  const [page, setPage] = useState<"feed" | "create" | "profile" | "reels" | "reels_create">(() => {
+  const [page, setPage] = useState<"feed" | "create" | "profile" | "reels" | "reels_create" | "admin">(() => {
     if (typeof window !== "undefined") {
       const path = window.location.pathname;
+      if (path === "/admin") return "admin";
       if (path === "/reels") return "reels";
       if (path === "/reels/create") return "reels_create";
       if (path.startsWith("/profile") || path.startsWith("/u/")) return "profile";
@@ -501,7 +508,9 @@ export default function App() {
   const navigateTo = (path: string) => {
     if (typeof window !== "undefined") {
       window.history.pushState({}, "", path);
-      if (path === "/reels") {
+      if (path === "/admin") {
+        setPage("admin");
+      } else if (path === "/reels") {
         setPage("reels");
       } else if (path === "/reels/create") {
         setPage("reels_create");
@@ -515,7 +524,9 @@ export default function App() {
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname;
-      if (path === "/reels") {
+      if (path === "/admin") {
+        setPage("admin");
+      } else if (path === "/reels") {
         setPage("reels");
       } else if (path === "/reels/create") {
         setPage("reels_create");
@@ -527,6 +538,28 @@ export default function App() {
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
+
+  // Report Modal state
+  const [reportModal, setReportModal] = useState<{
+    isOpen: boolean;
+    targetType: ReportTargetType;
+    targetId: number;
+    targetPreview?: string;
+  }>({
+    isOpen: false,
+    targetType: "post",
+    targetId: 0,
+    targetPreview: "",
+  });
+
+  const openReportModal = (targetType: ReportTargetType, targetId: number, targetPreview?: string) => {
+    setReportModal({
+      isOpen: true,
+      targetType,
+      targetId,
+      targetPreview,
+    });
+  };
 
   const [selectedCommunity, setSelectedCommunity] = useState<string>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -3367,6 +3400,19 @@ export default function App() {
         setUser(data);
         return data;
       } else {
+        const errData = await res.json().catch(() => ({}));
+        if (errData.code === "account_banned" || errData.code === "account_suspended") {
+          const blockedUser: User = {
+            id: 0,
+            username: "blocked_account",
+            email: "",
+            status: errData.code === "account_banned" ? "banned" : "suspended",
+            status_reason: errData.reason,
+            suspended_until: errData.suspended_until,
+          };
+          setUser(blockedUser);
+          return blockedUser;
+        }
         localStorage.removeItem("token");
         setToken(null);
         return null;
@@ -4761,12 +4807,17 @@ export default function App() {
         setToken(data.token);
         fetchMe(data.token);
       } else {
-        const msg =
-          data.error === "user not found"
-            ? "No account found with this email or username. Don't have an account? Click 'Sign Up' below."
-            : data.error === "password mismatch"
-            ? "Incorrect password. If you forgot your password, click 'Forgot Password?' below to reset it."
-            : data.error || "Login failed";
+        let msg = data.error || "Login failed";
+        if (data.code === "account_banned") {
+          msg = `🚫 Account Banned: ${data.reason || "Your account has been permanently banned."}`;
+        } else if (data.code === "account_suspended") {
+          const untilStr = data.suspended_until ? new Date(data.suspended_until).toLocaleString() : "a later date";
+          msg = `⏳ Account Suspended until ${untilStr}: ${data.reason || "Temporary suspension"}`;
+        } else if (data.error === "user not found") {
+          msg = "No account found with this email or username. Don't have an account? Click 'Sign Up' below.";
+        } else if (data.error === "password mismatch") {
+          msg = "Incorrect password. If you forgot your password, click 'Forgot Password?' below to reset it.";
+        }
         setAuthError(msg);
       }
     } catch {
@@ -4999,12 +5050,74 @@ export default function App() {
     );
   }
 
+  // Account suspended or banned blocker screen
+  if (user && (user.status === "banned" || (user.status === "suspended" && user.suspended_until && new Date(user.suspended_until) > new Date()))) {
+    return (
+      <div className="account-blocked-screen">
+        <div className="account-blocked-card">
+          <div className="blocked-icon">{user.status === "banned" ? "🚫" : "⏳"}</div>
+          <h2>{user.status === "banned" ? "Account Permanently Banned" : "Account Suspended"}</h2>
+          <p className="blocked-message">
+            {user.status === "banned"
+              ? "Your account has been banned due to violations of Nesty's Terms of Service."
+              : `Your account is temporarily suspended until ${new Date(user.suspended_until!).toLocaleString()}.`}
+          </p>
+          {user.status_reason && (
+            <div className="blocked-reason-box">
+              <strong>Reason:</strong> {user.status_reason}
+            </div>
+          )}
+          <button
+            className="btn-primary"
+            style={{ marginTop: "1.5rem" }}
+            onClick={() => {
+              localStorage.removeItem("token");
+              setToken(null);
+              setUser(null);
+            }}
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // Active channel
   const activeChannel = communities.find((c) => c.id === selectedCommunity) || communities[0];
 
   return (
     <div className={`nesty-app ${page === "reels" || page === "reels_create" ? "dedicated-reels-mode" : ""}`}>
-      {page === "reels" ? (
+      {page === "admin" ? (
+        user && user.role && user.role !== "user" ? (
+          <AdminView
+            currentUser={user}
+            apiUrl={API_URL}
+            token={token}
+            onExitAdmin={() => {
+              navigateTo("/");
+              setPage("feed");
+            }}
+          />
+        ) : (
+          <div className="admin-access-denied-container">
+            <div className="admin-access-denied-card">
+              <span className="denied-icon">🛡️</span>
+              <h2>Admin & Moderation Portal</h2>
+              <p>You need moderator or administrator privileges to view this section.</p>
+              <button
+                className="btn-primary"
+                onClick={() => {
+                  navigateTo("/");
+                  setPage("feed");
+                }}
+              >
+                Return to Home
+              </button>
+            </div>
+          </div>
+        )
+      ) : page === "reels" ? (
         <ReelsView
           apiUrl={API_URL}
           token={token || ""}
@@ -5248,6 +5361,21 @@ export default function App() {
             </span>
             <span>Profile</span>
           </button>
+
+          {user && user.role && user.role !== "user" && (
+            <button
+              data-nav="admin"
+              className={`nav-item-btn admin-nav-btn ${(page as string) === "admin" ? "active" : ""}`}
+              onClick={() => {
+                navigateTo("/admin");
+                setPage("admin" as any);
+                setMobileMenuOpen(false);
+              }}
+            >
+              <span className="nav-item-icon">🛡️</span>
+              <span>Admin Panel</span>
+            </button>
+          )}
 
           <button
             data-nav="messages"
@@ -6283,6 +6411,15 @@ export default function App() {
                           >
                             📋 Copy Link
                           </button>
+                          <button
+                            className="dropdown-item-btn"
+                            onClick={() => {
+                              openReportModal("post", post.id, post.content);
+                              setActiveDropdown(null);
+                            }}
+                          >
+                            🚩 Report Post
+                          </button>
                         </div>
                       )}
                     </div>
@@ -6371,6 +6508,13 @@ export default function App() {
                               </span>
                               <span>{c.content}</span>
                             </div>
+                            <button
+                              className="comment-report-flag-btn"
+                              title="Report comment"
+                              onClick={() => openReportModal("comment", c.id, c.content)}
+                            >
+                              🚩
+                            </button>
                           </div>
                         ))}
 
@@ -6500,6 +6644,17 @@ export default function App() {
                             onClick={toggleFollow}
                           >
                             {followBusy ? "..." : profileData?.is_following ? "Following" : "Follow"}
+                          </button>
+                          <button
+                            className="profile-report-btn"
+                            title="Report user"
+                            onClick={() => {
+                              if (profileData?.user) {
+                                openReportModal("user", profileData.user.id, `@${profileData.user.username} (${profileData.user.name || ""})`);
+                              }
+                            }}
+                          >
+                            🚩 Report
                           </button>
                         </>
                       ) : (
@@ -6712,6 +6867,13 @@ export default function App() {
                                   </span>
                                   <span>{c.content}</span>
                                 </div>
+                                <button
+                                  className="comment-report-flag-btn"
+                                  title="Report comment"
+                                  onClick={() => openReportModal("comment", c.id, c.content)}
+                                >
+                                  🚩
+                                </button>
                               </div>
                             ))}
 
@@ -9280,6 +9442,17 @@ export default function App() {
         onRemoveMusic={() => setSelectedReelMusic(null)}
         selectedTrackId={selectedReelMusic?.id}
         apiUrl={API_URL}
+      />
+
+      {/* REPORT CONTENT / USER MODAL */}
+      <ReportModal
+        isOpen={reportModal.isOpen}
+        onClose={() => setReportModal((prev) => ({ ...prev, isOpen: false }))}
+        targetType={reportModal.targetType}
+        targetId={reportModal.targetId}
+        targetPreview={reportModal.targetPreview}
+        apiUrl={API_URL}
+        token={token}
       />
     </div>
   );

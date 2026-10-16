@@ -70,6 +70,8 @@ func Run() error {
 		&model.Device{},
 		&model.Community{},
 		&model.CommunityMember{},
+		&model.Report{},
+		&model.AuditLog{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
@@ -100,6 +102,39 @@ func Run() error {
 	_ = db.Exec("ALTER TABLE communities ADD COLUMN IF NOT EXISTS requires_approval boolean DEFAULT false").Error
 	_ = db.Exec("CREATE TABLE IF NOT EXISTS community_members (id bigserial PRIMARY KEY, community_id bigint NOT NULL, user_id bigint NOT NULL, role varchar(20) DEFAULT 'member', status varchar(20) DEFAULT 'active', created_at timestamptz DEFAULT NOW(), updated_at timestamptz DEFAULT NOW())").Error
 	_ = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_community_member_unique ON community_members (community_id, user_id)").Error
+
+	// Admin system schema guarantees
+	_ = db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS role varchar(20) DEFAULT 'user'").Error
+	_ = db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS status varchar(20) DEFAULT 'active'").Error
+	_ = db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until timestamptz NULL").Error
+	_ = db.Exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS status_reason text DEFAULT ''").Error
+	_ = db.Exec("UPDATE users SET role = 'user' WHERE role IS NULL OR role = ''").Error
+	_ = db.Exec("UPDATE users SET status = 'active' WHERE status IS NULL OR status = ''").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)").Error
+
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS hidden_at timestamptz NULL").Error
+	_ = db.Exec("ALTER TABLE posts ADD COLUMN IF NOT EXISTS hidden_by bigint NULL").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_posts_hidden_at ON posts(hidden_at)").Error
+
+	_ = db.Exec("ALTER TABLE comments ADD COLUMN IF NOT EXISTS hidden_at timestamptz NULL").Error
+	_ = db.Exec("ALTER TABLE comments ADD COLUMN IF NOT EXISTS hidden_by bigint NULL").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_comments_hidden_at ON comments(hidden_at)").Error
+
+	_ = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_report_per_user_target ON reports(reporter_id, target_type, target_id) WHERE status = 'open'").Error
+
+	// Optional initial super_admin provisioning via environment variable
+	if initialAdmin := strings.TrimSpace(os.Getenv("INITIAL_SUPER_ADMIN")); initialAdmin != "" {
+		res := db.Model(&model.User{}).
+			Where("LOWER(email) = LOWER(?) OR LOWER(username) = LOWER(?)", initialAdmin, initialAdmin).
+			Updates(map[string]interface{}{
+				"role":   "super_admin",
+				"status": "active",
+			})
+		if res.RowsAffected > 0 {
+			fmt.Printf("✅ Initial super_admin active for: %s\n", initialAdmin)
+		}
+	}
 	// Automatically seed the creator of each community as its admin
 	_ = db.Exec(`
 		INSERT INTO community_members (community_id, user_id, role, status, created_at, updated_at)

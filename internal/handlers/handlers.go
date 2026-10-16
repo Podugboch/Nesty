@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"piscine-devnest/internal/middleware"
 	"piscine-devnest/internal/model"
 	"piscine-devnest/internal/push"
 	"piscine-devnest/internal/storage"
@@ -50,7 +51,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ping", h.Ping)
 	api.POST("/users", h.CreateUser)
 	api.POST("/register", h.CreateUser)
-	api.POST("/login", h.Login)
+	api.POST("/login", middleware.RateLimitLogin(), h.Login)
 	api.POST("/forgot-password", h.ForgotPassword)
 	api.GET("/community-stats", h.GetCommunityStats)
 	api.GET("/community/stats", h.GetCommunityStats)
@@ -63,7 +64,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/communities/:slug", h.GetCommunity)
 
 	// PROTECTED ROUTES
-	protected := api.Group("/", utils.JWTMiddleware())
+	protected := api.Group("/", utils.JWTMiddleware(), h.CheckUserStatus)
 	{
 		// REELS
 		protected.POST("/reels", h.CreateReel)
@@ -147,6 +148,40 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.POST("/heartbeat", h.Heartbeat)
 		protected.GET("/heartbeat", h.Heartbeat)
 		protected.POST("/users/heartbeat", h.Heartbeat)
+
+		// REPORTS (Normal user endpoint with anti-spam rate limiting)
+		protected.POST("/reports", middleware.RateLimitReport(), h.CreateReport)
+	}
+
+	// ADMIN ROUTES (Server-enforced role checking from database)
+	admin := api.Group("/admin", utils.JWTMiddleware(), h.CheckUserStatus, middleware.RateLimitAdmin())
+	{
+		// Moderator and above: Reports and Content
+		modOnly := admin.Group("/", h.RequireRole("moderator"))
+		{
+			modOnly.GET("/reports", h.AdminGetReports)
+			modOnly.POST("/reports/:id/resolve", h.AdminResolveReport)
+			modOnly.POST("/content/:type/:id/hide", h.AdminHideContent)
+			modOnly.POST("/content/:type/:id/restore", h.AdminRestoreContent)
+		}
+
+		// Admin and above: Users, Suspend, Ban, Restore, Stats
+		adminOnly := admin.Group("/", h.RequireRole("admin"))
+		{
+			adminOnly.GET("/users", h.AdminGetUsers)
+			adminOnly.GET("/users/:id", h.AdminGetUser)
+			adminOnly.POST("/users/:id/suspend", h.AdminSuspendUser)
+			adminOnly.POST("/users/:id/ban", h.AdminBanUser)
+			adminOnly.POST("/users/:id/restore", h.AdminRestoreUser)
+			adminOnly.GET("/stats", h.AdminGetStats)
+		}
+
+		// Super Admin only: Role changes and Audit Log
+		superAdminOnly := admin.Group("/", h.RequireRole("super_admin"))
+		{
+			superAdminOnly.POST("/users/:id/role", h.AdminUpdateUserRole)
+			superAdminOnly.GET("/audit-log", h.AdminGetAuditLog)
+		}
 	}
 
 	// Direct root fallbacks for mobile / devices
@@ -334,14 +369,20 @@ func (h *Handler) GetPosts(c *gin.Context) {
 	userID := c.GetUint("user_id")
 
 	query := h.DB.
+		Where("posts.hidden_at IS NULL").
 		Preload("User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		}).
 		Preload("MusicTrack").
+		Preload("Comments", func(db *gorm.DB) *gorm.DB {
+			return db.Where("comments.hidden_at IS NULL").Order("created_at asc")
+		}).
 		Preload("Comments.User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		}).
-		Preload("Parent").
+		Preload("Parent", func(db *gorm.DB) *gorm.DB {
+			return db.Where("posts.hidden_at IS NULL")
+		}).
 		Preload("Parent.User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		})
@@ -1085,7 +1126,7 @@ func (h *Handler) GetUserProfile(c *gin.Context) {
 	var followerCount, followingCount, postCount int64
 	h.DB.Model(&model.Follow{}).Where("following_id = ?", targetID).Count(&followerCount)
 	h.DB.Model(&model.Follow{}).Where("follower_id = ?", targetID).Count(&followingCount)
-	h.DB.Model(&model.Post{}).Where("user_id = ?", targetID).Count(&postCount)
+	h.DB.Model(&model.Post{}).Where("user_id = ? AND hidden_at IS NULL", targetID).Count(&postCount)
 
 	var isFollowing bool
 	if requesterID != targetID {
@@ -1125,16 +1166,21 @@ func (h *Handler) GetUserPosts(c *gin.Context) {
 
 	var posts []model.Post
 	if err := h.DB.
-		Where("user_id = ?", uint(targetIDNum)).
+		Where("user_id = ? AND posts.hidden_at IS NULL", uint(targetIDNum)).
 		Preload("User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
+		}).
+		Preload("Comments", func(db *gorm.DB) *gorm.DB {
+			return db.Where("comments.hidden_at IS NULL").Order("created_at asc")
 		}).
 		Preload("Comments.User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		}).
 		Preload("MusicTrack").
-		Preload("Parent"). // 👈 ADD THIS
-		Preload("Parent.User", func(db *gorm.DB) *gorm.DB { // 👈 AND THIS
+		Preload("Parent", func(db *gorm.DB) *gorm.DB {
+			return db.Where("posts.hidden_at IS NULL")
+		}).
+		Preload("Parent.User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		}).
 		Order("created_at desc").
@@ -1196,6 +1242,35 @@ func (h *Handler) Login(c *gin.Context) {
 	if authenticatedUser == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "password mismatch"})
 		return
+	}
+
+	// Check if user is banned or suspended
+	if authenticatedUser.Status == "banned" {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":  "Your account has been banned.",
+			"code":   "account_banned",
+			"reason": authenticatedUser.StatusReason,
+		})
+		return
+	}
+	if authenticatedUser.Status == "suspended" && authenticatedUser.SuspendedUntil != nil {
+		if time.Now().Before(*authenticatedUser.SuspendedUntil) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":           fmt.Sprintf("Your account is suspended until %s.", authenticatedUser.SuspendedUntil.Format(time.RFC822)),
+				"code":            "account_suspended",
+				"reason":          authenticatedUser.StatusReason,
+				"suspended_until": authenticatedUser.SuspendedUntil,
+			})
+			return
+		}
+		// Suspended duration has passed: automatically un-suspend
+		h.DB.Model(&model.User{}).Where("id = ?", authenticatedUser.ID).Updates(map[string]interface{}{
+			"status":          "active",
+			"suspended_until": nil,
+			"status_reason":   "",
+		})
+		authenticatedUser.Status = "active"
+		authenticatedUser.SuspendedUntil = nil
 	}
 
 	token, err := utils.GenerateToken(authenticatedUser.ID)
