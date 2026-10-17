@@ -5155,6 +5155,46 @@
   border-color: #ef4444;
 }
 
+.live-ctrl-btn.danger {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+
+.live-ctrl-btn.danger:hover {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+}
+
+.live-ctrl-btn.danger.live-ctrl-end-btn {
+  background: #ef4444 !important;
+  border-color: #dc2626 !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  box-shadow: 0 2px 10px rgba(239, 68, 68, 0.45);
+  flex-shrink: 0 !important;
+}
+
+.live-ctrl-btn.danger.live-ctrl-end-btn:hover,
+.live-ctrl-btn.danger.live-ctrl-end-btn:active {
+  background: #dc2626 !important;
+  transform: translateY(-1px);
+}
+
+.live-ctrl-btn.danger.live-ctrl-leave-btn {
+  background: rgba(239, 68, 68, 0.25) !important;
+  border-color: rgba(239, 68, 68, 0.5) !important;
+  color: #fca5a5 !important;
+  font-weight: 700 !important;
+  flex-shrink: 0 !important;
+}
+
+.live-ctrl-btn.danger.live-ctrl-leave-btn:hover {
+  background: #dc2626 !important;
+  color: #ffffff !important;
+}
+
 .live-chat-panel {
   width: 320px;
   border-left: 1px solid #232936;
@@ -5303,39 +5343,97 @@
     padding: max(8px, env(safe-area-inset-top)) 10px 8px 10px !important;
     gap: 6px !important;
     flex-wrap: nowrap !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    z-index: 20 !important;
+  }
+
+  .live-top-left {
+    min-width: 0 !important;
+    flex: 1 1 auto !important;
+    overflow: hidden !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
   }
 
   .live-pulsing-badge-large {
     padding: 3px 6px !important;
     font-size: 10.5px !important;
     border-radius: 6px !important;
+    flex-shrink: 0 !important;
+  }
+
+  .live-title-wrap {
+    min-width: 0 !important;
+    max-width: 110px !important;
+    overflow: hidden !important;
+  }
+
+  .live-studio-title {
+    font-size: 12.5px !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    display: block !important;
   }
 
   .live-studio-title-input {
     font-size: 12px !important;
     padding: 2px 6px !important;
-    max-width: 110px !important;
+    max-width: 95px !important;
   }
 
   .live-channel-badge {
     display: none !important;
   }
 
+  .live-top-right {
+    flex-shrink: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    margin-left: auto !important;
+  }
+
   .live-viewers-pill,
   .live-duration-pill {
-    padding: 4px 7px !important;
-    font-size: 10.5px !important;
-    gap: 3px !important;
+    padding: 3px 6px !important;
+    font-size: 10px !important;
+    gap: 2px !important;
+    flex-shrink: 0 !important;
   }
 
   .live-viewers-label {
     display: none !important;
   }
 
+  .live-replay-notice-pill,
+  .live-reactions-total-pill {
+    display: none !important;
+  }
+
+  .live-orientation-btn {
+    display: none !important;
+  }
+
   .live-end-btn {
-    padding: 4px 10px !important;
-    font-size: 11px !important;
+    flex-shrink: 0 !important;
+    background: #ef4444 !important;
+    color: #ffffff !important;
+    padding: 5px 12px !important;
+    font-size: 11.5px !important;
+    font-weight: 700 !important;
     border-radius: 8px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    white-space: nowrap !important;
+    min-width: 48px !important;
+    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.4) !important;
+    z-index: 10 !important;
   }
 
   .live-end-btn-text {
@@ -5344,6 +5442,14 @@
 
   .live-end-btn-short {
     display: inline !important;
+  }
+
+  .live-leave-btn {
+    flex-shrink: 0 !important;
+    padding: 5px 10px !important;
+    font-size: 11.5px !important;
+    border-radius: 8px !important;
+    white-space: nowrap !important;
   }
 
   .live-main-stage {
@@ -5360,21 +5466,39 @@
   }
 
   .live-floating-controls {
-    bottom: 10px !important;
-    padding: 5px 8px !important;
-    gap: 5px !important;
+    bottom: 12px !important;
+    padding: 6px 10px !important;
+    gap: 6px !important;
     max-width: calc(100% - 16px) !important;
-    border-radius: 20px !important;
+    border-radius: 24px !important;
+    overflow-x: auto !important;
+    scrollbar-width: none !important;
+    -webkit-overflow-scrolling: touch !important;
+    z-index: 25 !important;
+  }
+
+  .live-floating-controls::-webkit-scrollbar {
+    display: none !important;
   }
 
   .live-ctrl-btn {
-    padding: 4px 8px !important;
-    font-size: 10.5px !important;
-    gap: 3px !important;
+    padding: 5px 9px !important;
+    font-size: 11px !important;
+    gap: 4px !important;
+    flex-shrink: 0 !important;
   }
 
   .live-ctrl-btn .live-btn-text {
     font-size: 10px !important;
+  }
+
+  .live-ctrl-btn.danger.live-ctrl-end-btn {
+    background: #ef4444 !important;
+    border-color: #dc2626 !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    padding: 5px 12px !important;
+    box-shadow: 0 2px 10px rgba(239, 68, 68, 0.5) !important;
   }
 
   .live-chat-panel {

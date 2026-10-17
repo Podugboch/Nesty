@@ -1653,6 +1653,16 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                         <span className="live-btn-icon">{orientationMode === "portrait" ? "🔄" : "📱"}</span>
                         <span className="live-btn-text">{orientationMode === "portrait" ? "Landscape" : "Portrait"}</span>
                       </button>
+
+                      <button
+                        type="button"
+                        className="live-ctrl-btn danger live-ctrl-end-btn"
+                        onClick={handleEndStream}
+                        title="End Broadcast"
+                      >
+                        <span className="live-btn-icon">🛑</span>
+                        <span className="live-btn-text">End</span>
+                      </button>
                     </>
                   ) : myRole === "guest" ? (
                     <>
@@ -1707,6 +1717,15 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                       >
                         <span className="live-btn-icon">{orientationMode === "portrait" ? "🔄" : "📱"}</span>
                         <span className="live-btn-text">{orientationMode === "portrait" ? "Landscape" : "Portrait"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="live-ctrl-btn danger live-ctrl-leave-btn"
+                        onClick={onClose}
+                        title="Leave Live"
+                      >
+                        <span className="live-btn-icon">✕</span>
+                        <span className="live-btn-text">Leave</span>
                       </button>
                     </div>
                   )}
