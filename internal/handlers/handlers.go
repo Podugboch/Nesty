@@ -170,6 +170,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// LIVE BROADCAST STUDIO (HOST & PARTICIPANT ACTIONS)
 		protected.POST("/lives", h.StartLive)
 		protected.POST("/lives/:id/end", h.EndLive)
+		protected.PUT("/lives/:id/title", h.UpdateLiveTitle)
+		protected.POST("/lives/:id/title", h.UpdateLiveTitle)
 		protected.POST("/lives/:id/replay/chunk", h.UploadReplayChunk)
 		protected.POST("/lives/:id/replay/finish", h.FinishReplay)
 		protected.POST("/lives/:id/replay/publish", h.PublishReplay)

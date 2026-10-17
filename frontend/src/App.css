@@ -12189,4 +12189,143 @@
   color: #94a3b8;
 }
 
+/* ==========================================================================
+   LIVE SHOW TITLE EDITING & IN-STREAM SETTINGS
+   ========================================================================== */
+.live-title-display-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-studio-title.editable {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 2px 6px;
+  transition: all 0.2s ease;
+}
+
+.live-studio-title.editable:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #38bdf8;
+}
+
+.live-title-edit-icon-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  line-height: 1;
+}
+
+.live-title-edit-icon-btn:hover {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: #38bdf8;
+  transform: scale(1.05);
+}
+
+.live-title-edit-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-title-inline-input {
+  background: #0f172a;
+  border: 1px solid #38bdf8;
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 14px;
+  font-weight: 600;
+  outline: none;
+  width: 220px;
+  max-width: 50vw;
+}
+
+.live-title-save-btn {
+  background: #10b981;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.live-title-save-btn:hover {
+  background: #059669;
+}
+
+.live-title-cancel-btn {
+  background: rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.live-title-cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.live-settings-card-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.live-field-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.live-title-setting-row {
+  display: flex;
+  gap: 8px;
+}
+
+.live-setting-input {
+  flex: 1;
+  background: #0d121f;
+  border: 1px solid #283144;
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: #fff;
+  font-size: 13.5px;
+  outline: none;
+}
+
+.live-setting-input:focus {
+  border-color: #38bdf8;
+}
+
+.live-setting-save-btn {
+  background: #38bdf8;
+  color: #0f172a;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.live-setting-save-btn:hover {
+  background: #0ea5e9;
+}
+
+
 

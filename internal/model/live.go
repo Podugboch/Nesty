@@ -35,10 +35,20 @@ type Live struct {
 }
 
 func (l *Live) GetChatSettings() ChatSettings {
+	if l.ParsedChatSettings != nil {
+		if l.ParsedChatSettings.BlockedWords == nil {
+			l.ParsedChatSettings.BlockedWords = []string{}
+		}
+		return *l.ParsedChatSettings
+	}
 	var cs ChatSettings
 	cs.ChatEnabled = true
+	cs.BlockedWords = []string{}
 	if l.ChatSettingsRaw != "" {
 		_ = json.Unmarshal([]byte(l.ChatSettingsRaw), &cs)
+	}
+	if cs.BlockedWords == nil {
+		cs.BlockedWords = []string{}
 	}
 	return cs
 }

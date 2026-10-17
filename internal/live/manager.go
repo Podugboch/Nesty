@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"gorm.io/gorm"
 	"piscine-devnest/internal/model"
@@ -548,10 +549,20 @@ func (m *LiveManager) HandleChatMessage(liveID uint, user *model.User, rawText s
 
 	// 5. Blocked Words filter: messages matching blocked words are hidden before broadcast
 	lowerText := strings.ToLower(trimmed)
+	var normBuilder strings.Builder
+	for _, r := range lowerText {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) {
+			normBuilder.WriteRune(r)
+		}
+	}
+	normText := normBuilder.String()
+
 	for _, word := range room.ChatSettings.BlockedWords {
 		cleaned := strings.ToLower(strings.TrimSpace(word))
-		if cleaned != "" && strings.Contains(lowerText, cleaned) {
-			return nil, errors.New("message contains words blocked in this live")
+		if cleaned != "" {
+			if strings.Contains(lowerText, cleaned) || strings.Contains(normText, cleaned) {
+				return nil, errors.New("message contains words blocked in this live")
+			}
 		}
 	}
 
@@ -766,6 +777,17 @@ func (m *LiveManager) UpdateChatSettings(liveID uint, hostID uint, settings mode
 		return errors.New("room not active")
 	}
 
+	cleanedWords := make([]string, 0, len(settings.BlockedWords))
+	seen := make(map[string]bool)
+	for _, w := range settings.BlockedWords {
+		cw := strings.ToLower(strings.TrimSpace(w))
+		if cw != "" && !seen[cw] {
+			seen[cw] = true
+			cleanedWords = append(cleanedWords, cw)
+		}
+	}
+	settings.BlockedWords = cleanedWords
+
 	room.mu.Lock()
 	if room.HostID != hostID {
 		room.mu.Unlock()
@@ -782,6 +804,39 @@ func (m *LiveManager) UpdateChatSettings(liveID uint, hostID uint, settings mode
 		"type":          "live_chat_settings_updated",
 		"live_id":       liveID,
 		"chat_settings": settings,
+	})
+
+	return nil
+}
+
+// UpdateTitle updates the broadcast title mid-stream
+func (m *LiveManager) UpdateTitle(liveID uint, hostID uint, title string) error {
+	room := m.GetRoom(liveID)
+	if room == nil {
+		return errors.New("room not active")
+	}
+
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return errors.New("title cannot be empty")
+	}
+
+	room.mu.Lock()
+	if room.HostID != hostID {
+		room.mu.Unlock()
+		return errors.New("only host can change stream title")
+	}
+	room.Title = trimmed
+	room.mu.Unlock()
+
+	// Persist to DB
+	m.db.Model(&model.Live{}).Where("id = ?", liveID).Update("title", trimmed)
+
+	// Broadcast title update to all in the live room
+	m.BroadcastToLive(liveID, map[string]interface{}{
+		"type":    "live_title_updated",
+		"live_id": liveID,
+		"title":   trimmed,
 	})
 
 	return nil

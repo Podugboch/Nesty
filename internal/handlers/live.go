@@ -166,6 +166,18 @@ func (h *Handler) StartLive(c *gin.Context) {
 		input.Title = "🔴 Live Broadcast"
 	}
 
+	// Clean and normalize blocked words
+	cleanedBlocked := make([]string, 0, len(input.ChatSettings.BlockedWords))
+	seenBlocked := make(map[string]bool)
+	for _, w := range input.ChatSettings.BlockedWords {
+		cw := strings.ToLower(strings.TrimSpace(w))
+		if cw != "" && !seenBlocked[cw] {
+			seenBlocked[cw] = true
+			cleanedBlocked = append(cleanedBlocked, cw)
+		}
+	}
+	input.ChatSettings.BlockedWords = cleanedBlocked
+
 	// Ensure any old active live by this host is safely ended
 	var oldLives []model.Live
 	h.DB.Where("host_id = ? AND status = 'live'", currentUserID).Find(&oldLives)
@@ -269,6 +281,41 @@ func (h *Handler) EndLive(c *gin.Context) {
 		Update("status", "ready")
 
 	c.JSON(http.StatusOK, gin.H{"message": "stream ended successfully"})
+}
+
+// UpdateLiveTitle updates the title of an active live broadcast
+func (h *Handler) UpdateLiveTitle(c *gin.Context) {
+	currentUserID := c.GetUint("user_id")
+	idStr := c.Param("id")
+	liveID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid live ID"})
+		return
+	}
+
+	var input struct {
+		Title string `json:"title" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "title is required"})
+		return
+	}
+
+	trimmed := strings.TrimSpace(input.Title)
+	if trimmed == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "title cannot be empty"})
+		return
+	}
+
+	if err := h.LiveManager.UpdateTitle(uint(liveID), currentUserID, trimmed); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"title":   trimmed,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +737,11 @@ func (h *Handler) HandleLiveWSMessage(userID uint, raw map[string]interface{}, s
 			bytes, _ := json.Marshal(csRaw)
 			_ = json.Unmarshal(bytes, &cs)
 			_ = h.LiveManager.UpdateChatSettings(liveID, userID, cs)
+		}
+
+	case "live_update_title":
+		if title, ok := raw["title"].(string); ok && strings.TrimSpace(title) != "" {
+			_ = h.LiveManager.UpdateTitle(liveID, userID, title)
 		}
 
 	case "live_hand_raise":

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type {
   LiveStream,
   LiveGuest,
@@ -58,16 +58,32 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
 
   // PRE-BROADCAST SETUP (Host only)
   const [isPreLive, setIsPreLive] = useState<boolean>(!initialLive);
-  const [setupTitle, setSetupTitle] = useState("🔴 Live Broadcast & Hangout");
+  const [setupTitle, setSetupTitle] = useState(initialLive?.title || "🔴 Live Broadcast & Hangout");
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editingTitleInput, setEditingTitleInput] = useState(initialLive?.title || "🔴 Live Broadcast & Hangout");
+  const [settingsTitleInput, setSettingsTitleInput] = useState(initialLive?.title || "🔴 Live Broadcast & Hangout");
   const [setupNotifyFollowers, setSetupNotifyFollowers] = useState(true);
   const [setupSaveReplay, setSetupSaveReplay] = useState(true);
   const [setupChatSettings, setSetupChatSettings] = useState<ChatSettings>({
-    chat_enabled: true,
-    slow_mode: 0,
-    followers_only: false,
-    blocked_words: [],
+    chat_enabled: initialLive?.chat_settings?.chat_enabled ?? true,
+    slow_mode: initialLive?.chat_settings?.slow_mode ?? 0,
+    followers_only: initialLive?.chat_settings?.followers_only ?? false,
+    blocked_words: initialLive?.chat_settings?.blocked_words ?? [],
   });
   const [blockedWordInput, setBlockedWordInput] = useState("");
+  const [inLiveBlockedWordInput, setInLiveBlockedWordInput] = useState("");
+
+  // Helper to detect blocked words in chat
+  const containsBlockedWord = (text: string, blockedList: string[]): boolean => {
+    if (!text || !blockedList || blockedList.length === 0) return false;
+    const lower = text.toLowerCase();
+    const normalized = lower.replace(/[^a-z0-9\s]/g, "");
+    return blockedList.some((w) => {
+      const clean = w.trim().toLowerCase();
+      if (!clean) return false;
+      return lower.includes(clean) || normalized.includes(clean);
+    });
+  };
 
   // BROADCAST METRICS
   const [viewerCount, setViewerCount] = useState<number>(initialLive?.viewer_count || 1);
@@ -132,6 +148,13 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
 
   // CHAT
   const [chatMessages, setChatMessages] = useState<LiveChatMessageItem[]>([]);
+
+  // Filter out any messages matching blocked words so they are completely hidden from everyone
+  const visibleMessages = useMemo(() => {
+    return chatMessages.filter(
+      (msg) => !containsBlockedWord(msg.text, setupChatSettings.blocked_words)
+    );
+  }, [chatMessages, setupChatSettings.blocked_words]);
   const [chatInput, setChatInput] = useState("");
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [slowModeSecondsLeft, setSlowModeSecondsLeft] = useState(0);
@@ -384,8 +407,17 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
             }
             break;
 
+          case "live_title_updated":
+            if (data.title) {
+              setLiveData((prev) => (prev ? { ...prev, title: data.title } : null));
+              setSetupTitle(data.title);
+              setEditingTitleInput(data.title);
+              setSettingsTitleInput(data.title);
+            }
+            break;
+
           case "live_chat_message":
-            if (data.message) {
+            if (data.message && !containsBlockedWord(data.message.text, setupChatSettings.blocked_words)) {
               setChatMessages((prev) => [...prev, data.message]);
             }
             break;
@@ -500,6 +532,42 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
     };
   }, [liveData, wsRef, currentUser, onStreamEnded, onClose]);
 
+  // Update broadcast title mid-stream
+  const handleUpdateTitle = async (newTitle: string) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed || !liveData?.id) return;
+    setSetupTitle(trimmed);
+    setEditingTitleInput(trimmed);
+    setSettingsTitleInput(trimmed);
+    setLiveData((prev) => (prev ? { ...prev, title: trimmed } : null));
+    setIsEditingTitle(false);
+
+    // 1. WebSocket real-time update to all room members
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: "live_update_title",
+          live_id: liveData.id,
+          title: trimmed,
+        })
+      );
+    }
+
+    // 2. REST API update fallback
+    try {
+      await fetch(`${apiUrl}/api/lives/${liveData.id}/title`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ title: trimmed }),
+      });
+    } catch (err) {
+      console.warn("[LiveStudio] API title update error:", err);
+    }
+  };
+
   // Host starts broadcast
   const handleStartBroadcast = async () => {
     try {
@@ -517,6 +585,21 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
 
       setHostStream(stream);
 
+      // Auto-include any typed blocked word that wasn't committed with Add button
+      let finalBlockedWords = [...setupChatSettings.blocked_words];
+      if (blockedWordInput.trim()) {
+        const cleanNew = blockedWordInput.trim().toLowerCase();
+        if (!finalBlockedWords.includes(cleanNew)) {
+          finalBlockedWords.push(cleanNew);
+        }
+        setBlockedWordInput("");
+      }
+      const finalChatSettings: ChatSettings = {
+        ...setupChatSettings,
+        blocked_words: finalBlockedWords,
+      };
+      setSetupChatSettings(finalChatSettings);
+
       // API request to create live
       const res = await fetch(`${apiUrl}/api/lives`, {
         method: "POST",
@@ -528,7 +611,7 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
           title: setupTitle.trim() || "🔴 Live Broadcast",
           notify_followers: setupNotifyFollowers,
           save_replay: setupSaveReplay,
-          chat_settings: setupChatSettings,
+          chat_settings: finalChatSettings,
         }),
       });
 
@@ -672,9 +755,15 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
 
   // Chat sending
   const handleSendChatMessage = () => {
-    if (!chatInput.trim()) return;
+    const text = chatInput.trim();
+    if (!text) return;
     if (slowModeSecondsLeft > 0) {
       setChatError(`Slow mode: wait ${slowModeSecondsLeft}s`);
+      return;
+    }
+
+    if (containsBlockedWord(text, setupChatSettings.blocked_words)) {
+      setChatError("Message contains words blocked by the host");
       return;
     }
 
@@ -683,7 +772,7 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
         JSON.stringify({
           type: "live_chat",
           live_id: liveData.id,
-          text: chatInput.trim(),
+          text: text,
         })
       );
       setChatInput("");
@@ -1196,9 +1285,74 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
               <div className="live-top-left">
                 <span className="live-pulsing-badge-large">● LIVE</span>
                 <div className="live-title-wrap">
-                  <span className="live-studio-title">
-                    {liveData?.title || setupTitle}
-                  </span>
+                  {isHost && isEditingTitle ? (
+                    <div className="live-title-edit-form">
+                      <input
+                        type="text"
+                        className="live-title-inline-input"
+                        value={editingTitleInput}
+                        autoFocus
+                        placeholder="Live show title..."
+                        onChange={(e) => setEditingTitleInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleUpdateTitle(editingTitleInput);
+                          } else if (e.key === "Escape") {
+                            setIsEditingTitle(false);
+                            setEditingTitleInput(liveData?.title || setupTitle);
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="live-title-save-btn"
+                        onClick={() => handleUpdateTitle(editingTitleInput)}
+                        title="Save Title"
+                      >
+                        ✓
+                      </button>
+                      <button
+                        type="button"
+                        className="live-title-cancel-btn"
+                        onClick={() => {
+                          setIsEditingTitle(false);
+                          setEditingTitleInput(liveData?.title || setupTitle);
+                        }}
+                        title="Cancel"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="live-title-display-row">
+                      <span
+                        className={`live-studio-title ${isHost ? "editable" : ""}`}
+                        onClick={() => {
+                          if (isHost) {
+                            setEditingTitleInput(liveData?.title || setupTitle);
+                            setIsEditingTitle(true);
+                          }
+                        }}
+                        title={isHost ? "Click to edit title" : undefined}
+                      >
+                        {liveData?.title || setupTitle}
+                      </span>
+                      {isHost && (
+                        <button
+                          type="button"
+                          className="live-title-edit-icon-btn"
+                          onClick={() => {
+                            setEditingTitleInput(liveData?.title || setupTitle);
+                            setIsEditingTitle(true);
+                          }}
+                          title="Edit Broadcast Title"
+                        >
+                          ✏️
+                        </button>
+                      )}
+                    </div>
+                  )}
                   <span className="live-channel-badge">
                     {isHost ? "Broadcasting to Nesty" : `Hosted by @${liveData?.host?.username || "Host"}`}
                   </span>
@@ -1627,12 +1781,12 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                 {isChatOpen && (
                   <>
                     <div className="live-chat-messages-scroll">
-                      {chatMessages.length === 0 ? (
+                      {visibleMessages.length === 0 ? (
                         <div className="live-chat-empty">
                           <span>Welcome to the live chat! Keep the community friendly.</span>
                         </div>
                       ) : (
-                        chatMessages.map((msg) => (
+                        visibleMessages.map((msg) => (
                           <div
                             key={msg.id}
                             className={`live-chat-bubble role-${msg.role}`}
@@ -2017,7 +2171,36 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
               onClick={(e) => e.stopPropagation()}
             >
               <h3>⚙️ Live Broadcast Settings</h3>
+
+              {/* TITLE SETTING */}
+              <div className="live-settings-card-section">
+                <label className="live-field-label">Broadcast Title</label>
+                <div className="live-title-setting-row">
+                  <input
+                    type="text"
+                    className="live-setting-input"
+                    value={settingsTitleInput}
+                    placeholder="Enter broadcast title..."
+                    onChange={(e) => setSettingsTitleInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleUpdateTitle(settingsTitleInput);
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="live-setting-save-btn"
+                    onClick={() => handleUpdateTitle(settingsTitleInput)}
+                  >
+                    Save Title
+                  </button>
+                </div>
+              </div>
+
               <div className="live-chat-settings-card">
+                <h4>Chat Settings</h4>
                 <div className="live-settings-row">
                   <span>Chat Enabled</span>
                   <input
@@ -2092,6 +2275,98 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                       }
                     }}
                   />
+                </div>
+
+                {/* BLOCKED WORDS MANAGEMENT IN LIVE */}
+                <div className="live-blocked-words-box">
+                  <label>Blocked Words (auto-hidden from chat)</label>
+                  <div className="live-blocked-input-row">
+                    <input
+                      type="text"
+                      placeholder="Add word to block..."
+                      value={inLiveBlockedWordInput}
+                      onChange={(e) => setInLiveBlockedWordInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && inLiveBlockedWordInput.trim()) {
+                          e.preventDefault();
+                          const newWord = inLiveBlockedWordInput.trim().toLowerCase();
+                          if (!setupChatSettings.blocked_words.includes(newWord)) {
+                            const updated = {
+                              ...setupChatSettings,
+                              blocked_words: [...setupChatSettings.blocked_words, newWord],
+                            };
+                            setSetupChatSettings(updated);
+                            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && liveData?.id) {
+                              wsRef.current.send(
+                                JSON.stringify({
+                                  type: "live_chat_settings",
+                                  live_id: liveData.id,
+                                  chat_settings: updated,
+                                })
+                              );
+                            }
+                          }
+                          setInLiveBlockedWordInput("");
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (inLiveBlockedWordInput.trim()) {
+                          const newWord = inLiveBlockedWordInput.trim().toLowerCase();
+                          if (!setupChatSettings.blocked_words.includes(newWord)) {
+                            const updated = {
+                              ...setupChatSettings,
+                              blocked_words: [...setupChatSettings.blocked_words, newWord],
+                            };
+                            setSetupChatSettings(updated);
+                            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && liveData?.id) {
+                              wsRef.current.send(
+                                JSON.stringify({
+                                  type: "live_chat_settings",
+                                  live_id: liveData.id,
+                                  chat_settings: updated,
+                                })
+                              );
+                            }
+                          }
+                          setInLiveBlockedWordInput("");
+                        }
+                      }}
+                    >
+                      Add
+                    </button>
+                  </div>
+
+                  <div className="live-tags-wrap">
+                    {setupChatSettings.blocked_words.map((w) => (
+                      <span key={w} className="live-blocked-tag">
+                        {w}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = {
+                              ...setupChatSettings,
+                              blocked_words: setupChatSettings.blocked_words.filter((item) => item !== w),
+                            };
+                            setSetupChatSettings(updated);
+                            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && liveData?.id) {
+                              wsRef.current.send(
+                                JSON.stringify({
+                                  type: "live_chat_settings",
+                                  live_id: liveData.id,
+                                  chat_settings: updated,
+                                })
+                              );
+                            }
+                          }}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
 
