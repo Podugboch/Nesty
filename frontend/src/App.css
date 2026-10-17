@@ -5322,6 +5322,68 @@
   display: none;
 }
 
+/* CLEAN VIEW / IMMERSIVE FULLSCREEN MODE */
+.live-top-bar,
+.live-floating-controls {
+  transition: opacity 0.25s ease, transform 0.25s ease, max-height 0.25s ease;
+}
+
+.live-broadcast-container.clean-view-mode .live-top-bar {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateY(-100%) !important;
+  max-height: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  border-bottom: none !important;
+  overflow: hidden !important;
+}
+
+.live-broadcast-container.clean-view-mode .live-floating-controls {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translate(-50%, 60px) !important;
+}
+
+.live-broadcast-container.clean-view-mode .live-chat-panel {
+  display: none !important;
+}
+
+.live-broadcast-container.clean-view-mode .live-unmute-chip {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.live-broadcast-container.clean-view-mode .live-particles-container,
+.live-broadcast-container.clean-view-mode .live-grace-period-banner {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.live-broadcast-container.clean-view-mode .live-main-stage {
+  height: 100% !important;
+  width: 100% !important;
+  flex: 1 1 100% !important;
+}
+
+.live-broadcast-container.clean-view-mode .live-video-grid {
+  height: 100% !important;
+  width: 100% !important;
+  flex: 1 1 100% !important;
+}
+
+.live-broadcast-container.clean-view-mode .live-tile.host-tile {
+  width: 100% !important;
+  height: 100% !important;
+  cursor: pointer;
+}
+
+.live-broadcast-container.clean-view-mode .live-video-element {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+}
+
 @media (max-width: 800px) {
   .live-broadcast-overlay {
     padding: 0 !important;

@@ -50,11 +50,17 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
 }) => {
   const isHost = !initialLive || (currentUser && Number(initialLive.host_id) === Number(currentUser.id));
   const [liveData, setLiveData] = useState<LiveStream | null>(initialLive || null);
+  const liveDataRef = useRef<LiveStream | null>(initialLive || null);
+  useEffect(() => {
+    liveDataRef.current = liveData;
+  }, [liveData]);
+
   const [myRole, setMyRole] = useState<"host" | "moderator" | "guest" | "viewer">(
     isHost ? "host" : "viewer"
   );
   const [hostStream, setHostStream] = useState<MediaStream | null>(null);
-  const [isAutoplayMuted, setIsAutoplayMuted] = useState(false);
+  const [isAutoplayMuted, setIsAutoplayMuted] = useState(!isHost);
+  const [isCleanView, setIsCleanView] = useState(false);
 
   // PRE-BROADCAST SETUP (Host only)
   const [isPreLive, setIsPreLive] = useState<boolean>(!initialLive);
@@ -198,20 +204,26 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
 
   // Setup StreamTransport
   const initTransport = useCallback(
-    async (streamToSend?: MediaStream) => {
+    async (streamToSend?: MediaStream, explicitLiveId?: number) => {
       if (!currentUser) return;
       const transport = new MeshStreamTransport(currentUser.id);
       transportRef.current = transport;
 
       await transport.init(
         {
-          onRemoteTrack: (_track, stream, peerId) => {
-            console.log("[LiveStudio] Remote track received from peer:", peerId);
-            // Update guest stream or host stream
-            if (liveData && Number(peerId) === Number(liveData.host_id)) {
+          onRemoteTrack: (track, stream, peerId) => {
+            console.log(`[LiveStudio] Remote ${track.kind} track received from peer ${peerId}`);
+            const currentLive = liveDataRef.current || liveData;
+            const isHostTrack = currentLive
+              ? Number(peerId) === Number(currentLive.host_id)
+              : !isHost;
+
+            if (isHostTrack) {
               setHostStream(stream);
               if (hostVideoRef.current) {
-                hostVideoRef.current.srcObject = stream;
+                if (hostVideoRef.current.srcObject !== stream) {
+                  hostVideoRef.current.srcObject = stream;
+                }
                 hostVideoRef.current.play().catch((err) => {
                   console.warn("[LiveStudio] Remote stream play error:", err);
                   if (!isHost && hostVideoRef.current) {
@@ -232,11 +244,12 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
           },
           sendSignal: (toUserId, signal) => {
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              const currentLid = explicitLiveId || liveDataRef.current?.id || liveData?.id || 0;
               wsRef.current.send(
                 JSON.stringify({
                   event: "live_signal",
                   type: "live_signal",
-                  live_id: liveData?.id,
+                  live_id: currentLid,
                   to_user_id: toUserId,
                   ...signal,
                 })
@@ -253,6 +266,24 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
     },
     [currentUser, iceServers, liveData, wsRef, isHost]
   );
+
+  // Periodic stream request retry if viewer hasn't received host stream yet
+  useEffect(() => {
+    if (isHost || !liveData?.id || hostStream) return;
+    const interval = setInterval(() => {
+      const hostId = liveDataRef.current?.host_id || liveData.host_id;
+      if (hostId && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: "live_request_stream",
+            live_id: liveData.id,
+            to_user_id: hostId,
+          })
+        );
+      }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [isHost, liveData?.id, hostStream, wsRef]);
 
   // 1. Setup preview camera stream for host pre-live
   useEffect(() => {
@@ -621,12 +652,13 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
       }
 
       const created = await res.json();
+      liveDataRef.current = created.live;
       setLiveData(created.live);
       setMyRole("host");
       setIsPreLive(false);
 
-      // Initialize media transport
-      await initTransport(stream);
+      // Initialize media transport with explicit live ID
+      await initTransport(stream, created.live.id);
 
       // Double-check stream attachment to newly mounted active video element
       setTimeout(() => {
@@ -1064,7 +1096,7 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
 
   return (
     <div className="live-broadcast-overlay">
-      <div className={`live-broadcast-container ${orientationMode === "portrait" ? "mode-portrait" : "mode-landscape"}`}>
+      <div className={`live-broadcast-container ${orientationMode === "portrait" ? "mode-portrait" : "mode-landscape"} ${isCleanView ? "clean-view-mode" : ""}`}>
         {/* ===================================================================
             PRE-LIVE SETUP SCREEN (HOST ONLY)
             =================================================================== */}
@@ -1433,11 +1465,39 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
             )}
 
             {/* MAIN STAGE */}
-            <div className="live-main-stage">
+            <div
+              className="live-main-stage"
+              onClick={() => {
+                if (isCleanView) {
+                  setIsCleanView(false);
+                }
+              }}
+            >
               {/* VIDEO GRID (HOST + UP TO 3 GUESTS) */}
               <div className={`live-video-grid count-${guests.length + 1}`}>
                 {/* HOST TILE */}
-                <div className="live-tile host-tile">
+                <div
+                  className="live-tile host-tile"
+                  onClick={(e) => {
+                    const target = e.target as HTMLElement;
+                    if (
+                      target.closest("button") ||
+                      target.closest("input") ||
+                      target.closest(".live-unmute-chip")
+                    ) {
+                      return;
+                    }
+                    e.stopPropagation();
+                    setIsCleanView((prev) => !prev);
+                    if (isAutoplayMuted && !isHost && hostVideoRef.current) {
+                      hostVideoRef.current.muted = false;
+                      setIsAutoplayMuted(false);
+                      hostVideoRef.current.play().catch(() => {});
+                    }
+                  }}
+                  title={isCleanView ? "Click to show controls" : "Click to hide controls (Clean View)"}
+                  style={{ cursor: "pointer" }}
+                >
                   <video
                     ref={(el) => {
                       hostVideoRef.current = el;
@@ -1460,13 +1520,14 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                     }}
                     autoPlay
                     playsInline
-                    muted={!!isHost}
+                    muted={isHost ? true : isAutoplayMuted}
                     className={`live-video-element ${videoFit === "cover" ? "fit-cover" : "fit-contain"}`}
                   />
                   {isAutoplayMuted && !isHost && (
                     <button
                       className="live-unmute-chip"
-                      onClick={() => {
+                      onClick={(e) => {
+                        e.stopPropagation();
                         if (hostVideoRef.current) {
                           hostVideoRef.current.muted = false;
                           setIsAutoplayMuted(false);

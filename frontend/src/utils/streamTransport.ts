@@ -87,8 +87,16 @@ export class MeshStreamTransport implements StreamTransport {
 
   private getOrCreatePeer(peerId: number): RTCPeerConnection {
     let pc = this.peers.get(peerId);
-    if (pc && pc.signalingState !== "closed") {
+    if (pc && pc.signalingState !== "closed" && pc.connectionState !== "failed") {
       return pc;
+    }
+
+    if (pc) {
+      try {
+        pc.close();
+      } catch {}
+      this.peers.delete(peerId);
+      this.candidateQueues.delete(peerId);
     }
 
     pc = new RTCPeerConnection({
@@ -109,12 +117,12 @@ export class MeshStreamTransport implements StreamTransport {
     const senders = pc.getSenders();
     if (!senders.some((s) => s.track && s.track.kind === "audio")) {
       try {
-        pc.addTransceiver("audio", { direction: "sendrecv" });
+        pc.addTransceiver("audio", { direction: this.localStream ? "sendrecv" : "recvonly" });
       } catch {}
     }
     if (!senders.some((s) => s.track && s.track.kind === "video")) {
       try {
-        pc.addTransceiver("video", { direction: "sendrecv" });
+        pc.addTransceiver("video", { direction: this.localStream ? "sendrecv" : "recvonly" });
       } catch {}
     }
 
@@ -131,19 +139,16 @@ export class MeshStreamTransport implements StreamTransport {
 
     pc.ontrack = (event) => {
       if (this.events) {
-        const notifyTrack = () => {
-          let tracks: MediaStreamTrack[] = [];
-          if (event.streams && event.streams[0]) {
-            tracks = event.streams[0].getTracks();
-          } else {
-            tracks = [event.track];
-          }
-          const stream = new MediaStream(tracks);
+        const stream = (event.streams && event.streams[0])
+          ? event.streams[0]
+          : new MediaStream([event.track]);
+
+        const notify = () => {
           this.events?.onRemoteTrack(event.track, stream, peerId);
         };
 
-        event.track.onunmute = notifyTrack;
-        notifyTrack();
+        event.track.onunmute = notify;
+        notify();
       }
     };
 
@@ -166,6 +171,21 @@ export class MeshStreamTransport implements StreamTransport {
     if (peerId === this.currentUserId || !peerId) return;
 
     const pc = this.getOrCreatePeer(peerId);
+
+    // Synchronize latest local tracks
+    if (this.localStream) {
+      const senders = pc.getSenders();
+      this.localStream.getTracks().forEach((track) => {
+        const sender = senders.find((s) => s.track && s.track.kind === track.kind);
+        if (sender) {
+          sender.replaceTrack(track).catch(() => {});
+        } else {
+          try {
+            pc.addTrack(track, this.localStream!);
+          } catch {}
+        }
+      });
+    }
 
     if (isInitiator) {
       try {
