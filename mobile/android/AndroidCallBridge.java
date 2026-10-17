@@ -531,4 +531,22 @@ public class AndroidCallBridge {
     public boolean isNativeApp() {
         return true;
     }
+
+    @JavascriptInterface
+    public void setOrientation(String mode) {
+        if (sActivity == null) return;
+        sActivity.runOnUiThread(() -> {
+            try {
+                if ("landscape".equalsIgnoreCase(mode)) {
+                    sActivity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                } else if ("portrait".equalsIgnoreCase(mode)) {
+                    sActivity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+                } else {
+                    sActivity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "[CallLog] Error setting orientation: " + e.getMessage());
+            }
+        });
+    }
 }

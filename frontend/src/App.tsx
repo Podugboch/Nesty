@@ -1155,6 +1155,44 @@ export default function App() {
   const groupCandidatesQueueRef = useRef<Map<number, RTCIceCandidateInit[]>>(new Map());
   const [groupCallDuration, setGroupCallDuration] = useState(0);
 
+  // Mobile group call orientation and presentation states
+  const [groupCallOrientation, setGroupCallOrientation] = useState<"portrait" | "landscape">("portrait");
+  const [isGroupMobilePresentModalOpen, setIsGroupMobilePresentModalOpen] = useState(false);
+  const groupPresentFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Group call mobile auto-portrait lock
+  useEffect(() => {
+    const isMob = typeof window !== "undefined" && (window.innerWidth <= 768 || !!(window as any).AndroidCallBridge || !!(window as any).Capacitor?.isNativePlatform?.());
+    if (groupCallState && isMob) {
+      setGroupCallOrientation("portrait");
+      if ((window as any).AndroidCallBridge?.setOrientation) {
+        (window as any).AndroidCallBridge.setOrientation("portrait");
+      } else if ((screen.orientation as any)?.lock) {
+        (screen.orientation as any).lock("portrait").catch(() => {});
+      }
+    }
+    return () => {
+      const isMob = typeof window !== "undefined" && (window.innerWidth <= 768 || !!(window as any).AndroidCallBridge || !!(window as any).Capacitor?.isNativePlatform?.());
+      if (isMob) {
+        if ((window as any).AndroidCallBridge?.setOrientation) {
+          (window as any).AndroidCallBridge.setOrientation("unspecified");
+        } else if ((screen.orientation as any)?.unlock) {
+          (screen.orientation as any).unlock?.();
+        }
+      }
+    };
+  }, [!!groupCallState]);
+
+  const toggleGroupCallOrientation = () => {
+    const next = groupCallOrientation === "portrait" ? "landscape" : "portrait";
+    setGroupCallOrientation(next);
+    if ((window as any).AndroidCallBridge?.setOrientation) {
+      (window as any).AndroidCallBridge.setOrientation(next);
+    } else if ((screen.orientation as any)?.lock) {
+      (screen.orientation as any).lock(next).catch(() => {});
+    }
+  };
+
   // Keep groupCallStateRef in sync with groupCallState
   useEffect(() => {
     groupCallStateRef.current = groupCallState;
@@ -5036,6 +5074,111 @@ export default function App() {
     }
   };
 
+  const startActiveGroupScreenStream = (screenStream: MediaStream) => {
+    const screenTrack = screenStream.getVideoTracks()[0];
+    if (!screenTrack) return;
+    groupScreenStreamRef.current = screenStream;
+
+    screenTrack.onended = () => {
+      stopGroupScreenShare();
+    };
+
+    // Push screen share track to all active peer connections immediately
+    groupPeersRef.current.forEach(async (pc, peerId) => {
+      try {
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video") ||
+                       pc.getTransceivers().find((t) => t.receiver.track.kind === "video")?.sender ||
+                       pc.getSenders().find((s) => !s.track);
+        if (sender) {
+          await sender.replaceTrack(screenTrack);
+          if (sender.track) sender.track.enabled = true;
+        } else {
+          pc.addTrack(screenTrack, screenStream);
+          if (groupCallStateRef.current?.channelId) {
+            createAndSendOfferToPeer(peerId, groupCallStateRef.current.channelId);
+          }
+        }
+      } catch (e) {
+        console.warn(`[Group Call] Failed to transmit screen share track to peer ${peerId}`, e);
+      }
+    });
+
+    // Show local preview of the screen share
+    setGroupLocalStream(screenStream);
+    setGroupCallState((prev) => (prev ? { ...prev, type: "video", isScreenSharing: true } : null));
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && groupCallStateRef.current) {
+      wsRef.current.send(
+        JSON.stringify({
+          event: "group_call_broadcast",
+          type: "group_call_screen_share",
+          channel_id: groupCallStateRef.current.channelId,
+          from_user_id: user?.id,
+          is_sharing: true,
+        })
+      );
+    }
+  };
+
+  const handleGroupPresentRearCamera = async () => {
+    try {
+      let rearStream: MediaStream;
+      try {
+        rearStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+      } catch {
+        rearStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false,
+        });
+      }
+      setIsGroupMobilePresentModalOpen(false);
+      startActiveGroupScreenStream(rearStream);
+    } catch (err) {
+      alert("Could not access rear camera for presentation.");
+    }
+  };
+
+  const handleGroupPresentDocument = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = () => {
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 1280;
+        canvas.height = 720;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        ctx.fillStyle = "#0a0f1d";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const hRatio = canvas.width / img.width;
+        const vRatio = canvas.height / img.height;
+        const ratio = Math.min(hRatio, vRatio);
+        const centerShiftX = (canvas.width - img.width * ratio) / 2;
+        const centerShiftY = (canvas.height - img.height * ratio) / 2;
+        ctx.drawImage(img, 0, 0, img.width, img.height, centerShiftX, centerShiftY, img.width * ratio, img.height * ratio);
+
+        const canvasStream = (canvas as any).captureStream ? (canvas as any).captureStream(30) : null;
+        if (canvasStream) {
+          setIsGroupMobilePresentModalOpen(false);
+          startActiveGroupScreenStream(canvasStream);
+        } else {
+          alert("Canvas stream capture is not supported on this device.");
+        }
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
   const toggleGroupScreenShare = async () => {
     if (!groupCallState) return;
     if (groupCallState.isScreenSharing) {
@@ -5043,66 +5186,25 @@ export default function App() {
       return;
     }
 
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-      alert("Screen sharing is not supported by mobile web browsers or WebViews due to mobile OS security restrictions. You can view, zoom, and fit other members' shared screens on this device!");
-      return;
-    }
-
-    try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: "always",
-        } as any,
-        audio: false,
-      });
-
-      const screenTrack = screenStream.getVideoTracks()[0];
-      if (!screenTrack) return;
-      groupScreenStreamRef.current = screenStream;
-
-      screenTrack.onended = () => {
-        stopGroupScreenShare();
-      };
-
-      // Push screen share track to all active peer connections immediately
-      groupPeersRef.current.forEach(async (pc, peerId) => {
-        try {
-          const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video") ||
-                         pc.getTransceivers().find((t) => t.receiver.track.kind === "video")?.sender ||
-                         pc.getSenders().find((s) => !s.track);
-          if (sender) {
-            await sender.replaceTrack(screenTrack);
-            if (sender.track) sender.track.enabled = true;
-          } else {
-            pc.addTrack(screenTrack, screenStream);
-            createAndSendOfferToPeer(peerId, groupCallState.channelId);
-          }
-        } catch (e) {
-          console.warn(`[Group Call] Failed to transmit screen share track to peer ${peerId}`, e);
+    if (navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === "function") {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: "always",
+          } as any,
+          audio: false,
+        });
+        startActiveGroupScreenStream(screenStream);
+        return;
+      } catch (err: any) {
+        console.warn("[Group Call] getDisplayMedia error:", err);
+        if (err.name === "NotAllowedError" || err.name === "AbortError") {
+          return;
         }
-      });
-
-      // Show local preview of the screen share
-      setGroupLocalStream(screenStream);
-      setGroupCallState((prev) => (prev ? { ...prev, type: "video", isScreenSharing: true } : null));
-
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            event: "group_call_broadcast",
-            type: "group_call_screen_share",
-            channel_id: groupCallState.channelId,
-            from_user_id: user?.id,
-            is_sharing: true,
-          })
-        );
-      }
-    } catch (err: any) {
-      if (err.name !== "NotAllowedError" && err.name !== "AbortError") {
-        console.error("Failed to share screen:", err);
-        alert("Unable to share screen.");
       }
     }
+
+    setIsGroupMobilePresentModalOpen(true);
   };
 
   // Check for resilient unfinished replays from earlier sessions
@@ -9893,7 +9995,7 @@ export default function App() {
           ===================================================================== */}
       {groupCallState && (
         <div className="group-call-overlay">
-          <div className="group-call-container">
+          <div className={`group-call-container ${groupCallOrientation === "portrait" ? "mode-portrait" : "mode-landscape"}`}>
             {/* HEADER */}
             <div className="group-call-header">
               <div className="group-call-header-info">
@@ -9911,14 +10013,24 @@ export default function App() {
                 </div>
               </div>
 
-              <button
-                type="button"
-                className="group-call-leave-btn"
-                onClick={leaveGroupCall}
-                title="Leave Group Call"
-              >
-                Leave Call
-              </button>
+              <div className="group-call-header-actions">
+                <button
+                  type="button"
+                  className="group-orientation-btn"
+                  onClick={toggleGroupCallOrientation}
+                  title={`Switch to ${groupCallOrientation === "portrait" ? "Landscape" : "Portrait"}`}
+                >
+                  {groupCallOrientation === "portrait" ? "🔄 Landscape" : "📱 Portrait"}
+                </button>
+                <button
+                  type="button"
+                  className="group-call-leave-btn"
+                  onClick={leaveGroupCall}
+                  title="Leave Group Call"
+                >
+                  Leave Call
+                </button>
+              </div>
             </div>
 
             {/* CALL PARTICIPANTS GRID */}
@@ -10053,6 +10165,16 @@ export default function App() {
 
               <button
                 type="button"
+                className={`group-dock-btn ${groupCallOrientation === "landscape" ? "active" : ""}`}
+                onClick={toggleGroupCallOrientation}
+                title={`Switch to ${groupCallOrientation === "portrait" ? "Landscape" : "Portrait"}`}
+              >
+                <span className="dock-btn-icon">{groupCallOrientation === "portrait" ? "🔄" : "📱"}</span>
+                <span className="dock-btn-text">{groupCallOrientation === "portrait" ? "Landscape" : "Portrait"}</span>
+              </button>
+
+              <button
+                type="button"
                 className="group-dock-btn end-call-btn"
                 onClick={leaveGroupCall}
                 title="Leave Call"
@@ -10085,6 +10207,90 @@ export default function App() {
                   isFullscreen={true}
                   onCloseFullscreen={() => setFullscreenScreenShare(null)}
                 />
+              </div>
+            )}
+            {/* HIDDEN FILE INPUT FOR GROUP CALL PRESENTATION */}
+            <input
+              type="file"
+              ref={groupPresentFileInputRef}
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={handleGroupPresentDocument}
+            />
+
+            {/* GROUP CALL MOBILE PRESENTATION MODAL */}
+            {isGroupMobilePresentModalOpen && (
+              <div className="live-dialog-backdrop mobile-present-backdrop" onClick={() => setIsGroupMobilePresentModalOpen(false)}>
+                <div className="live-dialog-card mobile-present-dialog" onClick={(e) => e.stopPropagation()}>
+                  <div className="live-dialog-header">
+                    <h3>📱 Share Screen / Content in Call</h3>
+                    <button type="button" className="live-dialog-close" onClick={() => setIsGroupMobilePresentModalOpen(false)}>✕</button>
+                  </div>
+                  <p className="mobile-present-desc">
+                    Choose how you would like to present content to the meeting:
+                  </p>
+                  <div className="mobile-present-options">
+                    <button
+                      type="button"
+                      className="mobile-present-btn primary"
+                      onClick={() => {
+                        groupPresentFileInputRef.current?.click();
+                      }}
+                    >
+                      <span className="present-opt-icon">📑</span>
+                      <div className="present-opt-info">
+                        <strong>Share Document / Slide / Photo</strong>
+                        <small>Stream presentation slides, notes, diagrams or photos</small>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="mobile-present-btn"
+                      onClick={handleGroupPresentRearCamera}
+                    >
+                      <span className="present-opt-icon">📷</span>
+                      <div className="present-opt-info">
+                        <strong>Share via Back Camera</strong>
+                        <small>Point camera at whiteboard, paper notes, or another screen</small>
+                      </div>
+                    </button>
+
+                    {navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === "function" && (
+                      <button
+                        type="button"
+                        className="mobile-present-btn"
+                        onClick={async () => {
+                          setIsGroupMobilePresentModalOpen(false);
+                          try {
+                            const scr = await navigator.mediaDevices.getDisplayMedia({
+                              video: { cursor: "always" } as any,
+                              audio: false,
+                            });
+                            startActiveGroupScreenStream(scr);
+                          } catch (err: any) {
+                            console.warn("[Group Call] Direct getDisplayMedia retry error:", err);
+                          }
+                        }}
+                      >
+                        <span className="present-opt-icon">🖥️</span>
+                        <div className="present-opt-info">
+                          <strong>Device Display Capture</strong>
+                          <small>Native screen recording prompt (if supported by OS)</small>
+                        </div>
+                      </button>
+                    )}
+                  </div>
+                  <div className="live-dialog-actions">
+                    <button
+                      type="button"
+                      className="live-dialog-cancel-btn"
+                      onClick={() => setIsGroupMobilePresentModalOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </div>

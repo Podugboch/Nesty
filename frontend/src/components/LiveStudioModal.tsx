@@ -81,6 +81,43 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
   const [videoFit, setVideoFit] = useState<"contain" | "cover">("contain");
   const [hostReconnectedNotice, setHostReconnectedNotice] = useState<string | null>(null);
 
+  // MOBILE ORIENTATION (Default to portrait on mobile, toggleable to landscape)
+  const isMobile = typeof window !== "undefined" && (window.innerWidth <= 768 || !!(window as any).AndroidCallBridge || !!(window as any).Capacitor?.isNativePlatform?.());
+  const [orientationMode, setOrientationMode] = useState<"portrait" | "landscape">("portrait");
+  const [isMobilePresentModalOpen, setIsMobilePresentModalOpen] = useState(false);
+  const presentFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (isMobile) {
+      setOrientationMode("portrait");
+      if ((window as any).AndroidCallBridge?.setOrientation) {
+        (window as any).AndroidCallBridge.setOrientation("portrait");
+      } else if ((screen.orientation as any)?.lock) {
+        (screen.orientation as any).lock("portrait").catch(() => {});
+      }
+    }
+
+    return () => {
+      if (isMobile) {
+        if ((window as any).AndroidCallBridge?.setOrientation) {
+          (window as any).AndroidCallBridge.setOrientation("unspecified");
+        } else if ((screen.orientation as any)?.unlock) {
+          (screen.orientation as any).unlock?.();
+        }
+      }
+    };
+  }, [isMobile]);
+
+  const handleToggleOrientation = () => {
+    const next = orientationMode === "portrait" ? "landscape" : "portrait";
+    setOrientationMode(next);
+    if ((window as any).AndroidCallBridge?.setOrientation) {
+      (window as any).AndroidCallBridge.setOrientation(next);
+    } else if ((screen.orientation as any)?.lock) {
+      (screen.orientation as any).lock(next).catch(() => {});
+    }
+  };
+
   // STAGE & GUESTS (Max 3 guests)
   const [guests, setGuests] = useState<LiveGuest[]>([]);
   const [handQueue, setHandQueue] = useState<HandRaiseItem[]>([]);
@@ -812,47 +849,133 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
     setMyRole("viewer");
   };
 
+  // Start active screen/presentation stream
+  const startActiveScreenShare = (scr: MediaStream) => {
+    screenStreamRef.current = scr;
+    setHostStream(scr);
+    if (hostVideoRef.current) {
+      hostVideoRef.current.srcObject = scr;
+      hostVideoRef.current.play().catch(() => {});
+    }
+    if (transportRef.current) {
+      transportRef.current.publishStream(scr);
+    }
+    scr.getVideoTracks()[0].onended = () => {
+      stopScreenShare();
+    };
+    setIsScreenSharing(true);
+  };
+
+  const stopScreenShare = () => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current = null;
+    }
+    const camStream = localMediaStreamRef.current;
+    if (camStream) {
+      setHostStream(camStream);
+      if (hostVideoRef.current) {
+        hostVideoRef.current.srcObject = camStream;
+        hostVideoRef.current.play().catch(() => {});
+      }
+      if (transportRef.current) {
+        transportRef.current.publishStream(camStream);
+      }
+    }
+    setIsScreenSharing(false);
+  };
+
   // Screen share toggle
   const handleToggleScreenShare = async () => {
     if (isScreenSharing) {
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach((t) => t.stop());
-        screenStreamRef.current = null;
-      }
-      if (localMediaStreamRef.current && hostVideoRef.current) {
-        hostVideoRef.current.srcObject = localMediaStreamRef.current;
-        if (transportRef.current) {
-          transportRef.current.publishStream(localMediaStreamRef.current);
+      stopScreenShare();
+      return;
+    }
+
+    // 1. Try standard getDisplayMedia (supported on desktop and Android Chrome)
+    if (navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === "function") {
+      try {
+        const scr = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        startActiveScreenShare(scr);
+        return;
+      } catch (err: any) {
+        console.warn("[LiveStudio] getDisplayMedia error:", err);
+        if (err.name === "NotAllowedError" || err.name === "AbortError") {
+          return;
         }
       }
-      setIsScreenSharing(false);
-      return;
     }
 
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      alert("Screen sharing is not supported by mobile web browsers or WebViews due to mobile OS security restrictions. Broadcasting with your camera and microphone is active!");
-      return;
-    }
+    // 2. Fallback on mobile/webview: open mobile presentation modal
+    setIsMobilePresentModalOpen(true);
+  };
 
+  // Mobile Presentation: Rear Camera
+  const handlePresentRearCamera = async () => {
     try {
-      const scr = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      screenStreamRef.current = scr;
-      if (hostVideoRef.current) {
-        hostVideoRef.current.srcObject = scr;
+      let rearStream: MediaStream;
+      try {
+        rearStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+      } catch {
+        rearStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false,
+        });
       }
-      if (transportRef.current) {
-        transportRef.current.publishStream(scr);
-      }
-      scr.getVideoTracks()[0].onended = () => {
-        handleToggleScreenShare();
+      setIsMobilePresentModalOpen(false);
+      startActiveScreenShare(rearStream);
+    } catch (err) {
+      alert("Could not access rear camera for presentation.");
+    }
+  };
+
+  // Mobile Presentation: Document / Slide Image via Canvas Stream
+  const handlePresentDocument = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = () => {
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 1280;
+        canvas.height = 720;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        // Draw image centered with aspect ratio fitting
+        ctx.fillStyle = "#0a0f1d";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const hRatio = canvas.width / img.width;
+        const vRatio = canvas.height / img.height;
+        const ratio = Math.min(hRatio, vRatio);
+        const centerShiftX = (canvas.width - img.width * ratio) / 2;
+        const centerShiftY = (canvas.height - img.height * ratio) / 2;
+        ctx.drawImage(img, 0, 0, img.width, img.height, centerShiftX, centerShiftY, img.width * ratio, img.height * ratio);
+
+        // Capture 30fps canvas stream as presentation video track
+        const canvasStream = (canvas as any).captureStream ? (canvas as any).captureStream(30) : null;
+        if (canvasStream) {
+          setIsMobilePresentModalOpen(false);
+          startActiveScreenShare(canvasStream);
+        } else {
+          alert("Canvas stream capture is not supported on this browser.");
+        }
       };
-      setIsScreenSharing(true);
-    } catch {}
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
   };
 
   return (
     <div className="live-broadcast-overlay">
-      <div className="live-broadcast-container">
+      <div className={`live-broadcast-container ${orientationMode === "portrait" ? "mode-portrait" : "mode-landscape"}`}>
         {/* ===================================================================
             PRE-LIVE SETUP SCREEN (HOST ONLY)
             =================================================================== */}
@@ -1104,6 +1227,15 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                   <span>❤️</span>
                   <span>{totalReactions}</span>
                 </div>
+
+                <button
+                  type="button"
+                  className="live-orientation-btn"
+                  onClick={handleToggleOrientation}
+                  title={`Switch to ${orientationMode === "portrait" ? "Landscape" : "Portrait"}`}
+                >
+                  {orientationMode === "portrait" ? "🔄 Landscape" : "📱 Portrait"}
+                </button>
 
                 {isHost ? (
                   <button
@@ -1357,6 +1489,16 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                         <span className="live-btn-icon">⚙️</span>
                         <span className="live-btn-text">Settings</span>
                       </button>
+
+                      <button
+                        type="button"
+                        className={`live-ctrl-btn ${orientationMode === "landscape" ? "active" : ""}`}
+                        onClick={handleToggleOrientation}
+                        title={`Switch to ${orientationMode === "portrait" ? "Landscape" : "Portrait"}`}
+                      >
+                        <span className="live-btn-icon">{orientationMode === "portrait" ? "🔄" : "📱"}</span>
+                        <span className="live-btn-text">{orientationMode === "portrait" ? "Landscape" : "Portrait"}</span>
+                      </button>
                     </>
                   ) : myRole === "guest" ? (
                     <>
@@ -1372,6 +1514,15 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                       >
                         <span className="live-btn-icon">{isMuted ? "🔇" : "🎤"}</span>
                         <span className="live-btn-text">{isMuted ? "Unmute" : "Mute"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`live-ctrl-btn ${orientationMode === "landscape" ? "active" : ""}`}
+                        onClick={handleToggleOrientation}
+                        title={`Switch to ${orientationMode === "portrait" ? "Landscape" : "Portrait"}`}
+                      >
+                        <span className="live-btn-icon">{orientationMode === "portrait" ? "🔄" : "📱"}</span>
+                        <span className="live-btn-text">{orientationMode === "portrait" ? "Landscape" : "Portrait"}</span>
                       </button>
                       <button
                         type="button"
@@ -1393,6 +1544,15 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                       >
                         <span>✋</span>
                         <span>{isHandRaised ? "Hand Raised" : "Raise Hand"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="live-ctrl-btn"
+                        onClick={handleToggleOrientation}
+                        title={`Switch to ${orientationMode === "portrait" ? "Landscape" : "Portrait"}`}
+                      >
+                        <span className="live-btn-icon">{orientationMode === "portrait" ? "🔄" : "📱"}</span>
+                        <span className="live-btn-text">{orientationMode === "portrait" ? "Landscape" : "Portrait"}</span>
                       </button>
                     </div>
                   )}
@@ -1942,6 +2102,88 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                   onClick={() => setSettingsModalOpen(false)}
                 >
                   Done
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* HIDDEN FILE INPUT FOR DOCUMENT/SLIDE PRESENTATION */}
+        <input
+          type="file"
+          ref={presentFileInputRef}
+          accept="image/*"
+          style={{ display: "none" }}
+          onChange={handlePresentDocument}
+        />
+
+        {/* MOBILE PRESENTATION MODAL */}
+        {isMobilePresentModalOpen && (
+          <div className="live-dialog-backdrop mobile-present-backdrop" onClick={() => setIsMobilePresentModalOpen(false)}>
+            <div className="live-dialog-card mobile-present-dialog" onClick={(e) => e.stopPropagation()}>
+              <div className="live-dialog-header">
+                <h3>📱 Share Screen / Content</h3>
+                <button type="button" className="live-dialog-close" onClick={() => setIsMobilePresentModalOpen(false)}>✕</button>
+              </div>
+              <p className="mobile-present-desc">
+                Select how you would like to present content to the live room:
+              </p>
+              <div className="mobile-present-options">
+                <button
+                  type="button"
+                  className="mobile-present-btn primary"
+                  onClick={() => {
+                    presentFileInputRef.current?.click();
+                  }}
+                >
+                  <span className="present-opt-icon">📑</span>
+                  <div className="present-opt-info">
+                    <strong>Share Document / Slide / Image</strong>
+                    <small>Broadcast presentation slides, photos, or diagrams</small>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  className="mobile-present-btn"
+                  onClick={handlePresentRearCamera}
+                >
+                  <span className="present-opt-icon">📷</span>
+                  <div className="present-opt-info">
+                    <strong>Share via Back Camera</strong>
+                    <small>Point at notes, physical documents, or external screen</small>
+                  </div>
+                </button>
+
+                {navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === "function" && (
+                  <button
+                    type="button"
+                    className="mobile-present-btn"
+                    onClick={async () => {
+                      setIsMobilePresentModalOpen(false);
+                      try {
+                        const scr = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+                        startActiveScreenShare(scr);
+                      } catch (err: any) {
+                        console.warn("[LiveStudio] Direct getDisplayMedia retry error:", err);
+                      }
+                    }}
+                  >
+                    <span className="present-opt-icon">🖥️</span>
+                    <div className="present-opt-info">
+                      <strong>Device Display Capture</strong>
+                      <small>Trigger system screen recording if allowed by OS</small>
+                    </div>
+                  </button>
+                )}
+              </div>
+              <div className="live-dialog-actions">
+                <button
+                  type="button"
+                  className="live-dialog-cancel-btn"
+                  onClick={() => setIsMobilePresentModalOpen(false)}
+                >
+                  Cancel
                 </button>
               </div>
             </div>

@@ -12045,3 +12045,148 @@
   gap: 16px;
 }
 
+/* ==========================================================================
+   MOBILE ORIENTATION (PORTRAIT & LANDSCAPE) AND SCREEN SHARE PRESENTATION
+   ========================================================================== */
+.live-orientation-btn,
+.group-orientation-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.live-orientation-btn:hover,
+.group-orientation-btn:hover {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: #38bdf8;
+  transform: translateY(-1px);
+}
+
+.group-call-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Orientation Responsive Overrides */
+@media (max-width: 900px) {
+  /* Landscape Mode in Live Studio */
+  .live-broadcast-container.mode-landscape .live-main-stage {
+    flex-direction: row !important;
+  }
+  .live-broadcast-container.mode-landscape .live-video-box {
+    flex: 1 1 65% !important;
+  }
+  .live-broadcast-container.mode-landscape .live-chat-panel {
+    width: 35% !important;
+    border-top: none !important;
+    border-left: 1px solid #232936 !important;
+    height: 100% !important;
+    max-height: 100% !important;
+  }
+  .live-broadcast-container.mode-landscape .live-tile video {
+    object-fit: contain !important;
+  }
+
+  /* Landscape Mode in Group Calls */
+  .group-call-container.mode-landscape .group-call-grid {
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)) !important;
+  }
+  .group-call-container.mode-landscape .group-call-tile {
+    min-height: 180px !important;
+    aspect-ratio: 16 / 9 !important;
+  }
+}
+
+/* Mobile Screen Presentation Dialog */
+.mobile-present-backdrop {
+  z-index: 1050 !important;
+}
+
+.mobile-present-dialog {
+  background: #181c28;
+  border: 1px solid #2e384d;
+  border-radius: 18px;
+  padding: 22px;
+  width: 100%;
+  max-width: 460px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mobile-present-desc {
+  font-size: 13px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.mobile-present-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mobile-present-btn {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid #2e384d;
+  border-radius: 12px;
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mobile-present-btn:hover {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: #38bdf8;
+}
+
+.mobile-present-btn.primary {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.mobile-present-btn.primary:hover {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: #38bdf8;
+}
+
+.present-opt-icon {
+  font-size: 26px;
+  flex-shrink: 0;
+}
+
+.present-opt-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.present-opt-info strong {
+  font-size: 14px;
+  color: #f8fafc;
+}
+
+.present-opt-info small {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+
