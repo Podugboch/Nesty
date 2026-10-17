@@ -247,14 +247,25 @@ func (m *LiveManager) JoinRoom(liveID uint, user *model.User) (*LiveRoom, string
 
 	viewerCount := len(room.Viewers)
 
-	// Broadcast updated viewer count asynchronously
-	go func(lid uint, count int) {
+	// Broadcast updated viewer count and notify host of new viewer
+	go func(lid uint, count int, u *model.User, isHost bool) {
 		m.BroadcastToLive(lid, map[string]interface{}{
 			"type":         "live_viewer_count",
 			"live_id":      lid,
 			"viewer_count": count,
 		})
-	}(liveID, viewerCount)
+		if !isHost {
+			m.BroadcastToLive(lid, map[string]interface{}{
+				"type":         "live_viewer_joined",
+				"live_id":      lid,
+				"user_id":      u.ID,
+				"from_user_id": u.ID,
+				"username":     u.Username,
+				"name":         u.Name,
+				"avatar_url":   u.AvatarURL,
+			})
+		}
+	}(liveID, viewerCount, user, user.ID == room.HostID)
 
 	return room, role, nil
 }

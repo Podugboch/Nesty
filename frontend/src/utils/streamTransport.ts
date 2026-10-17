@@ -27,6 +27,8 @@ export class MeshStreamTransport implements StreamTransport {
   private iceServers: RTCIceServer[] = [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:global.stun.twilio.com:3478" },
+    { urls: "stun:stun.services.mozilla.com" },
   ];
   private localStream: MediaStream | null = null;
   private peers: Map<number, RTCPeerConnection> = new Map();
@@ -53,9 +55,11 @@ export class MeshStreamTransport implements StreamTransport {
       stream.getTracks().forEach((track) => {
         const sender = senders.find((s) => s.track && s.track.kind === track.kind);
         if (sender) {
-          sender.replaceTrack(track);
+          sender.replaceTrack(track).catch(() => {});
         } else {
-          pc.addTrack(track, stream);
+          try {
+            pc.addTrack(track, stream);
+          } catch {}
         }
       });
     });
@@ -95,7 +99,9 @@ export class MeshStreamTransport implements StreamTransport {
 
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => {
-        pc!.addTrack(track, this.localStream!);
+        try {
+          pc!.addTrack(track, this.localStream!);
+        } catch {}
       });
     }
 
@@ -115,6 +121,8 @@ export class MeshStreamTransport implements StreamTransport {
     pc.onicecandidate = (event) => {
       if (event.candidate && this.events) {
         this.events.sendSignal(peerId, {
+          event: "live_signal",
+          type: "live_signal",
           signal_type: "ice-candidate",
           candidate: event.candidate,
         });
@@ -123,8 +131,19 @@ export class MeshStreamTransport implements StreamTransport {
 
     pc.ontrack = (event) => {
       if (this.events) {
-        const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
-        this.events.onRemoteTrack(event.track, stream, peerId);
+        const notifyTrack = () => {
+          let tracks: MediaStreamTrack[] = [];
+          if (event.streams && event.streams[0]) {
+            tracks = event.streams[0].getTracks();
+          } else {
+            tracks = [event.track];
+          }
+          const stream = new MediaStream(tracks);
+          this.events?.onRemoteTrack(event.track, stream, peerId);
+        };
+
+        event.track.onunmute = notifyTrack;
+        notifyTrack();
       }
     };
 
@@ -158,6 +177,8 @@ export class MeshStreamTransport implements StreamTransport {
 
         if (this.events) {
           this.events.sendSignal(peerId, {
+            event: "live_signal",
+            type: "live_signal",
             signal_type: "offer",
             sdp: offer,
           });
@@ -202,6 +223,8 @@ export class MeshStreamTransport implements StreamTransport {
 
         if (this.events) {
           this.events.sendSignal(fromUserId, {
+            event: "live_signal",
+            type: "live_signal",
             signal_type: "answer",
             sdp: answer,
           });

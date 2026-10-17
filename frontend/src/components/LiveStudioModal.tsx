@@ -53,6 +53,8 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
   const [myRole, setMyRole] = useState<"host" | "moderator" | "guest" | "viewer">(
     isHost ? "host" : "viewer"
   );
+  const [hostStream, setHostStream] = useState<MediaStream | null>(null);
+  const [isAutoplayMuted, setIsAutoplayMuted] = useState(false);
 
   // PRE-BROADCAST SETUP (Host only)
   const [isPreLive, setIsPreLive] = useState<boolean>(!initialLive);
@@ -144,10 +146,20 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
       await transport.init(
         {
           onRemoteTrack: (_track, stream, peerId) => {
+            console.log("[LiveStudio] Remote track received from peer:", peerId);
             // Update guest stream or host stream
-            if (liveData && peerId === liveData.host_id) {
+            if (liveData && Number(peerId) === Number(liveData.host_id)) {
+              setHostStream(stream);
               if (hostVideoRef.current) {
                 hostVideoRef.current.srcObject = stream;
+                hostVideoRef.current.play().catch((err) => {
+                  console.warn("[LiveStudio] Remote stream play error:", err);
+                  if (!isHost && hostVideoRef.current) {
+                    hostVideoRef.current.muted = true;
+                    setIsAutoplayMuted(true);
+                    hostVideoRef.current.play().catch(() => {});
+                  }
+                });
               }
             } else {
               setGuests((prev) =>
@@ -163,6 +175,7 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
               wsRef.current.send(
                 JSON.stringify({
                   event: "live_signal",
+                  type: "live_signal",
                   live_id: liveData?.id,
                   to_user_id: toUserId,
                   ...signal,
@@ -178,10 +191,10 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
         await transport.publishStream(streamToSend);
       }
     },
-    [currentUser, iceServers, liveData, wsRef]
+    [currentUser, iceServers, liveData, wsRef, isHost]
   );
 
-  // Setup preview camera stream for host pre-live
+  // 1. Setup preview camera stream for host pre-live
   useEffect(() => {
     if (isHost && isPreLive) {
       let active = true;
@@ -193,8 +206,10 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
         .then((stream) => {
           if (active) {
             localMediaStreamRef.current = stream;
+            setHostStream(stream);
             if (hostVideoRef.current) {
               hostVideoRef.current.srcObject = stream;
+              hostVideoRef.current.play().catch(() => {});
             }
           }
         })
@@ -207,6 +222,54 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
       };
     }
   }, [isHost, isPreLive]);
+
+  // 2. Ensure host acquires camera/mic if entering an already-active live
+  useEffect(() => {
+    if (isHost && !isPreLive && !localMediaStreamRef.current) {
+      navigator.mediaDevices
+        ?.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+          audio: { echoCancellation: true, noiseSuppression: true },
+        })
+        .then(async (stream) => {
+          localMediaStreamRef.current = stream;
+          setHostStream(stream);
+          if (hostVideoRef.current) {
+            hostVideoRef.current.srcObject = stream;
+            hostVideoRef.current.play().catch(() => {});
+          }
+          await initTransport(stream);
+        })
+        .catch((err) => {
+          console.warn("Failed to get host stream for active broadcast:", err);
+        });
+    }
+  }, [isHost, isPreLive, initTransport]);
+
+  // 3. Initialize transport for viewers when entering live
+  useEffect(() => {
+    if (!isHost && liveData?.id) {
+      initTransport();
+    }
+  }, [isHost, liveData?.id, initTransport]);
+
+  // 4. Continuously ensure hostVideoRef attaches active stream
+  useEffect(() => {
+    const stream = isHost ? (localMediaStreamRef.current || hostStream) : hostStream;
+    if (hostVideoRef.current && stream) {
+      if (hostVideoRef.current.srcObject !== stream) {
+        hostVideoRef.current.srcObject = stream;
+      }
+      hostVideoRef.current.play().catch((err) => {
+        console.warn("[LiveStudio] Active video play error:", err);
+        if (!isHost && hostVideoRef.current) {
+          hostVideoRef.current.muted = true;
+          setIsAutoplayMuted(true);
+          hostVideoRef.current.play().catch(() => {});
+        }
+      });
+    }
+  }, [hostStream, isPreLive, isHost]);
 
   // Send WebSocket join when entering live session
   useEffect(() => {
@@ -251,7 +314,27 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
             if (data.guests) setGuests(data.guests);
             if (data.hand_queue) setHandQueue(data.hand_queue);
             if (data.chat_settings) setSetupChatSettings(data.chat_settings);
+
+            // Viewer requests stream from host
+            if (!isHost && data.host_id && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              wsRef.current.send(
+                JSON.stringify({
+                  type: "live_request_stream",
+                  live_id: liveData?.id || data.live_id,
+                  to_user_id: data.host_id,
+                })
+              );
+            }
             break;
+
+          case "live_viewer_joined": {
+            const viewerId = Number(data.user_id || data.from_user_id);
+            if (isHost && viewerId && viewerId !== Number(currentUser?.id) && transportRef.current) {
+              console.log("[LiveStudio] Host initiating WebRTC connection to viewer:", viewerId);
+              transportRef.current.connectToPeer(viewerId, true);
+            }
+            break;
+          }
 
           case "live_viewer_count":
             setViewerCount(data.viewer_count || 1);
@@ -291,6 +374,13 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
           case "live_stage_guests_update":
             if (data.guests) {
               setGuests(data.guests);
+              if ((isHost || myRole === "guest") && transportRef.current) {
+                data.guests.forEach((g: LiveGuest) => {
+                  if (Number(g.user_id) !== Number(currentUser?.id)) {
+                    transportRef.current?.connectToPeer(g.user_id, true);
+                  }
+                });
+              }
             }
             break;
 
@@ -345,11 +435,13 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
             onClose();
             break;
 
-          case "live_signal":
-            if (transportRef.current && data.from_user_id) {
-              transportRef.current.handleSignal(data.from_user_id, data);
+          case "live_signal": {
+            const fromId = Number(data.from_user_id || data.fromUserId);
+            if (transportRef.current && fromId) {
+              transportRef.current.handleSignal(fromId, data);
             }
             break;
+          }
 
           case "live_error":
             alert(data.message || "Live stream error");
@@ -386,6 +478,8 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
         }
       }
 
+      setHostStream(stream);
+
       // API request to create live
       const res = await fetch(`${apiUrl}/api/lives`, {
         method: "POST",
@@ -413,6 +507,16 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
 
       // Initialize media transport
       await initTransport(stream);
+
+      // Double-check stream attachment to newly mounted active video element
+      setTimeout(() => {
+        if (hostVideoRef.current && stream) {
+          if (hostVideoRef.current.srcObject !== stream) {
+            hostVideoRef.current.srcObject = stream;
+          }
+          hostVideoRef.current.play().catch(() => {});
+        }
+      }, 60);
 
       // If save replay was enabled, begin MediaRecorder chunking every 5s
       if (setupSaveReplay && stream) {
@@ -763,7 +867,15 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
               {/* CAMERA PREVIEW */}
               <div className="live-pre-video-box">
                 <video
-                  ref={hostVideoRef}
+                  ref={(el) => {
+                    if (el) {
+                      const st = localMediaStreamRef.current || hostStream;
+                      if (st && el.srcObject !== st) {
+                        el.srcObject = st;
+                      }
+                      if (st) el.play().catch(() => {});
+                    }
+                  }}
                   autoPlay
                   playsInline
                   muted
@@ -1041,12 +1153,44 @@ export const LiveStudioModal: React.FC<LiveStudioModalProps> = ({
                 {/* HOST TILE */}
                 <div className="live-tile host-tile">
                   <video
-                    ref={hostVideoRef}
+                    ref={(el) => {
+                      hostVideoRef.current = el;
+                      if (el) {
+                        const targetStream = isHost ? (localMediaStreamRef.current || hostStream) : hostStream;
+                        if (targetStream && el.srcObject !== targetStream) {
+                          el.srcObject = targetStream;
+                        }
+                        if (targetStream) {
+                          el.play().catch((err) => {
+                            console.warn("[LiveStudio] Active host video play error:", err);
+                            if (!isHost) {
+                              el.muted = true;
+                              setIsAutoplayMuted(true);
+                              el.play().catch(() => {});
+                            }
+                          });
+                        }
+                      }
+                    }}
                     autoPlay
                     playsInline
                     muted={!!isHost}
                     className={`live-video-element ${videoFit === "cover" ? "fit-cover" : "fit-contain"}`}
                   />
+                  {isAutoplayMuted && !isHost && (
+                    <button
+                      className="live-unmute-chip"
+                      onClick={() => {
+                        if (hostVideoRef.current) {
+                          hostVideoRef.current.muted = false;
+                          setIsAutoplayMuted(false);
+                          hostVideoRef.current.play().catch(() => {});
+                        }
+                      }}
+                    >
+                      🔊 Tap to Unmute
+                    </button>
+                  )}
                   {isVideoOff && (
                     <div className="live-video-off-backdrop">
                       <span style={{ fontSize: "48px" }}>📷</span>

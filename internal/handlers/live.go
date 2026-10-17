@@ -583,6 +583,33 @@ func (h *Handler) HandleLiveWSMessage(userID uint, raw map[string]interface{}, s
 		return true
 	}
 
+	// 1. Forward WebRTC signaling (offers, answers, ICE candidates) directly to targeted peer
+	if rawEvent == "live_signal" || rawType == "live_signal" {
+		targetID := parseUintValue(raw["to_user_id"])
+		if targetID > 0 {
+			raw["from_user_id"] = userID
+			raw["type"] = "live_signal"
+			payload, _ := json.Marshal(raw)
+			h.Hub.SendToUser(targetID, payload)
+		}
+		return true
+	}
+
+	// 2. Viewer requesting host to establish WebRTC media stream
+	if rawType == "live_request_stream" {
+		room := h.LiveManager.GetRoom(liveID)
+		if room != nil {
+			reqMsg, _ := json.Marshal(map[string]interface{}{
+				"type":         "live_viewer_joined",
+				"live_id":      liveID,
+				"user_id":      userID,
+				"from_user_id": userID,
+			})
+			h.Hub.SendToUser(room.HostID, reqMsg)
+		}
+		return true
+	}
+
 	switch rawType {
 	case "live_join":
 		var user model.User

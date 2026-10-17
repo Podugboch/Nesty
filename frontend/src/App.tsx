@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { timeAgo } from "./utils/timeAgo";
 import { MusicPicker, type MusicTrack } from "./components/MusicPicker";
 import { ReelsView } from "./components/ReelsView";
@@ -746,6 +746,24 @@ export default function App() {
     callerName: string;
     callerAvatar?: string;
   } | null>(null);
+  const commCallDismissTimerRef = useRef<any>(null);
+
+  const showCommunityCallFlash = useCallback((callInfo: {
+    channelId: string;
+    channelName: string;
+    callType: "audio" | "video";
+    callerName: string;
+    callerAvatar?: string;
+  }) => {
+    if (commCallDismissTimerRef.current) {
+      clearTimeout(commCallDismissTimerRef.current);
+    }
+    setIncomingCommunityCall(callInfo);
+    // Flash on screen and stay for 6 seconds before automatically disappearing (silent, no ringtones)
+    commCallDismissTimerRef.current = setTimeout(() => {
+      setIncomingCommunityCall(null);
+    }, 6000);
+  }, []);
 
   // Manage Community Modal state (for Admins & Co-Admins)
   const [manageCommModalOpen, setManageCommModalOpen] = useState(false);
@@ -3480,16 +3498,13 @@ export default function App() {
                 const callerName = data.notification.actor?.name || data.notification.actor?.username || commCall.caller_name || "Community Member";
 
                 if (!groupCallStateRef.current) {
-                  setIncomingCommunityCall({
+                  showCommunityCallFlash({
                     channelId,
                     channelName,
                     callType,
                     callerName,
                     callerAvatar: data.notification.actor?.avatar_url,
                   });
-                  try {
-                    startIncomingRingtone();
-                  } catch {}
                 }
 
                 if ("Notification" in window && Notification.permission === "granted") {
@@ -4678,16 +4693,13 @@ export default function App() {
               c.createdById === myId)
         );
         if (isMember) {
-          setIncomingCommunityCall({
+          showCommunityCallFlash({
             channelId,
             channelName: data.channel_name || channelId,
             callType: data.call_type || "audio",
             callerName: data.name || data.username || "Community Member",
             callerAvatar: data.avatar_url,
           });
-          try {
-            startIncomingRingtone();
-          } catch {}
         }
       }
       return;
