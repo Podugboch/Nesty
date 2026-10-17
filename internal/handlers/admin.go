@@ -1135,8 +1135,8 @@ func (h *Handler) CreateReport(c *gin.Context) {
 	}
 
 	targetType := strings.ToLower(strings.TrimSpace(input.TargetType))
-	if targetType != "post" && targetType != "comment" && targetType != "user" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "target_type must be 'post', 'comment', or 'user'"})
+	if targetType != "post" && targetType != "comment" && targetType != "user" && targetType != "live" && targetType != "live_message" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "target_type must be 'post', 'comment', 'user', 'live', or 'live_message'"})
 		return
 	}
 
@@ -1176,6 +1176,12 @@ func (h *Handler) CreateReport(c *gin.Context) {
 		var user model.User
 		if err := h.DB.First(&user, input.TargetID).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "reported user does not exist"})
+			return
+		}
+	case "live", "live_message":
+		var live model.Live
+		if err := h.DB.First(&live, input.TargetID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "reported live stream does not exist"})
 			return
 		}
 	}

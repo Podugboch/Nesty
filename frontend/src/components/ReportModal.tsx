@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 
-export type ReportTargetType = "post" | "comment" | "user";
+export type ReportTargetType = "post" | "comment" | "user" | "live" | "live_message";
 
 interface ReportModalProps {
   isOpen: boolean;

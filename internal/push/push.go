@@ -105,6 +105,67 @@ func (s *PushService) SendMissedCallNotification(calleeID uint, payload CallPush
 	}
 }
 
+// SendLiveStartedPush notifies user devices that a followed host went live
+func (s *PushService) SendLiveStartedPush(followerID uint, host model.User, liveID uint, title string) {
+	var devices []model.Device
+	if err := s.db.Where("user_id = ?", followerID).Find(&devices).Error; err != nil || len(devices) == 0 {
+		return
+	}
+
+	payload := CallPushPayload{
+		CallID:          fmt.Sprintf("live_%d", liveID),
+		CallerID:        host.ID,
+		CallerName:      host.Name,
+		CallerAvatarURL: host.AvatarURL,
+		CallType:        "video",
+		Action:          "live_started",
+	}
+
+	for _, dev := range devices {
+		switch dev.Platform {
+		case "android":
+			go s.sendFCMDataPush(dev, payload)
+		case "ios":
+			go s.sendAPNsVoipPush(dev, payload)
+		case "web":
+			go s.sendWebPush(dev, payload)
+		}
+	}
+}
+
+// SendCommunityCallPush notifies community member devices that a live call started in their community
+func (s *PushService) SendCommunityCallPush(memberID uint, caller model.User, communityName string, callType string, channelID string) {
+	var devices []model.Device
+	if err := s.db.Where("user_id = ?", memberID).Find(&devices).Error; err != nil || len(devices) == 0 {
+		return
+	}
+
+	callerName := caller.Name
+	if callerName == "" {
+		callerName = caller.Username
+	}
+
+	payload := CallPushPayload{
+		CallID:          fmt.Sprintf("comm_call_%s", channelID),
+		CallerID:        caller.ID,
+		CallerName:      fmt.Sprintf("%s in #%s", callerName, communityName),
+		CallerAvatarURL: caller.AvatarURL,
+		CallType:        callType,
+		Action:          "community_call",
+	}
+
+	for _, dev := range devices {
+		switch dev.Platform {
+		case "android":
+			go s.sendFCMDataPush(dev, payload)
+		case "ios":
+			go s.sendAPNsVoipPush(dev, payload)
+		case "web":
+			go s.sendWebPush(dev, payload)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 1. ANDROID: Firebase Cloud Messaging (FCM) High-Priority Data-Only Message
 // ---------------------------------------------------------------------------

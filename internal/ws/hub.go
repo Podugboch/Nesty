@@ -56,6 +56,8 @@ type userMessage struct {
 }
 
 type CallSignalHandler func(fromUserID uint, toUserID uint, raw map[string]interface{})
+type LiveMessageHandler func(userID uint, raw map[string]interface{}, sc *SafeConn) bool
+type GroupCallStartHandler func(fromUserID uint, channelID string, raw map[string]interface{})
 
 type clusterMessage struct {
 	SourceInstance string          `json:"source_instance"`
@@ -83,16 +85,20 @@ type ActiveGroupCall struct {
 }
 
 type Hub struct {
-	mu           sync.RWMutex
-	Clients      map[*SafeConn]uint
-	UserConns    map[uint]map[*SafeConn]bool
-	UserSSEConns map[uint]map[chan []byte]bool
-	UserLastSeen map[uint]time.Time
-	BroadcastC   chan []byte
-	Register     chan registration
-	Unregister   chan *SafeConn
-	SendToUserC  chan userMessage
-	OnCallSignal CallSignalHandler
+	mu               sync.RWMutex
+	Clients          map[*SafeConn]uint
+	UserConns        map[uint]map[*SafeConn]bool
+	UserSSEConns     map[uint]map[chan []byte]bool
+	UserLastSeen     map[uint]time.Time
+	BroadcastC       chan []byte
+	Register         chan registration
+	Unregister       chan *SafeConn
+	SendToUserC      chan userMessage
+	OnCallSignal     CallSignalHandler
+	OnLiveMessage    LiveMessageHandler
+	OnGroupCallStart GroupCallStartHandler
+	OnUserConnect    func(userID uint)
+	OnUserDisconnect func(userID uint)
 
 	groupCallsMu sync.RWMutex
 	GroupCalls   map[string]*ActiveGroupCall
@@ -138,6 +144,9 @@ func (h *Hub) Run() {
 			h.mu.Unlock()
 			log.Println("client registered, user:", reg.userID)
 			if isFirst {
+				if h.OnUserConnect != nil {
+					go h.OnUserConnect(reg.userID)
+				}
 				go h.BroadcastPresence(reg.userID, true)
 			}
 
@@ -160,6 +169,9 @@ func (h *Hub) Run() {
 			}
 			h.mu.Unlock()
 			if isLast && unregUID > 0 {
+				if h.OnUserDisconnect != nil {
+					go h.OnUserDisconnect(unregUID)
+				}
 				h.mu.RLock()
 				lastSeen, hasLast := h.UserLastSeen[unregUID]
 				isRecent := hasLast && time.Since(lastSeen) < 2*time.Minute
@@ -239,6 +251,11 @@ func (h *Hub) HandleConnections(w http.ResponseWriter, r *http.Request, userID u
 			h.TouchUser(userID)
 			if msgType, ok := raw["type"].(string); ok && msgType == "ping" {
 				sc.WriteMessage(websocket.TextMessage, []byte(`{"type":"pong"}`))
+				continue
+			}
+
+			// Hook for Live Studio room messages
+			if h.OnLiveMessage != nil && h.OnLiveMessage(userID, raw, sc) {
 				continue
 			}
 
@@ -375,6 +392,9 @@ func (h *Hub) RecordGroupCallEvent(userID uint, raw map[string]interface{}) {
 						AvatarURL: avatarURL,
 					},
 				},
+			}
+			if h.OnGroupCallStart != nil {
+				go h.OnGroupCallStart(userID, channelID, raw)
 			}
 		} else {
 			if call.Participants == nil {

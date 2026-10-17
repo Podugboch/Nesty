@@ -75,9 +75,32 @@ func Run() error {
 		&model.CommunityMember{},
 		&model.Report{},
 		&model.AuditLog{},
+		&model.Live{},
+		&model.LiveRole{},
+		&model.LiveBan{},
+		&model.LiveReplay{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+
+	// Live broadcast studio schema guarantees
+	_ = db.Exec("CREATE TABLE IF NOT EXISTS lives (id bigserial PRIMARY KEY, host_id bigint NOT NULL, title text NOT NULL DEFAULT '', status varchar(20) NOT NULL DEFAULT 'live', started_at timestamptz DEFAULT NOW(), ended_at timestamptz NULL, chat_settings text DEFAULT '{\"chat_enabled\":true,\"slow_mode\":0,\"followers_only\":false,\"blocked_words\":[]}', notify_followers boolean DEFAULT true, save_replay boolean DEFAULT false, viewer_count int DEFAULT 0, total_reactions int DEFAULT 0, created_at timestamptz DEFAULT NOW(), updated_at timestamptz DEFAULT NOW())").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_lives_status ON lives(status)").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_lives_started_at ON lives(started_at)").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_lives_host_id ON lives(host_id)").Error
+
+	_ = db.Exec("CREATE TABLE IF NOT EXISTS live_roles (id bigserial PRIMARY KEY, live_id bigint NOT NULL, user_id bigint NOT NULL, role varchar(20) NOT NULL DEFAULT 'viewer', created_at timestamptz DEFAULT NOW())").Error
+	_ = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_live_roles_unique ON live_roles(live_id, user_id)").Error
+
+	_ = db.Exec("CREATE TABLE IF NOT EXISTS live_bans (id bigserial PRIMARY KEY, live_id bigint NOT NULL, user_id bigint NOT NULL, until timestamptz NULL, reason text DEFAULT '', created_at timestamptz DEFAULT NOW())").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_live_bans_lookup ON live_bans(live_id, user_id)").Error
+
+	_ = db.Exec("CREATE TABLE IF NOT EXISTS live_replays (id bigserial PRIMARY KEY, live_id bigint NOT NULL, storage_path text DEFAULT '', status varchar(20) NOT NULL DEFAULT 'recording', post_id bigint NULL, created_at timestamptz DEFAULT NOW(), updated_at timestamptz DEFAULT NOW())").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_live_replays_live_id ON live_replays(live_id)").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_live_replays_status ON live_replays(status)").Error
+	_ = db.Exec("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS live_id bigint").Error
+	_ = db.Exec("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS channel_id text").Error
+	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_notifications_live_id ON notifications(live_id)").Error
 
 	_ = db.Exec("CREATE TABLE IF NOT EXISTS reel_comments (id bigserial PRIMARY KEY, reel_id bigint NOT NULL, user_id bigint NOT NULL, content text NOT NULL, created_at timestamptz DEFAULT NOW(), updated_at timestamptz DEFAULT NOW())").Error
 	_ = db.Exec("CREATE INDEX IF NOT EXISTS idx_reel_comments_reel_id ON reel_comments(reel_id)").Error
@@ -188,6 +211,7 @@ func Run() error {
 	// handler
 	h := handlers.NewHandler(db, hub, pushSvc)
 	hub.OnCallSignal = h.HandleCallSignalHook
+	hub.OnGroupCallStart = h.HandleGroupCallStartHook
 	go hub.Run()
 
 	h.RegisterRoutes(r)

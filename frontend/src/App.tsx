@@ -6,6 +6,11 @@ import { ReelCreateView } from "./components/ReelCreateView";
 import { ReportModal, type ReportTargetType } from "./components/ReportModal";
 import { AdminView } from "./components/AdminView";
 import { ZoomableScreenShare } from "./components/ZoomableScreenShare";
+import type { LiveStream } from "./types/live";
+import { LiveNowRow } from "./components/LiveNowRow";
+import { LiveStudioModal } from "./components/LiveStudioModal";
+import { LiveReplayModal } from "./components/LiveReplayModal";
+import { findUnfinishedReplays, clearLocalReplay } from "./utils/replayDb";
 import "./App.css";
 
 const API_URL: string = (() => {
@@ -128,7 +133,17 @@ const PostPlaybackMedia: React.FC<{
   post: Post;
   activePlayingPostId: number | null;
   setActivePlayingPostId: (id: number | null) => void;
-}> = ({ post, activePlayingPostId, setActivePlayingPostId }) => {
+  isDashboardAudioMuted: boolean;
+  setIsDashboardAudioMuted: React.Dispatch<React.SetStateAction<boolean>>;
+  onOpenFullscreen?: (post: Post) => void;
+}> = ({
+  post,
+  activePlayingPostId,
+  setActivePlayingPostId,
+  isDashboardAudioMuted,
+  setIsDashboardAudioMuted,
+  onOpenFullscreen,
+}) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -139,25 +154,27 @@ const PostPlaybackMedia: React.FC<{
   const isVideo = !!(
     post.media_url &&
     (post.media_url.match(/\.(mp4|webm|mov|ogg|m4v|3gp|mkv)($|\?)/i) ||
-     post.media_url.toLowerCase().includes("video"))
+      post.media_url.toLowerCase().includes("video"))
   );
   const isImage = !!(post.media_url && !isVideo && post.media_url !== "photo_placeholder");
 
-  // Keep audio volume in sync
+  // Keep audio volume and mute state in sync
   useEffect(() => {
     if (audioRef.current) {
-      audioRef.current.volume = post.music_volume != null ? Math.max(0, Math.min(1, post.music_volume)) : 1;
+      const vol = post.music_volume != null ? Math.max(0, Math.min(1, post.music_volume)) : 1;
+      audioRef.current.volume = isDashboardAudioMuted ? 0 : vol;
+      audioRef.current.muted = isDashboardAudioMuted;
     }
-  }, [post.music_volume]);
+  }, [post.music_volume, isDashboardAudioMuted]);
 
   // Keep video volume and mute state in sync
   useEffect(() => {
     if (videoRef.current) {
       const origVol = post.original_volume != null ? Math.max(0, Math.min(1, post.original_volume)) : 1;
-      videoRef.current.volume = origVol;
-      videoRef.current.muted = post.mute_original || origVol === 0;
+      videoRef.current.volume = isDashboardAudioMuted ? 0 : origVol;
+      videoRef.current.muted = isDashboardAudioMuted || post.mute_original || origVol === 0;
     }
-  }, [post.original_volume, post.mute_original]);
+  }, [post.original_volume, post.mute_original, isDashboardAudioMuted]);
 
   // Pause if another post becomes active
   useEffect(() => {
@@ -172,7 +189,7 @@ const PostPlaybackMedia: React.FC<{
     }
   }, [activePlayingPostId, post.id]);
 
-  // IntersectionObserver to pause when scrolled out of view, and for image posts play when in view
+  // IntersectionObserver to pause when scrolled out of view, and for image posts play when in view ONLY if unmuted
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof IntersectionObserver === "undefined") return;
@@ -191,13 +208,16 @@ const PostPlaybackMedia: React.FC<{
             }
           } else {
             // Scrolled into view
-            if (isImage && hasMusic && (activePlayingPostId === null || activePlayingPostId === post.id)) {
+            if (isImage && hasMusic && !isDashboardAudioMuted && (activePlayingPostId === null || activePlayingPostId === post.id)) {
               if (audioRef.current && audioRef.current.paused) {
                 audioRef.current.currentTime = post.music_start_sec || 0;
-                audioRef.current.play().then(() => {
-                  setActivePlayingPostId(post.id);
-                  setIsPlayingAudio(true);
-                }).catch(() => {});
+                audioRef.current
+                  .play()
+                  .then(() => {
+                    setActivePlayingPostId(post.id);
+                    setIsPlayingAudio(true);
+                  })
+                  .catch(() => {});
               }
             }
           }
@@ -208,7 +228,7 @@ const PostPlaybackMedia: React.FC<{
 
     observer.observe(el);
     return () => observer.disconnect();
-  }, [isImage, hasMusic, activePlayingPostId, post.id, post.music_start_sec, setActivePlayingPostId]);
+  }, [isImage, hasMusic, isDashboardAudioMuted, activePlayingPostId, post.id, post.music_start_sec, setActivePlayingPostId]);
 
   // Sync video and audio
   const handleVideoPlay = () => {
@@ -216,6 +236,7 @@ const PostPlaybackMedia: React.FC<{
     if (audioRef.current && hasMusic) {
       const targetTime = (post.music_start_sec || 0) + (videoRef.current?.currentTime || 0);
       audioRef.current.currentTime = targetTime;
+      audioRef.current.muted = isDashboardAudioMuted;
       audioRef.current.play().catch(() => {});
       setIsPlayingAudio(true);
     }
@@ -238,14 +259,43 @@ const PostPlaybackMedia: React.FC<{
   const toggleImageAudio = () => {
     if (!audioRef.current) return;
     if (audioRef.current.paused) {
+      if (isDashboardAudioMuted) {
+        setIsDashboardAudioMuted(false);
+      }
       audioRef.current.currentTime = post.music_start_sec || 0;
-      audioRef.current.play().then(() => {
-        setActivePlayingPostId(post.id);
-        setIsPlayingAudio(true);
-      }).catch(() => {});
+      audioRef.current.muted = false;
+      audioRef.current
+        .play()
+        .then(() => {
+          setActivePlayingPostId(post.id);
+          setIsPlayingAudio(true);
+        })
+        .catch(() => {});
     } else {
       audioRef.current.pause();
       setIsPlayingAudio(false);
+    }
+  };
+
+  const toggleAudioMute = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nextMuted = !isDashboardAudioMuted;
+    setIsDashboardAudioMuted(nextMuted);
+    if (videoRef.current) {
+      videoRef.current.muted = nextMuted || post.mute_original || false;
+      if (!nextMuted) {
+        videoRef.current.volume = post.original_volume != null ? Math.max(0, Math.min(1, post.original_volume)) : 1;
+      }
+    }
+    if (audioRef.current) {
+      audioRef.current.muted = nextMuted;
+      if (!nextMuted) {
+        audioRef.current.volume = post.music_volume != null ? Math.max(0, Math.min(1, post.music_volume)) : 1;
+        if (hasMusic && isVideo && videoRef.current && !videoRef.current.paused) {
+          audioRef.current.play().catch(() => {});
+          setIsPlayingAudio(true);
+        }
+      }
     }
   };
 
@@ -261,7 +311,11 @@ const PostPlaybackMedia: React.FC<{
         >
           <span className="post-soundtrack-note">♪</span>
           <span className="post-soundtrack-text">
-            {post.music_track ? `${post.music_track.title} – ${post.music_track.artist}` : (post.music_title ? `${post.music_title} – ${post.music_artist || "Soundtrack"}` : "Soundtrack")}
+            {post.music_track
+              ? `${post.music_track.title} – ${post.music_track.artist}`
+              : post.music_title
+              ? `${post.music_title} – ${post.music_artist || "Soundtrack"}`
+              : "Soundtrack"}
           </span>
           {isImage && (
             <span style={{ fontSize: "11px", marginLeft: "4px", opacity: 0.8 }}>
@@ -278,28 +332,88 @@ const PostPlaybackMedia: React.FC<{
           src={musicAudioUrl}
           loop
           preload="auto"
+          muted={isDashboardAudioMuted}
           style={{ display: "none" }}
         />
       )}
 
       {/* Media: Video or Image */}
       {isVideo && (
-        <div className="post-media-container">
+        <div
+          className="post-media-container"
+          style={{ cursor: "pointer", position: "relative" }}
+          onClick={() => onOpenFullscreen && onOpenFullscreen(post)}
+        >
           <video
             ref={videoRef}
             src={post.media_url}
             controls
             playsInline
+            muted={isDashboardAudioMuted || post.mute_original || false}
             onPlay={handleVideoPlay}
             onPause={handleVideoPause}
             onSeeked={handleVideoSeeked}
+            onVolumeChange={() => {
+              if (videoRef.current && !videoRef.current.muted && videoRef.current.volume > 0 && isDashboardAudioMuted) {
+                setIsDashboardAudioMuted(false);
+              }
+            }}
           />
+          {/* Mute/Unmute audio chip */}
+          <button
+            type="button"
+            className={`post-media-audio-chip ${isDashboardAudioMuted ? "muted" : "unmuted"}`}
+            onClick={toggleAudioMute}
+            title={isDashboardAudioMuted ? "Tap to unmute" : "Tap to mute"}
+          >
+            <span className="audio-icon">{isDashboardAudioMuted ? "🔇" : "🔊"}</span>
+            <span className="audio-label">{isDashboardAudioMuted ? "Muted" : "Sound on"}</span>
+          </button>
+          {/* Fullscreen takeover indicator button */}
+          <button
+            type="button"
+            className="post-media-fullscreen-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenFullscreen && onOpenFullscreen(post);
+            }}
+            title="Expand to full screen"
+          >
+            ⛶
+          </button>
         </div>
       )}
 
       {isImage && (
-        <div className="post-media-container">
+        <div
+          className="post-media-container"
+          style={{ cursor: "pointer", position: "relative" }}
+          onClick={() => onOpenFullscreen && onOpenFullscreen(post)}
+        >
           <img src={post.media_url} alt="Attachment" />
+          {hasMusic && (
+            <button
+              type="button"
+              className={`post-media-audio-chip ${isDashboardAudioMuted ? "muted" : "unmuted"}`}
+              onClick={toggleAudioMute}
+              title={isDashboardAudioMuted ? "Tap to unmute" : "Tap to mute"}
+            >
+              <span className="audio-icon">{isDashboardAudioMuted ? "🔇" : "🔊"}</span>
+              <span className="audio-label">{isDashboardAudioMuted ? "Muted" : "Sound on"}</span>
+            </button>
+          )}
+          {/* Fullscreen takeover indicator button */}
+          <button
+            type="button"
+            className="post-media-fullscreen-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenFullscreen && onOpenFullscreen(post);
+            }}
+            title="Expand to full screen"
+          >
+            ⛶
+          </button>
         </div>
       )}
     </div>
@@ -354,8 +468,10 @@ type Notification = {
   user_id: number;
   actor_id: number;
   actor?: User;
-  type: "like" | "comment" | "follow" | "mention" | "repost" | "missed_call" | "missed_video_call";
+  type: "like" | "comment" | "follow" | "mention" | "repost" | "missed_call" | "missed_video_call" | "live_started" | "community_call";
   post_id?: number;
+  live_id?: number;
+  channel_id?: string;
   read: boolean;
   created_at: string;
 };
@@ -944,24 +1060,33 @@ export default function App() {
 
   // Active audio source tracking
   const [activePlayingPostId, setActivePlayingPostId] = useState<number | null>(null);
+  // Dashboard audio mute state: silent upon login until user unmutes
+  const [isDashboardAudioMuted, setIsDashboardAudioMuted] = useState(true);
+  // Fullscreen picture/video post takeover modal state
+  const [fullscreenMediaPost, setFullscreenMediaPost] = useState<Post | null>(null);
 
   const [reelCommentsModalOpen, setReelCommentsModalOpen] = useState(false);
   const [activeReelComments, setActiveReelComments] = useState<{ id: string; user: string; text: string; time: string }[]>([]);
   const [newReelComment, setNewReelComment] = useState("");
 
-  // GO LIVE STATE
-  const [liveStudioOpen, setLiveStudioOpen] = useState(false);
-  const [liveStreamTitle, setLiveStreamTitle] = useState("🔴 Live Stream & Hangout");
-  const [liveStreamViewers, setLiveStreamViewers] = useState(0);
-  const [liveStreamSeconds, setLiveStreamSeconds] = useState(0);
-  const [isLiveMuted, setIsLiveMuted] = useState(false);
-  const [isLiveVideoOff, setIsLiveVideoOff] = useState(false);
-  const [liveChatMessages, setLiveChatMessages] = useState<{ id: string; user: string; text: string; time: string }[]>([]);
-  const [liveChatInput, setLiveChatInput] = useState("");
-  const [isLiveChatOpen, setIsLiveChatOpen] = useState(true);
-  const [liveVideoFit, setLiveVideoFit] = useState<"contain" | "cover">("contain");
-  const liveVideoRef = useRef<HTMLVideoElement | null>(null);
-  const liveStreamMediaRef = useRef<MediaStream | null>(null);
+  // LIVE BROADCAST STUDIO STATE
+  const [activeLives, setActiveLives] = useState<LiveStream[]>([]);
+  const [currentLiveSession, setCurrentLiveSession] = useState<LiveStream | null>(null);
+  const [isGoLiveHostModalOpen, setIsGoLiveHostModalOpen] = useState(false);
+  const [replayModalState, setReplayModalState] = useState<{
+    liveId: number;
+    title: string;
+    blob?: Blob | null;
+  } | null>(null);
+  const [unfinishedReplayAlert, setUnfinishedReplayAlert] = useState<{ liveId: number } | null>(null);
+  const [liveToast, setLiveToast] = useState<{
+    liveId: number;
+    hostName: string;
+    username: string;
+    avatarUrl?: string;
+    title: string;
+  } | null>(null);
+  const liveToastTimerRef = useRef<any>(null);
 
   // Quoted message state for messaging
   const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
@@ -3184,6 +3309,41 @@ export default function App() {
     }
   }, [token]);
 
+  const openLiveStreamById = async (liveId?: number, hostId?: number) => {
+    if (!liveId && !hostId) return;
+    try {
+      if (liveId) {
+        const authToken = tokenRef.current || token;
+        const res = await fetch(`${API_URL}/api/lives/${liveId}`, {
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.live && data.live.status === "live") {
+            setCurrentLiveSession(data.live);
+            return;
+          } else {
+            alert("This live broadcast has ended.");
+            return;
+          }
+        }
+      }
+      // Fallback: check active lives
+      setActiveLives((prev) => {
+        const live = prev.find((l) => (liveId && l.id === liveId) || (hostId && l.host_id === hostId));
+        if (live && live.status === "live") {
+          setCurrentLiveSession(live);
+        } else {
+          alert("This live broadcast has ended or is not available.");
+        }
+        return prev;
+      });
+    } catch (e) {
+      console.error("Failed to open live broadcast", e);
+      alert("Unable to join live broadcast. Please try again.");
+    }
+  };
+
   // -----------------------------
   // PERSISTENT WEBSOCKET & BACKGROUND KEEPALIVE
   // Keeps the user online even when the web app or APK is minimized!
@@ -3237,12 +3397,17 @@ export default function App() {
           sendHttpHeartbeat();
           fetchCommunityStats();
           fetchActiveGroupCalls();
+          fetchActiveLives();
         };
 
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
             if (data.type === "pong") return;
+            if (data.type === "live_now_started" || data.type === "live_now_ended") {
+              fetchActiveLives();
+              return;
+            }
             if (data.event === "presence" || data.type === "presence") {
               fetchCommunityStats();
               return;
@@ -3272,7 +3437,75 @@ export default function App() {
               setNotifications((prev) => [data.notification, ...prev]);
               setUnreadCount((prev) => prev + 1);
 
-              if (data.notification.type === "missed_call" || data.notification.type === "missed_video_call") {
+              if (data.notification.type === "live_started") {
+                const liveId = data.live?.id || data.notification.live_id;
+                const hostName = data.notification.actor?.name || data.notification.actor?.username || "Someone";
+                const streamTitle = data.live?.title || "Live Broadcast";
+
+                // Show in-app floating toast banner immediately
+                if (liveToastTimerRef.current) clearTimeout(liveToastTimerRef.current);
+                setLiveToast({
+                  liveId,
+                  hostName,
+                  username: data.notification.actor?.username || "",
+                  avatarUrl: data.notification.actor?.avatar_url,
+                  title: streamTitle,
+                });
+                liveToastTimerRef.current = setTimeout(() => {
+                  setLiveToast(null);
+                }, 8000);
+
+                // Instantly update active lives in Live Now row
+                fetchActiveLives();
+
+                // Desktop / browser Notification trigger
+                if ("Notification" in window && Notification.permission === "granted") {
+                  try {
+                    const sysN = new Notification(`🔴 ${hostName} is now LIVE!`, {
+                      body: `${streamTitle} — Tap to watch`,
+                      icon: data.notification.actor?.avatar_url || "/nesty-logo.png",
+                      tag: `live-started-${liveId || Date.now()}`,
+                    });
+                    sysN.onclick = () => {
+                      window.focus();
+                      openLiveStreamById(liveId, data.notification.actor_id);
+                    };
+                  } catch {}
+                }
+              } else if (data.notification.type === "community_call") {
+                const commCall = data.community_call || {};
+                const channelId = commCall.channel_id || data.notification.channel_id;
+                const channelName = commCall.channel_name || communities.find((c) => c.id === channelId || String(c.id) === String(channelId))?.name || "Community";
+                const callType = (commCall.call_type || "audio") as "audio" | "video";
+                const callerName = data.notification.actor?.name || data.notification.actor?.username || commCall.caller_name || "Community Member";
+
+                if (!groupCallStateRef.current) {
+                  setIncomingCommunityCall({
+                    channelId,
+                    channelName,
+                    callType,
+                    callerName,
+                    callerAvatar: data.notification.actor?.avatar_url,
+                  });
+                  try {
+                    startIncomingRingtone();
+                  } catch {}
+                }
+
+                if ("Notification" in window && Notification.permission === "granted") {
+                  try {
+                    const sysN = new Notification(`📞 Live Call in #${channelName}`, {
+                      body: `${callerName} started a live ${callType} call — Tap to join`,
+                      icon: data.notification.actor?.avatar_url || "/nesty-logo.png",
+                      tag: `comm-call-${channelId}-${Date.now()}`,
+                    });
+                    sysN.onclick = () => {
+                      window.focus();
+                      joinGroupCall(channelId, channelName, callType);
+                    };
+                  } catch {}
+                }
+              } else if (data.notification.type === "missed_call" || data.notification.type === "missed_video_call") {
                 if (document.hidden && "Notification" in window && Notification.permission === "granted") {
                   const isVid = data.notification.type === "missed_video_call";
                   const callerName = data.notification.actor?.name || data.notification.actor?.username || "Someone";
@@ -3500,6 +3733,17 @@ export default function App() {
     fetchPosts(1, selectedCommunity);
   }, [selectedCommunity, token]);
 
+  // Handle Escape key to dismiss fullscreen media takeover
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && fullscreenMediaPost) {
+        setFullscreenMediaPost(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [fullscreenMediaPost]);
+
   // -----------------------------
   // ALGORITHMIC HOME FEED MULTI-FACTOR RANKING
   // Controlling factors:
@@ -3636,6 +3880,11 @@ export default function App() {
     if (n.type === "follow") return `${name} started following you`;
     if (n.type === "mention") return `${name} mentioned you in a post`;
     if (n.type === "repost") return `${name} reposted your post`;
+    if (n.type === "live_started") return `🔴 ${name} is now LIVE!`;
+    if (n.type === "community_call") {
+      const commName = communities.find((c) => c.id === n.channel_id || String(c.id) === String(n.channel_id))?.name || n.channel_id || "community";
+      return `📞 ${name} started a live call in #${commName}`;
+    }
     if (n.type === "missed_call") return `Missed audio call from @${n.actor?.username || name}`;
     if (n.type === "missed_video_call") return `Missed video call from @${n.actor?.username || name}`;
     return `${name} interacted with your post`;
@@ -4053,63 +4302,26 @@ export default function App() {
   };
 
   // -----------------------------
-  // GO LIVE HANDLERS
+  // LIVE BROADCAST STUDIO (STREAM & ROW HANDLERS)
   // -----------------------------
-  const startLiveStream = async () => {
+  const fetchActiveLives = async () => {
     try {
-      requestMobileScreenTakeover();
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
-        audio: { echoCancellation: true, noiseSuppression: true },
+      const res = await fetch(`${API_URL}/api/lives/active`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      liveStreamMediaRef.current = stream;
-      setLiveStudioOpen(true);
-      setLiveStreamSeconds(0);
-      setLiveStreamViewers(Math.floor(Math.random() * 8) + 6);
-
-      setTimeout(() => {
-        if (liveVideoRef.current) {
-          liveVideoRef.current.srcObject = stream;
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.lives)) {
+          setActiveLives(data.lives);
         }
-      }, 150);
-
-      // Broadcast live event on WebSocket
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            event: "broadcast",
-            type: "user_went_live",
-            user_id: user?.id,
-            username: user?.username,
-            title: liveStreamTitle,
-          })
-        );
       }
     } catch (err) {
-      console.error("Failed to start live stream", err);
-      alert("Camera or microphone permission is required to Go Live.");
+      console.warn("Failed to fetch active lives", err);
     }
   };
 
-  const stopLiveStream = () => {
-    if (liveStreamMediaRef.current) {
-      liveStreamMediaRef.current.getTracks().forEach((track) => track.stop());
-      liveStreamMediaRef.current = null;
-    }
-    setLiveStudioOpen(false);
-    restoreMobileScreenLock();
-  };
-
-  const sendLiveChatMessage = () => {
-    if (!liveChatInput.trim()) return;
-    const newMsg = {
-      id: Date.now().toString(),
-      user: user?.username || "You",
-      text: liveChatInput.trim(),
-      time: "Just now",
-    };
-    setLiveChatMessages((prev) => [...prev, newMsg]);
-    setLiveChatInput("");
+  const startLiveStream = () => {
+    setIsGoLiveHostModalOpen(true);
   };
 
   // -----------------------------
@@ -4881,17 +5093,14 @@ export default function App() {
     }
   };
 
+  // Check for resilient unfinished replays from earlier sessions
   useEffect(() => {
-    let timer: any = null;
-    if (liveStudioOpen) {
-      timer = setInterval(() => {
-        setLiveStreamSeconds((s) => s + 1);
-      }, 1000);
-    }
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [liveStudioOpen]);
+    findUnfinishedReplays().then((ids) => {
+      if (ids.length > 0) {
+        setUnfinishedReplayAlert({ liveId: ids[0] });
+      }
+    });
+  }, []);
 
   useEffect(() => {
     let timer: any = null;
@@ -5907,14 +6116,25 @@ export default function App() {
                   const isMissedAudio = n.type === "missed_call";
                   const isMissedVideo = n.type === "missed_video_call";
                   const isMissed = isMissedAudio || isMissedVideo;
+                  const isLive = n.type === "live_started";
+                  const isCommunityCall = n.type === "community_call";
 
                   return (
                     <div
                       key={n.id}
-                      className={`notif-row-item ${n.read ? "" : "unread"} ${isMissed ? "missed-call-row" : ""}`}
+                      className={`notif-row-item ${n.read ? "" : "unread"} ${isMissed ? "missed-call-row" : ""} ${isLive ? "live-row" : ""} ${isCommunityCall ? "comm-call-row" : ""}`}
                       onClick={() => {
                         markNotificationRead(n.id);
-                        if (n.actor_id) openProfile(n.actor_id);
+                        if (isCommunityCall) {
+                          setNotifOpen(false);
+                          const channelName = communities.find((c) => c.id === n.channel_id || String(c.id) === String(n.channel_id))?.name || n.channel_id || "Community";
+                          joinGroupCall(n.channel_id || "home", channelName, "audio");
+                        } else if (isLive) {
+                          setNotifOpen(false);
+                          openLiveStreamById(n.live_id, n.actor_id);
+                        } else if (n.actor_id) {
+                          openProfile(n.actor_id);
+                        }
                       }}
                     >
                       <div className="search-avatar-mini" style={{ position: "relative" }}>
@@ -5928,9 +6148,19 @@ export default function App() {
                             {isMissedVideo ? "📹" : "📞"}
                           </span>
                         )}
+                        {isLive && (
+                          <span className="live-badge-icon">
+                            🔴
+                          </span>
+                        )}
+                        {isCommunityCall && (
+                          <span className="comm-call-badge-icon">
+                            📞
+                          </span>
+                        )}
                       </div>
                       <div style={{ flex: 1, fontSize: "13px", minWidth: 0 }}>
-                        <div style={{ fontWeight: isMissed ? 600 : 400, color: isMissed ? "var(--text)" : "inherit" }}>
+                        <div style={{ fontWeight: isMissed || isLive || isCommunityCall ? 600 : 400, color: isCommunityCall ? "#10b981" : isLive ? "#ef4444" : isMissed ? "var(--text)" : "inherit" }}>
                           {notificationText(n)}
                         </div>
                         <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px", display: "flex", alignItems: "center", gap: "6px" }}>
@@ -5940,8 +6170,47 @@ export default function App() {
                               {isMissedVideo ? "Missed Video Call" : "Missed Audio Call"}
                             </span>
                           )}
+                          {isLive && (
+                            <span className="live-pill-tag">
+                              LIVE
+                            </span>
+                          )}
+                          {isCommunityCall && (
+                            <span className="comm-call-pill-tag">
+                              LIVE CALL
+                            </span>
+                          )}
                         </div>
                       </div>
+                      {isCommunityCall && (
+                        <button
+                          className="notif-join-comm-call-btn"
+                          title="Join Live Community Call"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            markNotificationRead(n.id);
+                            setNotifOpen(false);
+                            const channelName = communities.find((c) => c.id === n.channel_id || String(c.id) === String(n.channel_id))?.name || n.channel_id || "Community";
+                            joinGroupCall(n.channel_id || "home", channelName, "audio");
+                          }}
+                        >
+                          📞 Join
+                        </button>
+                      )}
+                      {isLive && (
+                        <button
+                          className="notif-watch-live-btn"
+                          title="Watch Live Stream"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            markNotificationRead(n.id);
+                            setNotifOpen(false);
+                            openLiveStreamById(n.live_id, n.actor_id);
+                          }}
+                        >
+                          🔴 Watch
+                        </button>
+                      )}
                       {isMissed && n.actor && (
                         <button
                           className={`notif-call-back-btn ${isMissedVideo ? "video" : "audio"}`}
@@ -6047,7 +6316,47 @@ export default function App() {
           <>
             {/* HOME ALGORITHMIC FEED HEADER (NO COMMUNITY/GENERAL TAG) VS COMMUNITY GROUP HEADER */}
             {selectedCommunity === "home" ? (
-              <div className="home-algorithmic-header">
+              <>
+                <LiveNowRow
+                  lives={activeLives}
+                  onSelectLive={(live) => setCurrentLiveSession(live)}
+                  onGoLiveClick={() => setIsGoLiveHostModalOpen(true)}
+                  currentUserId={user?.id}
+                />
+                {unfinishedReplayAlert && (
+                  <div className="live-unfinished-replay-banner">
+                    <div className="unfinished-text">
+                      <strong>📼 Saved Broadcast Replay Available</strong>
+                      <span>You have recorded chunks from an unfinished live stream.</span>
+                    </div>
+                    <div className="unfinished-actions">
+                      <button
+                        type="button"
+                        className="btn-review"
+                        onClick={() => {
+                          setReplayModalState({
+                            liveId: unfinishedReplayAlert.liveId,
+                            title: "Saved Live Broadcast",
+                          });
+                          setUnfinishedReplayAlert(null);
+                        }}
+                      >
+                        Review & Post
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-discard"
+                        onClick={() => {
+                          clearLocalReplay(unfinishedReplayAlert.liveId);
+                          setUnfinishedReplayAlert(null);
+                        }}
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="home-algorithmic-header">
                 <div className="home-algo-top">
                   <div className="home-algo-tabs">
                     <button
@@ -6107,6 +6416,7 @@ export default function App() {
                   <span>{displayedPosts.length} posts</span>
                 </div>
               </div>
+              </>
             ) : (
               /* COMMUNITY GROUP HEADER WITH AUDIO & VIDEO GROUP CALL BUTTONS (ONLY RENDERED INSIDE GROUPS) */
               <div className="community-group-header-card">
@@ -6587,6 +6897,9 @@ export default function App() {
                           post={post}
                           activePlayingPostId={activePlayingPostId}
                           setActivePlayingPostId={setActivePlayingPostId}
+                          isDashboardAudioMuted={isDashboardAudioMuted}
+                          setIsDashboardAudioMuted={setIsDashboardAudioMuted}
+                          onOpenFullscreen={(p) => setFullscreenMediaPost(p)}
                         />
                       )
                     ) : null}
@@ -7016,6 +7329,9 @@ export default function App() {
                               post={post}
                               activePlayingPostId={activePlayingPostId}
                               setActivePlayingPostId={setActivePlayingPostId}
+                              isDashboardAudioMuted={isDashboardAudioMuted}
+                              setIsDashboardAudioMuted={setIsDashboardAudioMuted}
+                              onOpenFullscreen={(p) => setFullscreenMediaPost(p)}
                             />
                           )
                         ) : null}
@@ -9407,202 +9723,117 @@ export default function App() {
       {/* =====================================================================
           MODAL: LIVE BROADCAST STUDIO (GO LIVE)
           ===================================================================== */}
-      {liveStudioOpen && (
-        <div className="live-broadcast-overlay">
-          <div className="live-broadcast-container">
-            {/* TOP BAR */}
-            <div className="live-top-bar">
-              <div className="live-top-left">
-                <span className="live-pulsing-badge-large">● LIVE</span>
-                <div className="live-title-wrap">
-                  <input
-                    type="text"
-                    className="live-studio-title-input"
-                    value={liveStreamTitle}
-                    onChange={(e) => setLiveStreamTitle(e.target.value)}
-                    placeholder="Stream Topic..."
-                  />
-                  <span className="live-channel-badge">Broadcasting to Nesty</span>
-                </div>
-              </div>
+      {/* =====================================================================
+          MODAL: LIVE BROADCAST STUDIO (GO LIVE & WATCH LIVE)
+          ===================================================================== */}
+      {isGoLiveHostModalOpen && (
+        <LiveStudioModal
+          currentUser={user}
+          apiUrl={API_URL}
+          authToken={token}
+          wsRef={wsRef}
+          iceServers={dynamicIceServersRef.current || undefined}
+          onClose={() => setIsGoLiveHostModalOpen(false)}
+          onStreamEnded={(liveId, blob) => {
+            setIsGoLiveHostModalOpen(false);
+            fetchActiveLives();
+            if (blob) {
+              setReplayModalState({ liveId, title: "My Live Stream", blob });
+            }
+          }}
+          onReport={(type, id) => {
+            openReportModal(type as ReportTargetType, id, "Live Broadcast");
+          }}
+        />
+      )}
 
-              <div className="live-top-right">
-                <div className="live-viewers-pill">
-                  <span>👁️</span>
-                  <span className="live-viewers-count">{liveStreamViewers}</span>
-                  <span className="live-viewers-label"> watching</span>
-                </div>
-                <div className="live-duration-pill">
-                  ⏱️ {Math.floor(liveStreamSeconds / 60).toString().padStart(2, "0")}:
-                  {(liveStreamSeconds % 60).toString().padStart(2, "0")}
-                </div>
-                <button
-                  type="button"
-                  className="live-end-btn"
-                  onClick={stopLiveStream}
-                  title="End Broadcast"
-                >
-                  <span className="live-end-btn-text">End Stream</span>
-                  <span className="live-end-btn-short">End</span>
-                </button>
-              </div>
+      {currentLiveSession && (
+        <LiveStudioModal
+          initialLive={currentLiveSession}
+          currentUser={user}
+          apiUrl={API_URL}
+          authToken={token}
+          wsRef={wsRef}
+          iceServers={dynamicIceServersRef.current || undefined}
+          onClose={() => setCurrentLiveSession(null)}
+          onStreamEnded={(_liveId) => {
+            setCurrentLiveSession(null);
+            fetchActiveLives();
+          }}
+          onReport={(type, id) => {
+            openReportModal(type as ReportTargetType, id, "Live Broadcast");
+          }}
+        />
+      )}
+
+      {/* =====================================================================
+          MODAL: LIVE REPLAY PUBLISHER
+          ===================================================================== */}
+      {replayModalState && (
+        <LiveReplayModal
+          liveId={replayModalState.liveId}
+          streamTitle={replayModalState.title}
+          initialBlob={replayModalState.blob}
+          apiUrl={API_URL}
+          authToken={token}
+          onClose={() => setReplayModalState(null)}
+          onPublished={() => {
+            setReplayModalState(null);
+            fetchPosts();
+          }}
+        />
+      )}
+
+      {/* =====================================================================
+          FLOATING GO-LIVE TOAST BANNER
+          ===================================================================== */}
+      {liveToast && !currentLiveSession && !isGoLiveHostModalOpen && (
+        <div
+          className="live-toast-banner"
+          onClick={() => {
+            const t = liveToast;
+            setLiveToast(null);
+            openLiveStreamById(t.liveId);
+          }}
+        >
+          <div className="live-toast-avatar">
+            {liveToast.avatarUrl ? (
+              <img src={liveToast.avatarUrl} alt="" />
+            ) : (
+              (liveToast.username || "U").charAt(0).toUpperCase()
+            )}
+            <span className="live-toast-pulse" />
+          </div>
+          <div className="live-toast-info">
+            <div className="live-toast-title">
+              <span className="live-badge-mini">LIVE</span> <b>{liveToast.hostName}</b> is live now
             </div>
-
-            {/* MAIN STAGE */}
-            <div className="live-main-stage">
-              {/* VIDEO VIEWER */}
-              <div className="live-video-box">
-                <video
-                  ref={liveVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className={`live-video-element ${liveVideoFit === "cover" ? "fit-cover" : "fit-contain"}`}
-                />
-                {isLiveVideoOff && (
-                  <div className="live-video-off-backdrop">
-                    <span style={{ fontSize: "56px" }}>📷</span>
-                    <span>Camera is Paused</span>
-                  </div>
-                )}
-
-                {/* BOTTOM FLOATING CONTROLS OVER VIDEO */}
-                <div className="live-floating-controls">
-                  <button
-                    type="button"
-                    className={`live-ctrl-btn ${isLiveMuted ? "muted" : ""}`}
-                    onClick={() => {
-                      if (liveStreamMediaRef.current) {
-                        const tracks = liveStreamMediaRef.current.getAudioTracks();
-                        tracks.forEach((t) => (t.enabled = isLiveMuted));
-                        setIsLiveMuted(!isLiveMuted);
-                      }
-                    }}
-                    title={isLiveMuted ? "Unmute Mic" : "Mute Mic"}
-                  >
-                    <span className="live-btn-icon">{isLiveMuted ? "🔇" : "🎤"}</span>
-                    <span className="live-btn-text">{isLiveMuted ? "Unmute" : "Mute"}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={`live-ctrl-btn ${isLiveVideoOff ? "muted" : ""}`}
-                    onClick={() => {
-                      if (liveStreamMediaRef.current) {
-                        const tracks = liveStreamMediaRef.current.getVideoTracks();
-                        tracks.forEach((t) => (t.enabled = isLiveVideoOff));
-                        setIsLiveVideoOff(!isLiveVideoOff);
-                      }
-                    }}
-                    title={isLiveVideoOff ? "Turn Camera On" : "Turn Camera Off"}
-                  >
-                    <span className="live-btn-icon">{isLiveVideoOff ? "📷" : "📹"}</span>
-                    <span className="live-btn-text">{isLiveVideoOff ? "Cam On" : "Cam Off"}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className="live-ctrl-btn"
-                    onClick={async () => {
-                      if (!navigator.mediaDevices?.getDisplayMedia) {
-                        alert("Screen sharing is not supported by mobile web browsers or WebViews due to mobile OS security restrictions. Broadcasting with your camera and microphone is active!");
-                        return;
-                      }
-                      try {
-                        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-                        if (liveVideoRef.current) {
-                          liveVideoRef.current.srcObject = screenStream;
-                        }
-                        screenStream.getVideoTracks()[0].onended = () => {
-                          if (liveStreamMediaRef.current && liveVideoRef.current) {
-                            liveVideoRef.current.srcObject = liveStreamMediaRef.current;
-                          }
-                        };
-                      } catch {}
-                    }}
-                    title="Share Screen with Viewers"
-                  >
-                    <span className="live-btn-icon">🖥️</span>
-                    <span className="live-btn-text">Share</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={`live-ctrl-btn ${liveVideoFit === "cover" ? "active" : ""}`}
-                    onClick={() => setLiveVideoFit((prev) => (prev === "contain" ? "cover" : "contain"))}
-                    title={liveVideoFit === "contain" ? "Fill Screen" : "Fit to Screen"}
-                  >
-                    <span className="live-btn-icon">{liveVideoFit === "contain" ? "↔" : "↕"}</span>
-                    <span className="live-btn-text">{liveVideoFit === "contain" ? "Fill" : "Fit"}</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* LIVE CHAT SIDEBAR / COLLAPSIBLE BOTTOM SHEET */}
-              <div className={`live-chat-panel ${isLiveChatOpen ? "open" : "collapsed"}`}>
-                <div
-                  className="live-chat-header"
-                  onClick={() => setIsLiveChatOpen(!isLiveChatOpen)}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <div className="live-chat-header-title">
-                    <span>💬 Live Chat</span>
-                    <span className="live-chat-badge">{liveChatMessages.length}</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="live-chat-toggle-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setIsLiveChatOpen(!isLiveChatOpen);
-                    }}
-                    title={isLiveChatOpen ? "Hide chat to see full video" : "Show live chat"}
-                  >
-                    {isLiveChatOpen ? "▼ Minimize" : "▲ Chat"}
-                  </button>
-                </div>
-
-                {isLiveChatOpen && (
-                  <>
-                    <div className="live-chat-messages-scroll">
-                      {liveChatMessages.map((msg) => (
-                        <div key={msg.id} className="live-chat-bubble">
-                          <div className="live-chat-user-line">
-                            <span className="live-chat-username">@{msg.user}</span>
-                            <span className="live-chat-timestamp">{msg.time}</span>
-                          </div>
-                          <div className="live-chat-body">{msg.text}</div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="live-chat-composer">
-                      <input
-                        type="text"
-                        className="live-chat-input"
-                        placeholder="Say something live..."
-                        value={liveChatInput}
-                        onChange={(e) => setLiveChatInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            sendLiveChatMessage();
-                          }
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className="live-chat-send-btn"
-                        onClick={sendLiveChatMessage}
-                      >
-                        Send
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
+            <div className="live-toast-desc">{liveToast.title}</div>
+          </div>
+          <div className="live-toast-actions">
+            <button
+              type="button"
+              className="live-toast-action-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                const t = liveToast;
+                setLiveToast(null);
+                openLiveStreamById(t.liveId);
+              }}
+            >
+              Watch
+            </button>
+            <button
+              type="button"
+              className="live-toast-close-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setLiveToast(null);
+              }}
+              title="Dismiss"
+            >
+              ✕
+            </button>
           </div>
         </div>
       )}
@@ -9867,6 +10098,162 @@ export default function App() {
         selectedTrackId={selectedReelMusic?.id}
         apiUrl={API_URL}
       />
+
+      {/* =====================================================================
+          FULLSCREEN PICTURE & VIDEO POST TAKEOVER
+          ===================================================================== */}
+      {fullscreenMediaPost && (
+        <div
+          className="media-takeover-overlay"
+          onClick={() => setFullscreenMediaPost(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="media-takeover-container"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Top Bar with prominent "← Back" button, author info, and close */}
+            <div className="media-takeover-topbar">
+              <button
+                type="button"
+                className="media-takeover-back-btn"
+                onClick={() => setFullscreenMediaPost(null)}
+                aria-label="Back"
+              >
+                ← Back
+              </button>
+
+              <div
+                className="media-takeover-author"
+                onClick={() => {
+                  const uid = fullscreenMediaPost.user?.id;
+                  if (uid) {
+                    setFullscreenMediaPost(null);
+                    openProfile(uid);
+                  }
+                }}
+              >
+                {fullscreenMediaPost.user?.avatar_url ? (
+                  <img
+                    src={fullscreenMediaPost.user.avatar_url}
+                    alt=""
+                    className="media-takeover-avatar"
+                  />
+                ) : (
+                  <div className="media-takeover-avatar fallback">
+                    {(fullscreenMediaPost.user?.username || "U").charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div className="media-takeover-author-info">
+                  <div className="media-takeover-name">
+                    {fullscreenMediaPost.user?.name || fullscreenMediaPost.user?.username || "User"}
+                  </div>
+                  <div className="media-takeover-handle">
+                    @{fullscreenMediaPost.user?.username}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="media-takeover-close-btn"
+                onClick={() => setFullscreenMediaPost(null)}
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Media Content Body (Viewport takeover) */}
+            <div className="media-takeover-viewport">
+              {fullscreenMediaPost.media_url &&
+              (fullscreenMediaPost.media_url.match(/\.(mp4|webm|mov|ogg|m4v|3gp|mkv)($|\?)/i) ||
+                fullscreenMediaPost.media_url.toLowerCase().includes("video")) ? (
+                <video
+                  src={fullscreenMediaPost.media_url}
+                  controls
+                  autoPlay
+                  playsInline
+                  muted={isDashboardAudioMuted || fullscreenMediaPost.mute_original || false}
+                  className="media-takeover-video"
+                  onVolumeChange={(e: any) => {
+                    if (e.target && !e.target.muted && e.target.volume > 0 && isDashboardAudioMuted) {
+                      setIsDashboardAudioMuted(false);
+                    }
+                  }}
+                />
+              ) : (
+                <img
+                  src={fullscreenMediaPost.media_url}
+                  alt={fullscreenMediaPost.content || "Post media"}
+                  className="media-takeover-image"
+                />
+              )}
+
+              {/* Mute/Unmute audio chip */}
+              <button
+                type="button"
+                className={`post-media-audio-chip takeover-chip ${isDashboardAudioMuted ? "muted" : "unmuted"}`}
+                onClick={() => setIsDashboardAudioMuted((prev) => !prev)}
+                title={isDashboardAudioMuted ? "Tap to unmute" : "Tap to mute"}
+              >
+                <span className="audio-icon">{isDashboardAudioMuted ? "🔇" : "🔊"}</span>
+                <span className="audio-label">{isDashboardAudioMuted ? "Muted" : "Sound on"}</span>
+              </button>
+            </div>
+
+            {/* Bottom Bar: Post text, like, comment, share */}
+            <div className="media-takeover-bottombar">
+              {fullscreenMediaPost.content && (
+                <div className="media-takeover-caption">
+                  {renderWithMentions(fullscreenMediaPost.content)}
+                </div>
+              )}
+
+              <div className="media-takeover-actions">
+                <button
+                  type="button"
+                  className={`action-pill-btn ${fullscreenMediaPost.liked_by_me ? "liked" : ""}`}
+                  onClick={() => handleLike(fullscreenMediaPost.id)}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill={fullscreenMediaPost.liked_by_me ? "#ef4444" : "none"} stroke="currentColor" strokeWidth="2">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                  </svg>
+                  <span>{fullscreenMediaPost.likes || 0}</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="action-pill-btn"
+                  onClick={() => {
+                    const pid = fullscreenMediaPost.id;
+                    setFullscreenMediaPost(null);
+                    setExpandedComments((prev) => ({ ...prev, [pid]: true }));
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <span>{fullscreenMediaPost.comments?.length || 0}</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="action-pill-btn"
+                  onClick={() => handleSharePost(fullscreenMediaPost)}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="7" y1="17" x2="17" y2="7" />
+                    <polyline points="7 7 17 7 17 17" />
+                  </svg>
+                  <span>Share</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* REPORT CONTENT / USER MODAL */}
       <ReportModal

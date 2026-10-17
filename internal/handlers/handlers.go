@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"piscine-devnest/internal/live"
 	"piscine-devnest/internal/middleware"
 	"piscine-devnest/internal/model"
 	"piscine-devnest/internal/push"
@@ -28,19 +30,26 @@ import (
 )
 
 type Handler struct {
-	DB         *gorm.DB
-	Hub        *ws.Hub
-	Push       *push.PushService
-	callTimers sync.Map
+	DB          *gorm.DB
+	Hub         *ws.Hub
+	Push        *push.PushService
+	LiveManager *live.LiveManager
+	callTimers  sync.Map
 }
 
 // Constructor
 func NewHandler(db *gorm.DB, hub *ws.Hub, pushSvc *push.PushService) *Handler {
-	return &Handler{
-		DB:   db,
-		Hub:  hub,
-		Push: pushSvc,
+	lm := live.NewLiveManager(db, hub)
+	h := &Handler{
+		DB:          db,
+		Hub:         hub,
+		Push:        pushSvc,
+		LiveManager: lm,
 	}
+	hub.OnLiveMessage = h.HandleLiveWSMessage
+	hub.OnUserDisconnect = lm.HandleHostDisconnect
+	hub.OnUserConnect = lm.HandleHostReconnect
+	return h
 }
 
 // ---------------------- ROUTES ----------------------
@@ -63,6 +72,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/music/search", h.SearchMusic)
 	api.GET("/communities", h.GetCommunities)
 	api.GET("/communities/:slug", h.GetCommunity)
+
+	// LIVE BROADCAST STUDIO (ACTIVE STREAMS & DETAILS)
+	api.GET("/lives/active", h.GetActiveLives)
+	api.GET("/lives/:id", h.GetLiveDetails)
 
 	// PROTECTED ROUTES
 	protected := api.Group("/", utils.JWTMiddleware(), h.CheckUserStatus)
@@ -153,6 +166,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// REPORTS (Normal user endpoint with anti-spam rate limiting)
 		protected.POST("/reports", middleware.RateLimitReport(), h.CreateReport)
+
+		// LIVE BROADCAST STUDIO (HOST & PARTICIPANT ACTIONS)
+		protected.POST("/lives", h.StartLive)
+		protected.POST("/lives/:id/end", h.EndLive)
+		protected.POST("/lives/:id/replay/chunk", h.UploadReplayChunk)
+		protected.POST("/lives/:id/replay/finish", h.FinishReplay)
+		protected.POST("/lives/:id/replay/publish", h.PublishReplay)
 	}
 
 	// ADMIN ROUTES (Server-enforced role checking from database)
@@ -2042,6 +2062,97 @@ func (h *Handler) HandleCallSignalHook(fromUserID uint, toUserID uint, raw map[s
 		callerAvatar, _ = callerMap["avatar_url"].(string)
 	}
 	h.processCallSignal(fromUserID, toUserID, sigType, callerName, callerAvatar, raw["data"])
+}
+
+// HandleGroupCallStartHook is invoked by Hub when a live group call begins in a community
+func (h *Handler) HandleGroupCallStartHook(fromUserID uint, channelID string, raw map[string]interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[GroupCallNotifications] Recovered from panic in hook: %v", r)
+		}
+	}()
+
+	// 1. Resolve community from channelID (supports numeric ID or slug)
+	var comm model.Community
+	var commID uint
+	if cid, err := strconv.ParseUint(channelID, 10, 32); err == nil {
+		if err := h.DB.First(&comm, cid).Error; err == nil {
+			commID = comm.ID
+		}
+	}
+	if commID == 0 {
+		if err := h.DB.Where("slug = ?", channelID).First(&comm).Error; err == nil {
+			commID = comm.ID
+		}
+	}
+	if commID == 0 {
+		return // not a community channel
+	}
+
+	// 2. Fetch all active members belonging to this community (excluding the caller)
+	var memberIDs []uint
+	h.DB.Model(&model.CommunityMember{}).
+		Where("community_id = ? AND status = 'active' AND user_id != ?", commID, fromUserID).
+		Pluck("user_id", &memberIDs)
+
+	if comm.CreatedByID > 0 && comm.CreatedByID != fromUserID {
+		found := false
+		for _, id := range memberIDs {
+			if id == comm.CreatedByID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			memberIDs = append(memberIDs, comm.CreatedByID)
+		}
+	}
+
+	if len(memberIDs) == 0 {
+		return
+	}
+
+	// 3. Load caller info
+	var caller model.User
+	h.DB.Select("id", "username", "name", "avatar_url").First(&caller, fromUserID)
+	callerName := caller.Name
+	if callerName == "" {
+		callerName = caller.Username
+	}
+	callType, _ := raw["call_type"].(string)
+	if callType == "" {
+		callType = "audio"
+	}
+
+	// 4. Create in-app notifications and deliver via WebSocket to all community members
+	for _, mid := range memberIDs {
+		notif := model.Notification{
+			UserID:    mid,
+			ActorID:   fromUserID,
+			Type:      "community_call",
+			ChannelID: channelID,
+		}
+		if err := h.DB.Create(&notif).Error; err == nil {
+			notif.Actor = &caller
+			payload, _ := json.Marshal(gin.H{
+				"event":        "notification",
+				"notification": notif,
+				"community_call": gin.H{
+					"channel_id":    channelID,
+					"channel_name":  comm.Name,
+					"call_type":     callType,
+					"caller_id":     fromUserID,
+					"caller_name":   callerName,
+					"caller_avatar": caller.AvatarURL,
+				},
+			})
+			h.Hub.SendToUser(mid, payload)
+		}
+
+		if h.Push != nil {
+			h.Push.SendCommunityCallPush(mid, caller, comm.Name, callType, channelID)
+		}
+	}
 }
 
 // ---------------------- DEVICES & PUSH TOKENS ----------------------
