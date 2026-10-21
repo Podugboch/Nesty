@@ -183,3 +183,4 @@ docker run -p 8080:8080 --env-file .env nesty:latest
 
 This project is licensed under the [MIT License](LICENSE).
 Badge hunt
+Badge test phase 2
