@@ -19,7 +19,7 @@ const API_URL: string = (() => {
   if (typeof window !== "undefined") {
     const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
     if (isCapacitor) {
-      return "https://piscine-devnest.onrender.com";
+      return "https://nesty.onrender.com";
     }
     const host = window.location.hostname;
     const port = window.location.port;
@@ -30,7 +30,7 @@ const API_URL: string = (() => {
       return window.location.origin.replace(/\/+$/, "");
     }
   }
-  return "https://piscine-devnest.onrender.com";
+  return "https://nesty.onrender.com";
 })();
 
 const WS_BASE_URL: string = (() => {
@@ -39,7 +39,7 @@ const WS_BASE_URL: string = (() => {
   if (typeof window !== "undefined") {
     const isCapacitor = !!(window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === "capacitor:";
     if (isCapacitor) {
-      return "wss://piscine-devnest.onrender.com";
+      return "wss://nesty.onrender.com";
     }
     const host = window.location.hostname;
     const port = window.location.port;
@@ -50,7 +50,7 @@ const WS_BASE_URL: string = (() => {
       return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
     }
   }
-  return "wss://piscine-devnest.onrender.com";
+  return "wss://nesty.onrender.com";
 })();
 
 
@@ -449,6 +449,8 @@ type ChatMessage = {
   file_name?: string;
   file_size?: number;
   created_at?: string;
+  is_delivered?: boolean;
+  delivered_at?: string;
   is_read?: boolean;
   read_at?: string;
   edited_at?: string;
@@ -1320,7 +1322,8 @@ export default function App() {
   const typingTimeoutRef = useRef<any>(null);
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
   const [editingMessageText, setEditingMessageText] = useState("");
-  const [activeReactionMsgId, setActiveReactionMsgId] = useState<number | null>(null);
+  const [activeMsgMenuId, setActiveMsgMenuId] = useState<number | null>(null);
+  const [isChatMinimized, setIsChatMinimized] = useState<boolean>(false);
   const [chatHeaderMenuOpen, setChatHeaderMenuOpen] = useState(false);
   const [isPartnerMuted, setIsPartnerMuted] = useState(false);
   const [isPartnerBlocked, setIsPartnerBlocked] = useState(false);
@@ -1625,6 +1628,8 @@ export default function App() {
   const startChatWithUser = async (targetUser: User) => {
     setActiveChatPartner(targetUser);
     activeChatPartnerRef.current = targetUser;
+    setIsChatMinimized(false);
+    setActiveMsgMenuId(null);
     removeChatSelectedFile();
     setIsChatLoading(true);
     try {
@@ -1816,7 +1821,7 @@ export default function App() {
 
   const handleReactToMessage = async (msgId: number, emoji: string) => {
     if (!token) return;
-    setActiveReactionMsgId(null);
+    setActiveMsgMenuId(null);
     try {
       const res = await fetch(`${API_URL}/api/messages/${msgId}/reaction`, {
         method: "POST",
@@ -3662,10 +3667,20 @@ export default function App() {
               handleGroupCallSignal(data);
               return;
             }
+            if (data.event === "message_delivered") {
+              setChatMessages((prev) =>
+                prev.map((m) =>
+                  m.id === data.message_id
+                    ? { ...m, is_delivered: true, delivered_at: data.delivered_at }
+                    : m
+                )
+              );
+              return;
+            }
             if (data.event === "message_read") {
               setChatMessages((prev) =>
                 prev.map((m) =>
-                  m.recipient_id === data.reader_id ? { ...m, is_read: true, read_at: data.read_at } : m
+                  m.recipient_id === data.reader_id ? { ...m, is_read: true, is_delivered: true, read_at: data.read_at } : m
                 )
               );
               return;
@@ -8710,14 +8725,31 @@ export default function App() {
           CHAT DRAWER & MESSAGING MODAL
           ===================================================================== */}
       {activeChatPartner && (
-        <div className="chat-drawer-overlay">
-          <div className="chat-drawer-header">
+        <div className={`chat-drawer-overlay ${isChatMinimized ? "minimized" : ""}`}>
+          <div
+            className="chat-drawer-header"
+            onClick={(e) => {
+              const target = e.target as HTMLElement;
+              if (
+                target.closest("button") ||
+                target.closest(".chat-header-menu-dropdown") ||
+                target.closest(".chat-partner-avatar")
+              ) {
+                return;
+              }
+              setIsChatMinimized(!isChatMinimized);
+            }}
+            style={{ cursor: "pointer" }}
+            title={isChatMinimized ? "Click to bring chat back up" : "Click top space to minimize"}
+          >
             <button
               className="chat-header-icon-btn"
               title="All Messages"
               style={{ marginRight: "6px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 setActiveChatPartner(null);
+                setIsChatMinimized(false);
                 openMessagesInbox();
               }}
             >
@@ -8727,10 +8759,12 @@ export default function App() {
               className="chat-partner-info"
               style={{ cursor: "pointer" }}
               title={`View @${activeChatPartner.username}'s profile`}
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 if (activeChatPartner.id) {
                   openProfile(activeChatPartner.id);
                   setActiveChatPartner(null);
+                  setIsChatMinimized(false);
                 }
               }}
             >
@@ -8744,7 +8778,9 @@ export default function App() {
               <div className="chat-partner-details">
                 <span className="chat-partner-name">{activeChatPartner.name || activeChatPartner.username}</span>
                 <span className="chat-partner-status">
-                  {isPartnerTyping ? (
+                  {isChatMinimized ? (
+                    <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>Minimized — Click to expand</span>
+                  ) : isPartnerTyping ? (
                     <span style={{ color: "#10b981", fontWeight: 600 }}>Typing...</span>
                   ) : (
                     "Active now"
@@ -8752,34 +8788,41 @@ export default function App() {
                 </span>
               </div>
             </div>
-            <div className="chat-header-actions" style={{ position: "relative" }}>
-              <button
-                className="chat-header-icon-btn"
-                title="Voice Call"
-                onClick={() => startCallWithUser(activeChatPartner, false)}
-              >
-                📞
-              </button>
-              <button
-                className="chat-header-icon-btn"
-                title="Video Call"
-                onClick={() => startCallWithUser(activeChatPartner, true)}
-              >
-                📹
-              </button>
-              <button
-                className="chat-header-icon-btn"
-                title="More Options"
-                onClick={() => setChatHeaderMenuOpen(!chatHeaderMenuOpen)}
-              >
-                ⋮
-              </button>
-              {chatHeaderMenuOpen && (
+            <div className="chat-header-actions" style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+              {!isChatMinimized && (
+                <>
+                  <button
+                    className="chat-header-icon-btn"
+                    title="Voice Call"
+                    onClick={() => startCallWithUser(activeChatPartner, false)}
+                  >
+                    📞
+                  </button>
+                  <button
+                    className="chat-header-icon-btn"
+                    title="Video Call"
+                    onClick={() => startCallWithUser(activeChatPartner, true)}
+                  >
+                    📹
+                  </button>
+                  <button
+                    className="chat-header-icon-btn"
+                    title="More Options"
+                    onClick={() => setChatHeaderMenuOpen(!chatHeaderMenuOpen)}
+                  >
+                    ⋮
+                  </button>
+                </>
+              )}
+              {chatHeaderMenuOpen && !isChatMinimized && (
                 <div className="chat-header-menu-dropdown">
                   <button
                     type="button"
                     className="chat-header-menu-item"
-                    onClick={() => handleToggleMuteConversation(activeChatPartner.id)}
+                    onClick={() => {
+                      handleToggleMuteConversation(activeChatPartner.id);
+                      setChatHeaderMenuOpen(false);
+                    }}
                   >
                     <span>{isPartnerMuted ? "🔔" : "🔕"}</span>
                     <span>{isPartnerMuted ? "Unmute" : "Mute"}</span>
@@ -8787,7 +8830,10 @@ export default function App() {
                   <button
                     type="button"
                     className="chat-header-menu-item danger"
-                    onClick={() => handleToggleBlockUser(activeChatPartner.id)}
+                    onClick={() => {
+                      handleToggleBlockUser(activeChatPartner.id);
+                      setChatHeaderMenuOpen(false);
+                    }}
                   >
                     <span>🚫</span>
                     <span>{isPartnerBlocked ? "Unblock" : "Block User"}</span>
@@ -8796,15 +8842,30 @@ export default function App() {
               )}
               <button
                 className="chat-header-icon-btn"
+                title={isChatMinimized ? "Restore chat" : "Minimize chat"}
+                onClick={() => setIsChatMinimized(!isChatMinimized)}
+              >
+                {isChatMinimized ? "▲" : "–"}
+              </button>
+              <button
+                className="chat-header-icon-btn"
                 title="Close chat"
-                onClick={() => setActiveChatPartner(null)}
+                onClick={() => {
+                  setActiveChatPartner(null);
+                  setIsChatMinimized(false);
+                }}
               >
                 ✕
               </button>
             </div>
           </div>
 
-          <div className="chat-messages-container">
+          <div
+            className="chat-messages-container"
+            onClick={() => {
+              if (activeMsgMenuId !== null) setActiveMsgMenuId(null);
+            }}
+          >
             {isChatLoading ? (
               <div style={{ textAlign: "center", padding: "20px", color: "var(--text-muted)", fontSize: "13px" }}>
                 Loading conversation...
@@ -8991,76 +9052,103 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* Message Footer: time + edited tag + read receipt */}
+                      {/* Message Footer: time + edited tag + status (Sent / Delivered / Seen) */}
                       <div className="chat-msg-footer">
                         {msg.edited_at && <span className="chat-msg-edited-tag">(edited)</span>}
                         {timestamp && <span className="chat-msg-time">{timeAgo(timestamp)}</span>}
                         {isMine && (
                           <span
-                            className={`chat-msg-read-status ${msg.is_read ? "read" : "sent"}`}
-                            title={msg.is_read ? `Read ${msg.read_at ? timeAgo(msg.read_at) : ""}` : "Sent"}
+                            className={`chat-msg-status-text ${msg.is_read ? "seen" : msg.is_delivered ? "delivered" : "sent"}`}
+                            title={
+                              msg.is_read
+                                ? `Seen ${msg.read_at ? timeAgo(msg.read_at) : ""}`
+                                : msg.is_delivered
+                                ? `Delivered ${msg.delivered_at ? timeAgo(msg.delivered_at) : ""}`
+                                : "Sent"
+                            }
                           >
-                            {msg.is_read ? "✓✓" : "✓"}
+                            • {msg.is_read ? "Seen" : msg.is_delivered ? "Delivered" : "Sent"}
                           </span>
                         )}
                       </div>
                     </div>
 
-                    {/* Actions bar on hover */}
+                    {/* Message Action: Three Vertical Dots Menu */}
                     <div className="chat-msg-actions-bar" style={{ position: "relative" }}>
                       <button
                         type="button"
-                        className="chat-msg-action-btn"
-                        onClick={() => setActiveReactionMsgId(activeReactionMsgId === msg.id ? null : (msg.id || null))}
-                        title="Add reaction"
+                        className="chat-msg-dots-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveMsgMenuId(activeMsgMenuId === msg.id ? null : (msg.id || null));
+                        }}
+                        title="Options"
                       >
-                        😊
+                        ⋮
                       </button>
-                      <button
-                        type="button"
-                        className="chat-msg-action-btn"
-                        onClick={() => handleQuoteMessage(msg)}
-                        title="Quote / Reply"
-                      >
-                        ↩
-                      </button>
-                      {isMine && (
-                        <>
-                          <button
-                            type="button"
-                            className="chat-msg-action-btn"
-                            onClick={() => {
-                              setEditingMessageId(msg.id || null);
-                              setEditingMessageText(msg.content);
-                            }}
-                            title="Edit message"
-                          >
-                            ✏️
-                          </button>
-                          <button
-                            type="button"
-                            className="chat-msg-action-btn"
-                            onClick={() => handleDeleteMessage(msg.id!)}
-                            title="Delete message"
-                          >
-                            🗑️
-                          </button>
-                        </>
-                      )}
 
-                      {/* Reaction picker popover */}
-                      {activeReactionMsgId === msg.id && (
-                        <div className="chat-reaction-picker-popover">
-                          {["❤️", "👍", "🔥", "😂", "😮", "😢"].map((emoji) => (
-                            <button
-                              key={emoji}
-                              type="button"
-                              className="chat-reaction-picker-emoji"
-                              onClick={() => handleReactToMessage(msg.id!, emoji)}
-                            >
-                              {emoji}
-                            </button>
-                          ))}
+                      {/* Dropdown Menu under the three dots */}
+                      {activeMsgMenuId === msg.id && (
+                        <div
+                          className={`chat-msg-dropdown-menu ${isMine ? "align-right" : "align-left"}`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {/* Emoji reaction bar inside the three dots */}
+                          <div className="chat-msg-dropdown-reactions">
+                            {["❤️", "👍", "🔥", "😂", "😮", "😢"].map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                className="chat-dropdown-emoji-btn"
+                                onClick={() => {
+                                  handleReactToMessage(msg.id!, emoji);
+                                  setActiveMsgMenuId(null);
+                                }}
+                                title={`React ${emoji}`}
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="chat-msg-dropdown-divider" />
+                          <button
+                            type="button"
+                            className="chat-msg-dropdown-item"
+                            onClick={() => {
+                              handleQuoteMessage(msg);
+                              setActiveMsgMenuId(null);
+                            }}
+                          >
+                            <span>↩</span>
+                            <span>Reply</span>
+                          </button>
+                          {isMine && (
+                            <>
+                              <button
+                                type="button"
+                                className="chat-msg-dropdown-item"
+                                onClick={() => {
+                                  setEditingMessageId(msg.id || null);
+                                  setEditingMessageText(msg.content);
+                                  setActiveMsgMenuId(null);
+                                }}
+                              >
+                                <span>✏️</span>
+                                <span>Edit</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="chat-msg-dropdown-item danger"
+                                onClick={() => {
+                                  handleDeleteMessage(msg.id!);
+                                  setActiveMsgMenuId(null);
+                                }}
+                              >
+                                <span>🗑️</span>
+                                <span>Delete</span>
+                              </button>
+                            </>
+                          )}
                         </div>
                       )}
                     </div>

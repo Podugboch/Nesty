@@ -144,6 +144,8 @@ func Run() error {
 	_ = db.Exec("ALTER TABLE reels ADD COLUMN IF NOT EXISTS original_volume double precision DEFAULT 1").Error
 
 	_ = db.Exec("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_message_id bigint").Error
+	_ = db.Exec("ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_delivered boolean DEFAULT false").Error
+	_ = db.Exec("ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivered_at timestamptz NULL").Error
 
 	_ = db.Exec("ALTER TABLE communities ADD COLUMN IF NOT EXISTS requires_approval boolean DEFAULT false").Error
 	_ = db.Exec("CREATE TABLE IF NOT EXISTS community_members (id bigserial PRIMARY KEY, community_id bigint NOT NULL, user_id bigint NOT NULL, role varchar(20) DEFAULT 'member', status varchar(20) DEFAULT 'active', created_at timestamptz DEFAULT NOW(), updated_at timestamptz DEFAULT NOW())").Error

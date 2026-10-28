@@ -1772,13 +1772,22 @@ func (h *Handler) GetChatHistory(c *gin.Context) {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
 
-	// Mark all unread incoming messages from this partner as read
+	// Mark all unread incoming messages from this partner as read and delivered
 	now := time.Now()
 	res := h.DB.Model(&model.Message{}).
 		Where("sender_id = ? AND recipient_id = ? AND is_read = false", uint(partnerID), userID).
 		Updates(map[string]interface{}{
-			"is_read": true,
-			"read_at": now,
+			"is_read":      true,
+			"read_at":      now,
+			"is_delivered": true,
+			"delivered_at": now,
+		})
+
+	_ = h.DB.Model(&model.Message{}).
+		Where("sender_id = ? AND recipient_id = ? AND is_delivered = false", uint(partnerID), userID).
+		Updates(map[string]interface{}{
+			"is_delivered": true,
+			"delivered_at": now,
 		})
 
 	if res.RowsAffected > 0 {
@@ -1987,6 +1996,13 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		return
 	}
 
+	isOnline := h.Hub.IsUserOnline(input.RecipientID)
+	now := time.Now()
+	var deliveredAt *time.Time
+	if isOnline {
+		deliveredAt = &now
+	}
+
 	msg := model.Message{
 		SenderID:         userID,
 		RecipientID:      input.RecipientID,
@@ -1996,6 +2012,8 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		FileName:         input.FileName,
 		FileSize:         input.FileSize,
 		ReplyToMessageID: input.ReplyToMessageID,
+		IsDelivered:      isOnline,
+		DeliveredAt:      deliveredAt,
 		IsRead:           false,
 	}
 
@@ -2048,7 +2066,23 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		"event":   "message",
 		"message": msg,
 	})
-	h.Hub.SendToUser(input.RecipientID, msgJSON)
+	deliveredLive := h.Hub.SendToUser(input.RecipientID, msgJSON)
+	if deliveredLive && !msg.IsDelivered {
+		msg.IsDelivered = true
+		t := time.Now()
+		msg.DeliveredAt = &t
+		h.DB.Model(&msg).Updates(map[string]interface{}{"is_delivered": true, "delivered_at": t})
+	}
+	if msg.IsDelivered {
+		delivEvt, _ := json.Marshal(gin.H{
+			"event":        "message_delivered",
+			"message_id":   msg.ID,
+			"sender_id":    userID,
+			"recipient_id": input.RecipientID,
+			"delivered_at": msg.DeliveredAt,
+		})
+		h.Hub.SendToUser(userID, delivEvt)
+	}
 
 	// Check if conversation is muted by recipient
 	var muteCount int64

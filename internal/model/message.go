@@ -38,6 +38,8 @@ type Message struct {
 	MediaType        string            `json:"media_type,omitempty"` // "image", "video", "audio", "document"
 	FileName         string            `json:"file_name,omitempty"`
 	FileSize         int64             `json:"file_size,omitempty"`
+	IsDelivered      bool              `gorm:"default:false;index" json:"is_delivered"`
+	DeliveredAt      *time.Time        `json:"delivered_at,omitempty"`
 	IsRead           bool              `gorm:"default:false;index" json:"is_read"`
 	ReadAt           *time.Time        `json:"read_at,omitempty"`
 	EditedAt         *time.Time        `json:"edited_at,omitempty"`
