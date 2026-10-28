@@ -1397,6 +1397,26 @@ export default function App() {
   const [activeMsgMenuId, setActiveMsgMenuId] = useState<number | null>(null);
   const [isChatMinimized, setIsChatMinimized] = useState<boolean>(false);
   const [chatHeaderMenuOpen, setChatHeaderMenuOpen] = useState(false);
+  const [communityMenuOpen, setCommunityMenuOpen] = useState(false);
+  const communityMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (communityMenuRef.current && !communityMenuRef.current.contains(e.target as Node)) {
+        setCommunityMenuOpen(false);
+      }
+    };
+    if (communityMenuOpen) {
+      document.addEventListener("mousedown", handleOutsideClick);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [communityMenuOpen]);
+
+  useEffect(() => {
+    setCommunityMenuOpen(false);
+  }, [selectedCommunity]);
   const [isPartnerMuted, setIsPartnerMuted] = useState(false);
   const [isPartnerBlocked, setIsPartnerBlocked] = useState(false);
   const [aiRecs, setAiRecs] = useState<{ people: any[]; communities: any[] } | null>(null);
@@ -6889,6 +6909,7 @@ export default function App() {
                 >
                   <label className="community-banner-clickable-overlay" title="Click anywhere to change banner photo">
                     <input
+                      id="community-banner-file-input"
                       type="file"
                       accept="image/*"
                       style={{ display: "none" }}
@@ -6963,36 +6984,114 @@ export default function App() {
                 </div>
 
                 <div className="community-group-controls">
-                  {activeChannel && (activeChannel.currentUserRole === "admin" || activeChannel.currentUserRole === "co_admin") ? (
-                    <>
-                      <button
-                        type="button"
-                        className="comm-action-btn"
-                        style={{ background: "#059669", color: "#fff", border: "none", fontSize: "12px", padding: "6px 12px", borderRadius: "10px", cursor: "pointer", fontWeight: 600 }}
-                        onClick={() => handleSuggestCommunityToFollowers(activeChannel.id)}
-                        title="Suggest this community to your followers"
-                      >
-                        📣 Suggest to Followers
-                      </button>
-                      <button
-                        type="button"
-                        className="comm-action-btn manage-btn"
-                        onClick={() => openManageCommunity(activeChannel.id)}
-                        title="Manage Community & Requests"
-                      >
-                        ⚙️ Manage
-                      </button>
-                    </>
-                  ) : activeChannel?.currentUserRole === "member" ? (
+                  {/* 3 VERTICAL DOTS MENU ON THE LEFT BOTTOM */}
+                  <div className="community-dots-menu-container" ref={communityMenuRef}>
                     <button
                       type="button"
-                      className="comm-action-btn leave-btn"
-                      onClick={() => handleLeaveCommunity(activeChannel.id)}
-                      title="Leave this community"
+                      className={`community-dots-btn ${communityMenuOpen ? "active" : ""}`}
+                      onClick={() => setCommunityMenuOpen(!communityMenuOpen)}
+                      title="Community Options"
+                      aria-label="Community Options"
+                      aria-expanded={communityMenuOpen}
                     >
-                      Joined • Leave
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <circle cx="12" cy="5" r="2.2" />
+                        <circle cx="12" cy="12" r="2.2" />
+                        <circle cx="12" cy="19" r="2.2" />
+                      </svg>
                     </button>
-                  ) : activeChannel?.currentUserRole === "pending" ? (
+
+                    {communityMenuOpen && (
+                      <div className="community-dots-dropdown-menu">
+                        {activeChannel && (activeChannel.currentUserRole === "admin" || activeChannel.currentUserRole === "co_admin") && (
+                          <>
+                            <button
+                              type="button"
+                              className="community-menu-item"
+                              onClick={() => {
+                                setCommunityMenuOpen(false);
+                                handleSuggestCommunityToFollowers(activeChannel.id);
+                              }}
+                            >
+                              <span className="community-menu-icon">📣</span>
+                              <div className="community-menu-text">
+                                <span className="community-menu-title">Suggest to Followers</span>
+                                <span className="community-menu-desc">Recommend to your followers</span>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              className="community-menu-item"
+                              onClick={() => {
+                                setCommunityMenuOpen(false);
+                                openManageCommunity(activeChannel.id);
+                              }}
+                            >
+                              <span className="community-menu-icon">⚙️</span>
+                              <div className="community-menu-text">
+                                <span className="community-menu-title">Manage Community</span>
+                                <span className="community-menu-desc">Members, admission requests & settings</span>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              className="community-menu-item"
+                              onClick={() => {
+                                setCommunityMenuOpen(false);
+                                document.getElementById("community-banner-file-input")?.click();
+                              }}
+                            >
+                              <span className="community-menu-icon">📷</span>
+                              <div className="community-menu-text">
+                                <span className="community-menu-title">Change Banner Photo</span>
+                                <span className="community-menu-desc">Upload a new header photo</span>
+                              </div>
+                            </button>
+                          </>
+                        )}
+
+                        <button
+                          type="button"
+                          className="community-menu-item"
+                          onClick={() => {
+                            setCommunityMenuOpen(false);
+                            const commName = activeChannel?.name || "Community";
+                            const postTexts = posts.map((p) => p.content).filter(Boolean);
+                            handleSummarizeCommunity(commName, postTexts);
+                          }}
+                          disabled={isAiSummarizing}
+                        >
+                          <span className="community-menu-icon">✨</span>
+                          <div className="community-menu-text">
+                            <span className="community-menu-title">{isAiSummarizing ? "Summarizing..." : "AI Summary"}</span>
+                            <span className="community-menu-desc">Summarize discussions with Gemini AI</span>
+                          </div>
+                        </button>
+
+                        {activeChannel && (activeChannel.currentUserRole === "member" || activeChannel.currentUserRole === "admin" || activeChannel.currentUserRole === "co_admin") && (
+                          <>
+                            <div className="community-menu-divider" />
+                            <button
+                              type="button"
+                              className="community-menu-item danger"
+                              onClick={() => {
+                                setCommunityMenuOpen(false);
+                                handleLeaveCommunity(activeChannel.id);
+                              }}
+                            >
+                              <span className="community-menu-icon">🚪</span>
+                              <div className="community-menu-text">
+                                <span className="community-menu-title">Leave Community</span>
+                              </div>
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* VISITOR / INVITATION ACTION BUTTONS */}
+                  {activeChannel?.currentUserRole === "pending" ? (
                     <button
                       type="button"
                       className="comm-action-btn pending-btn"
@@ -7020,7 +7119,7 @@ export default function App() {
                         Decline
                       </button>
                     </div>
-                  ) : activeChannel ? (
+                  ) : activeChannel && !activeChannel.currentUserRole ? (
                     <button
                       type="button"
                       className="comm-action-btn join-btn"
@@ -7031,6 +7130,7 @@ export default function App() {
                     </button>
                   ) : null}
 
+                  {/* VOICE & VIDEO CALLS */}
                   <button
                     type="button"
                     className="chat-header-icon-btn"
@@ -7058,20 +7158,6 @@ export default function App() {
                     title={`Video Call in #${activeChannel?.name}`}
                   >
                     📹
-                  </button>
-                  <button
-                    type="button"
-                    className="ai-summary-btn"
-                    style={{ marginLeft: "4px" }}
-                    onClick={() => {
-                      const commName = activeChannel?.name || "Community";
-                      const postTexts = posts.map((p) => p.content).filter(Boolean);
-                      handleSummarizeCommunity(commName, postTexts);
-                    }}
-                    disabled={isAiSummarizing}
-                    title="Summarize discussions in this community"
-                  >
-                    {isAiSummarizing ? "Summarizing..." : "✨ AI Summary"}
                   </button>
                 </div>
               </div>
