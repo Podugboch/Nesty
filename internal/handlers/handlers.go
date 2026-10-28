@@ -1893,6 +1893,14 @@ func (h *Handler) GetConversations(c *gin.Context) {
 		unreadMap[row.SenderID] = row.Count
 	}
 
+	// Filter: only show users the current user follows
+	var follows []model.Follow
+	h.DB.Where("follower_id = ?", userID).Find(&follows)
+	followingMap := make(map[uint]bool, len(follows))
+	for _, f := range follows {
+		followingMap[f.FollowingID] = true
+	}
+
 	var messages []model.Message
 	h.DB.Where("sender_id = ? OR recipient_id = ?", userID, userID).
 		Order("id DESC").
@@ -1921,7 +1929,7 @@ func (h *Handler) GetConversations(c *gin.Context) {
 		if partnerID == userID {
 			partnerID = msg.SenderID
 		}
-		if partnerID == 0 || partnerID == userID || seen[partnerID] {
+		if partnerID == 0 || partnerID == userID || seen[partnerID] || !followingMap[partnerID] {
 			continue
 		}
 		seen[partnerID] = true

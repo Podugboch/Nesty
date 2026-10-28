@@ -1651,18 +1651,32 @@ export default function App() {
     setMessagesInboxOpen(true);
     setIsMessagesInboxLoading(true);
     try {
-      if (token) {
-        const [convRes, usersRes] = await Promise.all([
+      if (token && user?.id) {
+        const [convRes, followingRes] = await Promise.all([
           fetch(`${API_URL}/api/conversations`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
-          fetch(`${API_URL}/api/users`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
+          fetch(`${API_URL}/api/users/${user.id}/following`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null),
         ]);
+        const followingSet = new Set<number>();
+        if (followingRes && followingRes.ok) {
+          const uData = await followingRes.json();
+          const followedUsers: User[] = Array.isArray(uData)
+            ? uData
+                .map((item: any) => item.user || item)
+                .filter((u: User) => u && u.id && u.id !== user?.id)
+            : [];
+          setAllUsersList(followedUsers);
+          followedUsers.forEach((u) => followingSet.add(u.id));
+        } else {
+          setAllUsersList([]);
+        }
         if (convRes && convRes.ok) {
           const data = await convRes.json();
-          setConversationsList(Array.isArray(data) ? data : []);
-        }
-        if (usersRes && usersRes.ok) {
-          const uData = await usersRes.json();
-          setAllUsersList(Array.isArray(uData) ? uData.filter((u: User) => u.id !== user?.id) : []);
+          const filteredConvs = Array.isArray(data)
+            ? data.filter((c: any) => c && c.partner && followingSet.has(c.partner.id))
+            : [];
+          setConversationsList(filteredConvs);
+        } else {
+          setConversationsList([]);
         }
       }
     } catch (err) {
@@ -9788,7 +9802,7 @@ export default function App() {
             <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)", background: "var(--surface-subtle, rgba(255,255,255,0.02))" }}>
               <input
                 type="text"
-                placeholder="Search conversations or users..."
+                placeholder="Search conversations or contacts..."
                 value={messagesSearchQuery}
                 onChange={(e) => setMessagesSearchQuery(e.target.value)}
                 style={{
@@ -9906,90 +9920,114 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* All Users / Start a Conversation */}
+                  {/* People You Follow */}
                   <div>
                     <div style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: "8px", paddingLeft: "4px" }}>
-                      {conversationsList.length > 0 ? "All Members" : "Select someone to chat with"}
+                      People You Follow
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                      {allUsersList
-                        .filter((u) => {
+                    {allUsersList.length === 0 ? (
+                      <div style={{ textAlign: "center", padding: "32px 16px", color: "var(--text-muted)" }}>
+                        <div style={{ fontSize: "32px", marginBottom: "8px" }}>👥</div>
+                        <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-h)", marginBottom: "4px" }}>
+                          Not following anyone yet
+                        </div>
+                        <div style={{ fontSize: "12.5px", maxWidth: "290px", margin: "0 auto", lineHeight: "1.4" }}>
+                          Follow other users across Nesty to connect and message them here.
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                        {allUsersList
+                          .filter((u) => {
+                            if (!messagesSearchQuery.trim()) return true;
+                            const q = messagesSearchQuery.toLowerCase();
+                            return (
+                              (u.name && u.name.toLowerCase().includes(q)) ||
+                              (u.username && u.username.toLowerCase().includes(q))
+                            );
+                          })
+                          .sort((a, b) => {
+                            const aOnline = communityStats.online_users.some((ou) => ou.id === a.id);
+                            const bOnline = communityStats.online_users.some((ou) => ou.id === b.id);
+                            if (aOnline && !bOnline) return -1;
+                            if (!aOnline && bOnline) return 1;
+                            return 0;
+                          })
+                          .map((u) => {
+                            const isOnline = communityStats.online_users.some((ou) => ou.id === u.id);
+                            return (
+                              <div
+                                key={u.id}
+                                onClick={() => {
+                                  setMessagesInboxOpen(false);
+                                  startChatWithUser(u);
+                                }}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "12px",
+                                  padding: "8px 12px",
+                                  borderRadius: "10px",
+                                  cursor: "pointer",
+                                  transition: "background 0.15s ease",
+                                  background: "transparent",
+                                }}
+                                className="chat-conversation-item"
+                              >
+                                <div style={{ position: "relative", width: "38px", height: "38px", flexShrink: 0 }}>
+                                  {u.avatar_url ? (
+                                    <img src={u.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                                  ) : (
+                                    <div style={{ width: "100%", height: "100%", borderRadius: "50%", background: "#2563eb", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: "15px" }}>
+                                      {(u.username || "U").charAt(0).toUpperCase()}
+                                    </div>
+                                  )}
+                                  {isOnline && (
+                                    <span
+                                      style={{
+                                        position: "absolute",
+                                        bottom: 0,
+                                        right: 0,
+                                        width: "10px",
+                                        height: "10px",
+                                        borderRadius: "50%",
+                                        background: "#10b981",
+                                        border: "2px solid var(--surface, #1e293b)",
+                                      }}
+                                    />
+                                  )}
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: "13.5px", fontWeight: 600, color: "var(--text-h)" }} className="truncate">
+                                    {u.name || u.username}
+                                  </div>
+                                  <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                                    @{u.username} {isOnline ? "• Online now" : ""}
+                                  </div>
+                                </div>
+                                <button
+                                  className="edit-profile-pill-btn"
+                                  style={{ fontSize: "11px", padding: "4px 10px", background: "#059669", color: "#fff", border: "none" }}
+                                >
+                                  Chat
+                                </button>
+                              </div>
+                            );
+                          })}
+                        {allUsersList.filter((u) => {
                           if (!messagesSearchQuery.trim()) return true;
                           const q = messagesSearchQuery.toLowerCase();
                           return (
                             (u.name && u.name.toLowerCase().includes(q)) ||
                             (u.username && u.username.toLowerCase().includes(q))
                           );
-                        })
-                        .sort((a, b) => {
-                          const aOnline = communityStats.online_users.some((ou) => ou.id === a.id);
-                          const bOnline = communityStats.online_users.some((ou) => ou.id === b.id);
-                          if (aOnline && !bOnline) return -1;
-                          if (!aOnline && bOnline) return 1;
-                          return 0;
-                        })
-                        .map((u) => {
-                          const isOnline = communityStats.online_users.some((ou) => ou.id === u.id);
-                          return (
-                            <div
-                              key={u.id}
-                              onClick={() => {
-                                setMessagesInboxOpen(false);
-                                startChatWithUser(u);
-                              }}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "12px",
-                                padding: "8px 12px",
-                                borderRadius: "10px",
-                                cursor: "pointer",
-                                transition: "background 0.15s ease",
-                                background: "transparent",
-                              }}
-                              className="chat-conversation-item"
-                            >
-                              <div style={{ position: "relative", width: "38px", height: "38px", flexShrink: 0 }}>
-                                {u.avatar_url ? (
-                                  <img src={u.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
-                                ) : (
-                                  <div style={{ width: "100%", height: "100%", borderRadius: "50%", background: "#2563eb", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: "15px" }}>
-                                    {(u.username || "U").charAt(0).toUpperCase()}
-                                  </div>
-                                )}
-                                {isOnline && (
-                                  <span
-                                    style={{
-                                      position: "absolute",
-                                      bottom: 0,
-                                      right: 0,
-                                      width: "10px",
-                                      height: "10px",
-                                      borderRadius: "50%",
-                                      background: "#10b981",
-                                      border: "2px solid var(--surface, #1e293b)",
-                                    }}
-                                  />
-                                )}
-                              </div>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: "13.5px", fontWeight: 600, color: "var(--text-h)" }} className="truncate">
-                                  {u.name || u.username}
-                                </div>
-                                <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                                  @{u.username} {isOnline ? "• Online now" : ""}
-                                </div>
-                              </div>
-                              <button
-                                className="edit-profile-pill-btn"
-                                style={{ fontSize: "11px", padding: "4px 10px", background: "#059669", color: "#fff", border: "none" }}
-                              >
-                                Chat
-                              </button>
-                            </div>
-                          );
-                        })}
-                    </div>
+                        }).length === 0 && (
+                          <div style={{ textAlign: "center", padding: "20px 12px", color: "var(--text-muted)", fontSize: "13px" }}>
+                            No followed contacts match "{messagesSearchQuery}"
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </>
               )}
