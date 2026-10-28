@@ -4022,13 +4022,13 @@ export default function App() {
   }, [token]);
 
   // -----------------------------
-  // FETCH FEED POSTS (HOME FETCHES ALL POSTS PLATFORM-WIDE)
+  // FETCH FEED POSTS (HOME FETCHES NON-COMMUNITY POSTS, COMMUNITIES FETCH THEIR OWN)
   // -----------------------------
   const fetchPosts = async (pageNum: number = 1, comm = selectedCommunity) => {
     if (!token) return;
     try {
       const isGlobal = !comm || comm === "all" || comm === "home";
-      const commParam = isGlobal ? "" : `&community=${encodeURIComponent(comm)}`;
+      const commParam = isGlobal ? "&community=home" : `&community=${encodeURIComponent(comm)}`;
       const res = await fetch(
         `${API_URL}/api/posts?page=${pageNum}&limit=50${commParam}`,
         { headers: { Authorization: `Bearer ${token}` } }
@@ -4054,6 +4054,8 @@ export default function App() {
         } else {
           setPosts((prev) => dedupe([...prev, ...fetchedPosts]));
         }
+      } else if (res.status === 403) {
+        setPosts([]);
       }
     } catch (err) {
       console.error("Could not fetch live feed.", err);
@@ -4086,10 +4088,16 @@ export default function App() {
   // -----------------------------
   const displayedPosts = useMemo((): Post[] => {
     if (selectedCommunity !== "home") {
-      return posts.filter((p) => p.community === selectedCommunity || !selectedCommunity);
+      const activeComm = communities.find((c) => c.id === selectedCommunity);
+      const isMember = activeComm && (activeComm.currentUserRole === "admin" || activeComm.currentUserRole === "co_admin" || activeComm.currentUserRole === "member");
+      if (activeComm && !isMember) {
+        return [];
+      }
+      return posts.filter((p) => p.community === selectedCommunity || (activeComm && (p.community === activeComm.id || p.community === String(activeComm.createdById))));
     }
 
-    let list = [...posts];
+    // HOME FEED: Strictly exclude any posts belonging to a community
+    let list = posts.filter((p) => !p.community || p.community === "home" || p.community === "general");
 
     if (feedFilterMedia) {
       list = list.filter((p) => !!p.media_url);
@@ -4136,7 +4144,7 @@ export default function App() {
 
       return scoreB - scoreA;
     });
-  }, [posts, selectedCommunity, feedTab, feedFilterMedia, user]);
+  }, [posts, selectedCommunity, feedTab, feedFilterMedia, user, communities]);
 
   // -----------------------------
   // USER SEARCH AUTOCOMPLETE
@@ -7191,7 +7199,30 @@ export default function App() {
             )}
             {/* POSTS FEED LIST */}
             <div className="nesty-posts-feed">
-              {displayedPosts.length === 0 ? (
+              {selectedCommunity !== "home" && activeChannel && activeChannel.currentUserRole !== "admin" && activeChannel.currentUserRole !== "co_admin" && activeChannel.currentUserRole !== "member" ? (
+                <div style={{ textAlign: "center", padding: "56px 24px", background: "var(--bg-card)", borderRadius: "16px", border: "1px solid var(--border-color)", margin: "16px 0" }}>
+                  <div style={{ fontSize: "40px", marginBottom: "12px" }}>🔒</div>
+                  <h3 style={{ fontSize: "18px", fontWeight: 700, color: "var(--text-h)", marginBottom: "6px" }}>
+                    Private Community Content
+                  </h3>
+                  <p style={{ fontSize: "14px", color: "var(--text-muted)", maxWidth: "420px", margin: "0 auto 16px", lineHeight: "1.5" }}>
+                    Posts, discussions, and media in #{activeChannel.name} are private. Only admitted members can view posts in this community.
+                  </p>
+                  {activeChannel.currentUserRole === "pending" ? (
+                    <span style={{ display: "inline-block", padding: "8px 16px", borderRadius: "9999px", background: "rgba(245, 158, 11, 0.15)", color: "#f59e0b", fontSize: "13px", fontWeight: 600 }}>
+                      ⏳ Membership request pending admin approval
+                    </span>
+                  ) : (
+                    <button
+                      className="join-comm-action-btn"
+                      style={{ margin: "0 auto", display: "inline-block" }}
+                      onClick={() => handleJoinCommunity(activeChannel.id)}
+                    >
+                      + Join #{activeChannel.name} to View Posts
+                    </button>
+                  )}
+                </div>
+              ) : displayedPosts.length === 0 ? (
                 <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)" }}>
                   <p style={{ fontSize: "16px", fontWeight: 600, color: "var(--text-h)" }}>No posts found in this feed view.</p>
                   <p style={{ fontSize: "13px", marginTop: "4px" }}>

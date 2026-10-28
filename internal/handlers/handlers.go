@@ -264,6 +264,28 @@ func (h *Handler) Ping(c *gin.Context) {
 }
 
 // ---------------------- POSTS ----------------------
+
+// canAccessCommunityPost checks whether the given user has access to a post belonging to a community.
+// Returns true if the post is public/general or if the user is an active member of the community.
+func (h *Handler) canAccessCommunityPost(communitySlugOrID string, userID uint) bool {
+	comm := strings.TrimSpace(communitySlugOrID)
+	if comm == "" || comm == "general" || comm == "home" {
+		return true
+	}
+	if userID == 0 {
+		return false
+	}
+	var community model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", comm, comm).First(&community).Error; err != nil {
+		return false
+	}
+	var member model.CommunityMember
+	if err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active'", community.ID, userID).First(&member).Error; err != nil {
+		return false
+	}
+	return true
+}
+
 func (h *Handler) CreatePost(c *gin.Context) {
 	var input struct {
 		Content        string   `json:"content"`
@@ -324,16 +346,19 @@ func (h *Handler) CreatePost(c *gin.Context) {
 
 	userID := c.GetUint("user_id")
 
-	// If posting to a specific community, ensure user is an active member
+	// If posting to a specific community, ensure community exists and user is an active member
 	if comm != "general" && comm != "home" {
 		var community model.Community
-		if err := h.DB.Where("slug = ? OR id::text = ?", comm, comm).First(&community).Error; err == nil {
-			var member model.CommunityMember
-			if err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active'", community.ID, userID).First(&member).Error; err != nil {
-				c.JSON(http.StatusForbidden, gin.H{"error": "You must join this community before posting."})
-				return
-			}
+		if err := h.DB.Where("slug = ? OR id::text = ?", comm, comm).First(&community).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+			return
 		}
+		var member model.CommunityMember
+		if err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active'", community.ID, userID).First(&member).Error; err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You must join this community before posting."})
+			return
+		}
+		comm = community.Slug
 	}
 	post := model.Post{
 		UserID:         userID,
@@ -484,12 +509,24 @@ func (h *Handler) GetPosts(c *gin.Context) {
 	}
 
 	community := strings.TrimSpace(c.Query("community"))
-	if community != "" && community != "all" {
-		if community == "general" {
-			query = query.Where("community = ? OR community IS NULL OR community = ''", "general")
-		} else {
-			query = query.Where("community = ?", community)
+	if community == "" || community == "home" || community == "general" || community == "all" {
+		query = query.Where("posts.community = 'general' OR posts.community = 'home' OR posts.community = '' OR posts.community IS NULL")
+	} else {
+		var targetComm model.Community
+		if err := h.DB.Where("slug = ? OR id::text = ?", community, community).First(&targetComm).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+			return
 		}
+		if userID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required to view community posts"})
+			return
+		}
+		var member model.CommunityMember
+		if err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active'", targetComm.ID, userID).First(&member).Error; err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "This community is private. Only active members can view posts in this community."})
+			return
+		}
+		query = query.Where("posts.community = ? OR posts.community = ?", targetComm.Slug, fmt.Sprintf("%d", targetComm.ID))
 	}
 
 	if len(followingIDs) > 0 && c.Query("following") != "true" {
@@ -630,6 +667,12 @@ func (h *Handler) RepostPost(c *gin.Context) {
 		return
 	}
 
+	// Verify permission if original post is inside a community
+	if !h.canAccessCommunityPost(originalPost.Community, userID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "This post belongs to a private community. Only active members can repost it."})
+		return
+	}
+
 	// 2. Create the repost
 	// A repost has no media of its own and optional comment/text content (like a quote retweet), 
 	// or it can just be a pure repost with empty content.
@@ -639,9 +682,10 @@ func (h *Handler) RepostPost(c *gin.Context) {
 	_ = c.ShouldBindJSON(&input) // optional: allows quote reposts!
 
 	repost := model.Post{
-		UserID:   userID,
-		Content:  input.Content,
-		ParentID: &targetPostID,
+		UserID:    userID,
+		Content:   input.Content,
+		ParentID:  &targetPostID,
+		Community: originalPost.Community,
 	}
 
 	if err := h.DB.Create(&repost).Error; err != nil {
@@ -677,6 +721,11 @@ func (h *Handler) LikePost(c *gin.Context) {
 	var post model.Post
 	if err := h.DB.First(&post, postID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
+		return
+	}
+
+	if !h.canAccessCommunityPost(post.Community, userID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "This post belongs to a private community. Only active members can like it."})
 		return
 	}
 
@@ -735,6 +784,11 @@ func (h *Handler) AddComment(c *gin.Context) {
 	var post model.Post
 	if err := h.DB.First(&post, postID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
+		return
+	}
+
+	if !h.canAccessCommunityPost(post.Community, userID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "This post belongs to a private community. Only active members can comment on it."})
 		return
 	}
 
@@ -1336,7 +1390,7 @@ func (h *Handler) GetUserProfile(c *gin.Context) {
 	var followerCount, followingCount, postCount int64
 	h.DB.Model(&model.Follow{}).Where("following_id = ?", targetID).Count(&followerCount)
 	h.DB.Model(&model.Follow{}).Where("follower_id = ?", targetID).Count(&followingCount)
-	h.DB.Model(&model.Post{}).Where("user_id = ? AND hidden_at IS NULL", targetID).Count(&postCount)
+	h.DB.Model(&model.Post{}).Where("user_id = ? AND hidden_at IS NULL AND (community = 'general' OR community = 'home' OR community = '' OR community IS NULL)", targetID).Count(&postCount)
 
 	var isFollowing bool
 	if requesterID != targetID {
@@ -1386,7 +1440,7 @@ func (h *Handler) GetUserPosts(c *gin.Context) {
 
 	var posts []model.Post
 	if err := h.DB.
-		Where("user_id = ? AND posts.hidden_at IS NULL", uint(targetIDNum)).
+		Where("user_id = ? AND posts.hidden_at IS NULL AND (posts.community = 'general' OR posts.community = 'home' OR posts.community = '' OR posts.community IS NULL)", uint(targetIDNum)).
 		Preload("User", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "username", "name", "email", "avatar_url")
 		}).
