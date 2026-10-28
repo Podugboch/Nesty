@@ -3652,6 +3652,7 @@ func (h *Handler) CreateCommunity(c *gin.Context) {
 		Name             string `json:"name" binding:"required"`
 		Description      string `json:"description"`
 		BadgeClass       string `json:"badge_class"`
+		BannerURL        string `json:"banner_url"`
 		RequiresApproval bool   `json:"requires_approval"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -3684,6 +3685,7 @@ func (h *Handler) CreateCommunity(c *gin.Context) {
 		Slug:             slug,
 		Description:      input.Description,
 		BadgeClass:       badge,
+		BannerURL:        strings.TrimSpace(input.BannerURL),
 		RequiresApproval: input.RequiresApproval,
 		CreatedByID:      userID,
 	}
@@ -4038,8 +4040,10 @@ func (h *Handler) UpdateCommunitySettings(c *gin.Context) {
 	}
 
 	var input struct {
-		RequiresApproval *bool  `json:"requires_approval"`
-		Description      string `json:"description"`
+		RequiresApproval *bool   `json:"requires_approval"`
+		Description      *string `json:"description"`
+		BannerURL        *string `json:"banner_url"`
+		Name             *string `json:"name"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -4049,8 +4053,14 @@ func (h *Handler) UpdateCommunitySettings(c *gin.Context) {
 	if input.RequiresApproval != nil {
 		comm.RequiresApproval = *input.RequiresApproval
 	}
-	if strings.TrimSpace(input.Description) != "" {
-		comm.Description = strings.TrimSpace(input.Description)
+	if input.Description != nil {
+		comm.Description = strings.TrimSpace(*input.Description)
+	}
+	if input.BannerURL != nil {
+		comm.BannerURL = strings.TrimSpace(*input.BannerURL)
+	}
+	if input.Name != nil && strings.TrimSpace(*input.Name) != "" {
+		comm.Name = strings.TrimSpace(*input.Name)
 	}
 
 	if err := h.DB.Save(&comm).Error; err != nil {

@@ -502,6 +502,7 @@ type CommunityChannel = {
   name: string;
   badgeClass: string;
   subtitle: string;
+  bannerUrl?: string;
   createdById?: number;
   requiresApproval?: boolean;
   memberCount?: number;
@@ -726,7 +727,8 @@ export default function App() {
           id: c.slug || String(c.id),
           name: c.name,
           badgeClass: c.badge_class || "custom",
-          subtitle: c.description || `Community channel for ${c.name}`,
+          subtitle: (c.description || "").replace("Learners of Like minds🤯", "").trim(),
+          bannerUrl: c.banner_url || "",
           createdById: c.created_by_id,
           requiresApproval: !!c.requires_approval,
           memberCount: c.member_count || 1,
@@ -747,6 +749,8 @@ export default function App() {
   const [newCommName, setNewCommName] = useState("");
   const [newCommDescription, setNewCommDescription] = useState("");
   const [newCommRequiresApproval, setNewCommRequiresApproval] = useState(false);
+  const [newCommBannerUrl, setNewCommBannerUrl] = useState("");
+  const [uploadingCommBanner, setUploadingCommBanner] = useState(false);
 
   // Track communities searched/viewed by user
   const [searchedCommunityIds, setSearchedCommunityIds] = useState<Set<string>>(new Set());
@@ -947,6 +951,49 @@ export default function App() {
     } catch (err) {
       console.error("Failed to suggest community:", err);
       alert("Network error suggesting community.");
+    }
+  };
+
+  const handleCommunityBannerChange = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    commSlugOrId: string
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingCommBanner(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const authToken = token || localStorage.getItem("token");
+      const uploadRes = await fetch(`${API_URL}/api/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}` },
+        body: formData,
+      });
+      if (uploadRes.ok) {
+        const data = await uploadRes.json();
+        const newBannerUrl = data.url;
+        const res = await fetch(`${API_URL}/api/communities/${encodeURIComponent(commSlugOrId)}/settings`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ banner_url: newBannerUrl }),
+        });
+        if (res.ok) {
+          setCommunities((prev) =>
+            prev.map((c) =>
+              c.id === commSlugOrId ? { ...c, bannerUrl: newBannerUrl } : c
+            )
+          );
+        }
+      }
+    } catch (err) {
+      console.error("Failed to update community banner:", err);
+    } finally {
+      setUploadingCommBanner(false);
+      e.target.value = "";
     }
   };
 
@@ -1293,7 +1340,7 @@ export default function App() {
   // -----------------------------
   // COMMUNITY STATS & ONLINE USERS
   // -----------------------------
-  const [liveUserCount, setLiveUserCount] = useState<number>(0);
+  const [, setLiveUserCount] = useState<number>(0);
   const [communityStats, setCommunityStats] = useState<{
     user_count?: number;
     total_users?: number;
@@ -6819,38 +6866,67 @@ export default function App() {
               </div>
               </>
             ) : (
-              /* COMMUNITY GROUP HEADER WITH AUDIO & VIDEO GROUP CALL BUTTONS (ONLY RENDERED INSIDE GROUPS) */
-              <div className="community-group-header-card">
-                <div className="group-header-left">
-                  <div className={`group-header-badge ${activeChannel?.badgeClass || "coding"}`}>
-                    #
-                  </div>
-                  <div className="group-header-details">
-                    <div className="group-header-title-line">
-                      <h1 className="group-header-name">{activeChannel?.name || "Community Channel"}</h1>
-                      <div className="group-header-badges-row">
-                        {activeChannel?.currentUserRole === "admin" && (
-                          <span className="comm-role-pill admin">👑 Admin</span>
-                        )}
-                        {activeChannel?.currentUserRole === "co_admin" && (
-                          <span className="comm-role-pill co-admin">🛡️ Co-Admin</span>
-                        )}
-                        {activeChannel?.currentUserRole === "member" && (
-                          <span className="comm-role-pill member">✓ Member</span>
-                        )}
-                        {activeChannel?.currentUserRole === "pending" && (
-                          <span className="comm-role-pill pending">⏳ Pending Approval</span>
-                        )}
-                        <span className="group-members-chip">
-                          👥 {activeChannel?.memberCount || 1} {activeChannel?.memberCount === 1 ? "member" : "members"}
-                        </span>
-                        <span className="group-online-chip">
-                          <span className="group-online-dot" />
-                          {liveUserCount} online
-                        </span>
-                      </div>
+              /* COMMUNITY GROUP HERO BANNER & HEADER WITH AUDIO & VIDEO GROUP CALL BUTTONS */
+              <div className="community-group-hero">
+                <div
+                  className="community-group-banner"
+                  style={
+                    activeChannel?.bannerUrl
+                      ? {
+                          backgroundImage: `url(${activeChannel.bannerUrl})`,
+                          backgroundSize: "cover",
+                          backgroundPosition: "center",
+                        }
+                      : {
+                          background: "linear-gradient(135deg, #064e3b 0%, #065f46 50%, #047857 100%)",
+                        }
+                  }
+                >
+                  {activeChannel &&
+                    (activeChannel.currentUserRole === "admin" || activeChannel.currentUserRole === "co_admin") && (
+                      <label className="edit-community-banner-btn" title="Change Community Banner">
+                        <span>📷</span>
+                        <span>{uploadingCommBanner ? "Uploading..." : "Change Banner"}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          style={{ display: "none" }}
+                          disabled={uploadingCommBanner}
+                          onChange={(e) => handleCommunityBannerChange(e, activeChannel.id)}
+                        />
+                      </label>
+                    )}
+                </div>
+
+                <div className="community-group-header-card">
+                  <div className="group-header-left">
+                    <div className={`group-header-badge ${activeChannel?.badgeClass || "coding"}`}>
+                      #
                     </div>
-                    <p className="group-header-desc">{activeChannel?.subtitle || "Community Channel"}</p>
+                    <div className="group-header-details">
+                      <div className="group-header-title-line">
+                        <h1 className="group-header-name">{activeChannel?.name || "Community Channel"}</h1>
+                        <div className="group-header-badges-row">
+                          {activeChannel?.currentUserRole === "admin" && (
+                            <span className="comm-role-pill admin">👑 Admin</span>
+                          )}
+                          {activeChannel?.currentUserRole === "co_admin" && (
+                            <span className="comm-role-pill co-admin">🛡️ Co-Admin</span>
+                          )}
+                          {activeChannel?.currentUserRole === "pending" && (
+                            <span className="comm-role-pill pending">⏳ Pending Approval</span>
+                          )}
+                          <span className="group-members-chip">
+                            👥 {activeChannel?.memberCount || 1} {activeChannel?.memberCount === 1 ? "member" : "members"}
+                          </span>
+                        </div>
+                      </div>
+                      {activeChannel?.subtitle &&
+                        activeChannel.subtitle !== "Community Channel" &&
+                        !activeChannel.subtitle.includes("Community channel for") &&
+                        activeChannel.subtitle !== "Learners of Like minds🤯" && (
+                          <p className="group-header-desc">{activeChannel.subtitle}</p>
+                        )}
 
                     {/* Active call indicator in community group */}
                     {activeChannel && activeGroupCalls[activeChannel.id] && (
@@ -6992,6 +7068,7 @@ export default function App() {
                   </button>
                 </div>
               </div>
+            </div>
             )}
 
             {/* CONDITIONAL POST CREATOR: NON-MEMBERS SEE JOIN PROMPT, MEMBERS SEE CREATOR */}
@@ -8426,7 +8503,7 @@ export default function App() {
               style={{ marginBottom: "16px", minHeight: "65px", resize: "vertical" }}
             />
 
-            <label style={{ display: "flex", alignItems: "flex-start", gap: "10px", marginBottom: "20px", cursor: "pointer", fontSize: "13px", color: "var(--text-h)" }}>
+            <label style={{ display: "flex", alignItems: "flex-start", gap: "10px", marginBottom: "16px", cursor: "pointer", fontSize: "13px", color: "var(--text-h)" }}>
               <input
                 type="checkbox"
                 checked={newCommRequiresApproval}
@@ -8441,6 +8518,40 @@ export default function App() {
               </div>
             </label>
 
+            <div style={{ marginBottom: "20px" }}>
+              <label className="edit-community-banner-btn" style={{ position: "static", display: "inline-flex" }}>
+                <span>📷 {newCommBannerUrl ? "Banner Attached ✓" : "Attach Cover Banner (Optional)"}</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      const formData = new FormData();
+                      formData.append("file", file);
+                      const authToken = token || localStorage.getItem("token");
+                      const uploadRes = await fetch(`${API_URL}/api/upload`, {
+                        method: "POST",
+                        headers: { Authorization: `Bearer ${authToken}` },
+                        body: formData,
+                      });
+                      if (uploadRes.ok) {
+                        const data = await uploadRes.json();
+                        setNewCommBannerUrl(data.url);
+                      }
+                    } catch (err) {
+                      console.error("Upload banner error:", err);
+                    }
+                  }}
+                />
+              </label>
+              {newCommBannerUrl && (
+                <div style={{ marginTop: "8px", height: "70px", borderRadius: "8px", backgroundImage: `url(${newCommBannerUrl})`, backgroundSize: "cover", backgroundPosition: "center", border: "1px solid var(--border)" }} />
+              )}
+            </div>
+
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
               <button
                 className="edit-profile-pill-btn"
@@ -8454,12 +8565,14 @@ export default function App() {
                   if (!newCommName.trim()) return;
                   const name = newCommName.trim();
                   const slug = name.toLowerCase().replace(/\s+/g, "-");
-                  const desc = newCommDescription.trim() || `Discussions and updates for ${name}`;
+                  const desc = newCommDescription.trim();
+                  const bannerUrl = newCommBannerUrl;
                   const newChannel: CommunityChannel = {
                     id: slug,
                     name,
                     badgeClass: "custom",
                     subtitle: desc,
+                    bannerUrl,
                     requiresApproval: newCommRequiresApproval,
                     memberCount: 1,
                     currentUserRole: "admin",
@@ -8470,6 +8583,7 @@ export default function App() {
                   setNewCommName("");
                   setNewCommDescription("");
                   setNewCommRequiresApproval(false);
+                  setNewCommBannerUrl("");
                   setCreateCommModalOpen(false);
 
                   try {
@@ -8483,6 +8597,7 @@ export default function App() {
                       body: JSON.stringify({
                         name,
                         description: desc,
+                        banner_url: bannerUrl,
                         badge_class: "custom",
                         requires_approval: newCommRequiresApproval,
                       }),
@@ -8498,6 +8613,7 @@ export default function App() {
                                 name: created.name,
                                 badgeClass: created.badge_class || "custom",
                                 subtitle: created.description || desc,
+                                bannerUrl: created.banner_url || bannerUrl,
                                 createdById: created.created_by_id,
                                 requiresApproval: !!created.requires_approval,
                                 memberCount: 1,
@@ -8529,6 +8645,25 @@ export default function App() {
                 <p className="manage-comm-sub">Review membership requests, assign co-admins, and configure group settings.</p>
               </div>
               <button className="manage-close-btn" onClick={() => setManageCommModalOpen(false)}>✕</button>
+            </div>
+
+            {/* COMMUNITY BANNER SETTING */}
+            <div className="manage-setting-card">
+              <div className="manage-setting-info">
+                <strong>Community Banner</strong>
+                <span>Set or change the cover banner wallpaper for #{activeChannel?.name}.</span>
+              </div>
+              <label className="edit-community-banner-btn" style={{ position: "static" }}>
+                <span>📷</span>
+                <span>{uploadingCommBanner ? "Uploading..." : "Upload Banner"}</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  disabled={uploadingCommBanner}
+                  onChange={(e) => handleCommunityBannerChange(e, manageCommSlug)}
+                />
+              </label>
             </div>
 
             {/* ADMISSION SETTING CARD */}

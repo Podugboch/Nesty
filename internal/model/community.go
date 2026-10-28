@@ -8,6 +8,7 @@ type Community struct {
 	Slug             string            `gorm:"uniqueIndex;not null" json:"slug"`
 	Description      string            `json:"description"`
 	BadgeClass       string            `json:"badge_class"`
+	BannerURL        string            `json:"banner_url"`
 	RequiresApproval bool              `gorm:"default:false" json:"requires_approval"`
 	CreatedByID      uint              `json:"created_by_id"`
 	CreatedBy        *User             `gorm:"-" json:"created_by,omitempty"`

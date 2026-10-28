@@ -4346,6 +4346,73 @@
 /* ==========================================================================
    COMMUNITY GROUP HEADER & GROUP CALLS (AUDIO & VIDEO)
    ========================================================================== */
+.community-group-hero {
+  position: relative;
+  margin-bottom: 16px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
+}
+
+:root[data-theme="dark"] .community-group-hero {
+  background: #14171f;
+  border-color: #232936;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.community-group-banner {
+  position: relative;
+  width: 100%;
+  height: 160px;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 12px;
+}
+
+@media (max-width: 640px) {
+  .community-group-banner {
+    height: 120px;
+  }
+}
+
+.edit-community-banner-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.edit-community-banner-btn:hover {
+  background: rgba(0, 0, 0, 0.85);
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.community-group-hero .community-group-header-card {
+  margin-bottom: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
 .community-group-header-card {
   display: flex;
   align-items: center;
