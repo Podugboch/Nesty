@@ -99,6 +99,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.POST("/communities/:slug/members/:user_id/reject", h.RejectCommunityMember)
 		protected.POST("/communities/:slug/members/:user_id/role", h.UpdateCommunityMemberRole)
 		protected.POST("/communities/:slug/invite", h.InviteCommunityMember)
+		protected.POST("/communities/:slug/suggest-to-followers", h.SuggestCommunityToFollowers)
 		protected.POST("/communities/:slug/accept-invite", h.AcceptCommunityInvite)
 		protected.POST("/communities/:slug/decline-invite", h.DeclineCommunityInvite)
 		protected.PUT("/communities/:slug/settings", h.UpdateCommunitySettings)
@@ -1346,13 +1347,23 @@ func (h *Handler) GetUserProfile(c *gin.Context) {
 		isFollowing = count > 0
 	}
 
+	// Fetch communities created by this user/creator
+	var createdCommunities []model.Community
+	h.DB.Where("created_by_id = ?", targetID).Find(&createdCommunities)
+	for i := range createdCommunities {
+		var mCount int64
+		h.DB.Model(&model.CommunityMember{}).Where("community_id = ? AND status = 'active'", createdCommunities[i].ID).Count(&mCount)
+		createdCommunities[i].MemberCount = mCount
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"user":            user,
-		"follower_count":  followerCount,
-		"following_count": followingCount,
-		"post_count":      postCount,
-		"is_following":    isFollowing,
-		"is_self":         requesterID == targetID,
+		"user":                user,
+		"follower_count":      followerCount,
+		"following_count":     followingCount,
+		"post_count":          postCount,
+		"is_following":        isFollowing,
+		"is_self":             requesterID == targetID,
+		"created_communities": createdCommunities,
 	})
 }
 
@@ -4061,6 +4072,78 @@ func (h *Handler) InviteCommunityMember(c *gin.Context) {
 	h.DB.Create(&notif)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Invitation sent successfully."})
+}
+
+// SuggestCommunityToFollowers allows the community creator or admin to suggest/invite the community to all their followers
+func (h *Handler) SuggestCommunityToFollowers(c *gin.Context) {
+	slug := c.Param("slug")
+	callerID := c.GetUint("user_id")
+
+	var comm model.Community
+	if err := h.DB.Where("slug = ? OR id::text = ?", slug, slug).First(&comm).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "community not found"})
+		return
+	}
+
+	// Check permission: creator or admin
+	if comm.CreatedByID != callerID {
+		var role string
+		h.DB.Model(&model.CommunityMember{}).
+			Where("community_id = ? AND user_id = ? AND status = 'active'", comm.ID, callerID).
+			Pluck("role", &role)
+		if role != "admin" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only community creator or admin can suggest to followers"})
+			return
+		}
+	}
+
+	// Fetch followers of the caller
+	var follows []model.Follow
+	h.DB.Where("following_id = ?", callerID).Find(&follows)
+	if len(follows) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message":         "You do not have any followers to suggest this community to yet.",
+			"suggested_count": 0,
+		})
+		return
+	}
+
+	// Find existing members / invited users to avoid duplicates
+	var existingMembers []model.CommunityMember
+	h.DB.Where("community_id = ?", comm.ID).Find(&existingMembers)
+	memberMap := make(map[uint]bool, len(existingMembers))
+	for _, m := range existingMembers {
+		memberMap[m.UserID] = true
+	}
+
+	suggestedCount := 0
+	for _, f := range follows {
+		targetID := f.FollowerID
+		if targetID == callerID || memberMap[targetID] {
+			continue
+		}
+		newMember := model.CommunityMember{
+			CommunityID: comm.ID,
+			UserID:      targetID,
+			Role:        "member",
+			Status:      "invited",
+		}
+		if err := h.DB.Create(&newMember).Error; err == nil {
+			notif := model.Notification{
+				UserID:  targetID,
+				ActorID: callerID,
+				Type:    "community_invite",
+			}
+			h.DB.Create(&notif)
+			suggestedCount++
+			memberMap[targetID] = true
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":         fmt.Sprintf("Community suggested to %d follower(s)!", suggestedCount),
+		"suggested_count": suggestedCount,
+	})
 }
 
 // AcceptCommunityInvite accepts an invitation

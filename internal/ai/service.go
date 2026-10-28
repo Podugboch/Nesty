@@ -135,21 +135,60 @@ func (s *Service) GetRecommendations(db *gorm.DB, currentUserID uint) (*Recommen
 			myCommMap[m.CommunityID] = true
 		}
 
+		// Find creators/users the current user is following
+		var myFollows []model.Follow
+		_ = db.Where("follower_id = ?", currentUserID).Find(&myFollows)
+		followingMap := make(map[uint]bool, len(myFollows))
+		for _, f := range myFollows {
+			followingMap[f.FollowingID] = true
+		}
+
+		// Preload creator profiles for communities
+		var creatorIDs []uint
+		for _, c := range communities {
+			if c.CreatedByID > 0 {
+				creatorIDs = append(creatorIDs, c.CreatedByID)
+			}
+		}
+		creatorUserMap := make(map[uint]model.User)
+		if len(creatorIDs) > 0 {
+			var creators []model.User
+			db.Select("id, username, name, avatar_url").Where("id IN ?", creatorIDs).Find(&creators)
+			for _, cr := range creators {
+				creatorUserMap[cr.ID] = cr
+			}
+		}
+
 		var commRecs []RecommendedCommunity
 		for _, c := range communities {
 			if myCommMap[c.ID] {
 				continue
 			}
-			commTokens := extractKeywords(c.Name + " " + c.Description)
-			shared := findIntersection(currTokens, commTokens)
-			score := 40 + len(shared)*20
-			if score > 99 {
-				score = 99
+
+			// Attach creator profile
+			if cr, ok := creatorUserMap[c.CreatedByID]; ok {
+				c.CreatedBy = &cr
 			}
 
+			commTokens := extractKeywords(c.Name + " " + c.Description)
+			shared := findIntersection(currTokens, commTokens)
+			score := 40 + len(shared)*15
 			reason := "Trending community"
-			if len(shared) > 0 {
+
+			// If community is created by a creator the current user follows, give top suggestion priority!
+			if followingMap[c.CreatedByID] {
+				creatorTag := "a creator you follow"
+				if c.CreatedBy != nil && c.CreatedBy.Username != "" {
+					creatorTag = "@" + c.CreatedBy.Username
+				}
+				score = 98
+				reason = fmt.Sprintf("Created by %s whom you follow", creatorTag)
+			} else if len(shared) > 0 {
 				reason = fmt.Sprintf("Matches your focus: %s", strings.Join(shared[:min(len(shared), 2)], ", "))
+			}
+
+			if score > 99 {
+				score = 99
 			}
 
 			commRecs = append(commRecs, RecommendedCommunity{

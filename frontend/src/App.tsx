@@ -927,6 +927,29 @@ export default function App() {
     }
   };
 
+  const handleSuggestCommunityToFollowers = async (slug: string) => {
+    const authToken = token || localStorage.getItem("token");
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${API_URL}/api/communities/${slug}/suggest-to-followers`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message || "Community suggested to your followers!");
+      } else {
+        alert(data.error || "Failed to suggest community.");
+      }
+    } catch (err) {
+      console.error("Failed to suggest community:", err);
+      alert("Network error suggesting community.");
+    }
+  };
+
   const openManageCommunity = async (slug: string) => {
     setManageCommSlug(slug);
     setManageCommModalOpen(true);
@@ -1327,6 +1350,7 @@ export default function App() {
   const [aiRecs, setAiRecs] = useState<{ people: any[]; communities: any[] } | null>(null);
   const [isAiRecsLoading, setIsAiRecsLoading] = useState(false);
   const [showAiSuggestions, setShowAiSuggestions] = useState(false);
+  const [suggestionTab, setSuggestionTab] = useState<"people" | "communities">("people");
   const [aiSummaryModal, setAiSummaryModal] = useState<{ open: boolean; topic: string; summary: string; keyPoints: string[] } | null>(null);
   const [isAiSummarizing, setIsAiSummarizing] = useState(false);
   const [allUsersList, setAllUsersList] = useState<User[]>([]);
@@ -1423,6 +1447,7 @@ export default function App() {
     post_count: number;
     is_following: boolean;
     is_self: boolean;
+    created_communities?: any[];
   } | null>(null);
   const [profilePosts, setProfilePosts] = useState<Post[]>([]);
   const [followBusy, setFollowBusy] = useState(false);
@@ -6848,14 +6873,25 @@ export default function App() {
 
                 <div className="chat-header-actions" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   {activeChannel && (activeChannel.currentUserRole === "admin" || activeChannel.currentUserRole === "co_admin") ? (
-                    <button
-                      type="button"
-                      className="comm-action-btn manage-btn"
-                      onClick={() => openManageCommunity(activeChannel.id)}
-                      title="Manage Community & Requests"
-                    >
-                      ⚙️ Manage
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="comm-action-btn"
+                        style={{ background: "#059669", color: "#fff", border: "none", fontSize: "12px", padding: "6px 12px", borderRadius: "10px", cursor: "pointer", fontWeight: 600 }}
+                        onClick={() => handleSuggestCommunityToFollowers(activeChannel.id)}
+                        title="Suggest this community to your followers"
+                      >
+                        📣 Suggest to Followers
+                      </button>
+                      <button
+                        type="button"
+                        className="comm-action-btn manage-btn"
+                        onClick={() => openManageCommunity(activeChannel.id)}
+                        title="Manage Community & Requests"
+                      >
+                        ⚙️ Manage
+                      </button>
+                    </>
                   ) : activeChannel?.currentUserRole === "member" ? (
                     <button
                       type="button"
@@ -7656,6 +7692,70 @@ export default function App() {
                 </div>
               </div>
 
+              {/* CREATED COMMUNITIES (OF THE CREATOR) */}
+              {profileData?.created_communities && profileData.created_communities.length > 0 && (
+                <div
+                  className="profile-created-communities-card"
+                  style={{
+                    background: "var(--card-bg, #161a23)",
+                    border: "1px solid var(--border-color, #232936)",
+                    borderRadius: "14px",
+                    padding: "16px 20px",
+                    margin: "16px 0",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                    <h3 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "var(--text-h)" }}>
+                      🌟 Communities by {isViewingSelf ? "You" : `@${handle}`}
+                    </h3>
+                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                      {profileData.created_communities.length} {profileData.created_communities.length === 1 ? "community" : "communities"}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {profileData.created_communities.map((comm: any) => (
+                      <div
+                        key={comm.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "10px 14px",
+                          background: "var(--surface-subtle, rgba(255,255,255,0.03))",
+                          border: "1px solid var(--border)",
+                          borderRadius: "10px",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+                          <div className={`featured-icon-badge ${comm.badge_class || "coding"}`} style={{ width: "32px", height: "32px", fontSize: "14px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            #
+                          </div>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: "13.5px", fontWeight: 600, color: "var(--text-h)" }} className="truncate">
+                              {comm.name}
+                            </div>
+                            <div style={{ fontSize: "11.5px", color: "var(--text-muted)" }} className="truncate">
+                              {comm.description || `${comm.member_count || 1} members`}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="edit-profile-pill-btn"
+                          style={{ fontSize: "11px", padding: "5px 14px", background: "#059669", color: "#fff", border: "none", cursor: "pointer" }}
+                          onClick={() => {
+                            setSelectedCommunity(comm.id);
+                            setPage("feed");
+                          }}
+                        >
+                          Visit Community
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* USER POSTS FEED TIMELINE */}
               <div className="nesty-posts-feed">
                 {profilePosts.length === 0 ? (
@@ -8044,7 +8144,7 @@ export default function App() {
           </button>
         </div>
 
-        {/* CARD 1.5: AI PEOPLE DISCOVERY / SUGGESTIONS */}
+        {/* CARD 1.5: AI DISCOVERY / SUGGESTIONS */}
         <div className="ai-discovery-container">
           {!showAiSuggestions ? (
             <div style={{ padding: "10px 12px" }}>
@@ -8078,7 +8178,40 @@ export default function App() {
           ) : (
             <>
               <div className="ai-discovery-header">
-                <span className="ai-discovery-title">✨ Suggested Accounts</span>
+                <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setSuggestionTab("people")}
+                    style={{
+                      background: suggestionTab === "people" ? "rgba(16, 185, 129, 0.18)" : "transparent",
+                      border: "1px solid " + (suggestionTab === "people" ? "rgba(16, 185, 129, 0.4)" : "transparent"),
+                      color: suggestionTab === "people" ? "#10b981" : "var(--text-muted)",
+                      fontWeight: 700,
+                      fontSize: "11px",
+                      borderRadius: "6px",
+                      padding: "2px 7px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    👥 People
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSuggestionTab("communities")}
+                    style={{
+                      background: suggestionTab === "communities" ? "rgba(16, 185, 129, 0.18)" : "transparent",
+                      border: "1px solid " + (suggestionTab === "communities" ? "rgba(16, 185, 129, 0.4)" : "transparent"),
+                      color: suggestionTab === "communities" ? "#10b981" : "var(--text-muted)",
+                      fontWeight: 700,
+                      fontSize: "11px",
+                      borderRadius: "6px",
+                      padding: "2px 7px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    🌐 Communities
+                  </button>
+                </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <button
                     type="button"
@@ -8099,45 +8232,108 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
               {isAiRecsLoading ? (
                 <div style={{ textAlign: "center", padding: "16px 0", color: "var(--text-muted)", fontSize: "12px" }}>
                   Finding suggestions for you...
                 </div>
-              ) : aiRecs && aiRecs.people && aiRecs.people.length > 0 ? (
-                <div className="ai-recs-scroll">
-                  {aiRecs.people.map((rec, idx) => (
-                    <div key={rec.user.id || idx} className="ai-user-card">
-                      <div style={{ position: "relative" }}>
-                        <div className="search-avatar-mini" style={{ width: "40px", height: "40px", fontSize: "16px" }}>
-                          {rec.user.avatar_url ? (
-                            <img src={rec.user.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%" }} />
-                          ) : (
-                            (rec.user.username || "U").charAt(0).toUpperCase()
-                          )}
+              ) : suggestionTab === "people" ? (
+                aiRecs && aiRecs.people && aiRecs.people.length > 0 ? (
+                  <div className="ai-recs-scroll">
+                    {aiRecs.people.map((rec, idx) => (
+                      <div key={rec.user.id || idx} className="ai-user-card">
+                        <div style={{ position: "relative" }}>
+                          <div className="search-avatar-mini" style={{ width: "40px", height: "40px", fontSize: "16px" }}>
+                            {rec.user.avatar_url ? (
+                              <img src={rec.user.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%" }} />
+                            ) : (
+                              (rec.user.username || "U").charAt(0).toUpperCase()
+                            )}
+                          </div>
                         </div>
+                        <span style={{ fontSize: "12.5px", fontWeight: 700, color: "var(--text-h)" }} className="truncate">
+                          {rec.user.name || rec.user.username}
+                        </span>
+                        <span className="ai-match-badge">{rec.match_score}% Match</span>
+                        <p style={{ fontSize: "10.5px", color: "var(--text-muted)", margin: "2px 0 6px 0", lineHeight: 1.3 }}>
+                          {rec.match_reason}
+                        </p>
+                        <button
+                          type="button"
+                          className="btn-primary"
+                          style={{ fontSize: "11px", padding: "4px 10px", width: "100%", borderRadius: "14px" }}
+                          onClick={() => startChatWithUser(rec.user)}
+                        >
+                          💬 Chat
+                        </button>
                       </div>
-                      <span style={{ fontSize: "12.5px", fontWeight: 700, color: "var(--text-h)" }} className="truncate">
-                        {rec.user.name || rec.user.username}
-                      </span>
-                      <span className="ai-match-badge">{rec.match_score}% Match</span>
-                      <p style={{ fontSize: "10.5px", color: "var(--text-muted)", margin: "2px 0 6px 0", lineHeight: 1.3 }}>
-                        {rec.match_reason}
-                      </p>
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        style={{ fontSize: "11px", padding: "4px 10px", width: "100%", borderRadius: "14px" }}
-                        onClick={() => startChatWithUser(rec.user)}
-                      >
-                        💬 Chat
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ textAlign: "center", padding: "12px 0", color: "var(--text-muted)", fontSize: "12px" }}>
+                    No suggested accounts right now.
+                  </div>
+                )
               ) : (
-                <div style={{ textAlign: "center", padding: "12px 0", color: "var(--text-muted)", fontSize: "12px" }}>
-                  No suggested accounts right now.
-                </div>
+                aiRecs && aiRecs.communities && aiRecs.communities.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "6px 2px" }}>
+                    {aiRecs.communities.map((rec: any, idx: number) => {
+                      const c = rec.community;
+                      const creator = c.created_by;
+                      return (
+                        <div
+                          key={c.id || idx}
+                          style={{
+                            padding: "8px 10px",
+                            borderRadius: "10px",
+                            background: "var(--surface-subtle, rgba(255,255,255,0.03))",
+                            border: "1px solid var(--border)",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "5px",
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                              <div className={`featured-icon-badge ${c.badge_class || "coding"}`} style={{ width: "26px", height: "26px", fontSize: "12px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                #
+                              </div>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: "12.5px", fontWeight: 700, color: "var(--text-h)" }} className="truncate">
+                                  {c.name}
+                                </div>
+                                {creator && (
+                                  <div style={{ fontSize: "10.5px", color: "#10b981", fontWeight: 600 }} className="truncate">
+                                    👑 By @{creator.username}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <span className="ai-match-badge" style={{ fontSize: "9px" }}>{rec.match_score}% Match</span>
+                          </div>
+                          <p style={{ fontSize: "10.5px", color: "var(--text-muted)", margin: "0", lineHeight: 1.25 }}>
+                            {rec.match_reason}
+                          </p>
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            style={{ fontSize: "11px", padding: "4px 10px", width: "100%", borderRadius: "10px" }}
+                            onClick={() => {
+                              setSelectedCommunity(c.id);
+                              setPage("feed");
+                            }}
+                          >
+                            Visit Community
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ textAlign: "center", padding: "12px 0", color: "var(--text-muted)", fontSize: "12px" }}>
+                    No community suggestions right now.
+                  </div>
+                )
               )}
             </>
           )}
