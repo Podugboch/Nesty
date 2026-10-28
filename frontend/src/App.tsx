@@ -741,9 +741,6 @@ export default function App() {
 
   useEffect(() => {
     fetchCommunities();
-    if (token) {
-      fetchAiRecommendations();
-    }
   }, [token]);
 
   const [createCommModalOpen, setCreateCommModalOpen] = useState(false);
@@ -1329,6 +1326,7 @@ export default function App() {
   const [isPartnerBlocked, setIsPartnerBlocked] = useState(false);
   const [aiRecs, setAiRecs] = useState<{ people: any[]; communities: any[] } | null>(null);
   const [isAiRecsLoading, setIsAiRecsLoading] = useState(false);
+  const [showAiSuggestions, setShowAiSuggestions] = useState(false);
   const [aiSummaryModal, setAiSummaryModal] = useState<{ open: boolean; topic: string; summary: string; keyPoints: string[] } | null>(null);
   const [isAiSummarizing, setIsAiSummarizing] = useState(false);
   const [allUsersList, setAllUsersList] = useState<User[]>([]);
@@ -8019,23 +8017,7 @@ export default function App() {
           </div>
         )}
 
-        {/* PERSONAL SCROLL CONTROLS FOR CENTER FEED */}
-        <div className="center-scroll-bar-ctrl">
-          <button
-            className="scroll-ctrl-btn"
-            onClick={() => centerFeedRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
-            title="Scroll to top of feed"
-          >
-            ▲ Top
-          </button>
-          <button
-            className="scroll-ctrl-btn"
-            onClick={() => centerFeedRef.current?.scrollBy({ top: 600, behavior: "smooth" })}
-            title="Scroll down messages"
-          >
-            ▼ More
-          </button>
-        </div>
+        {/* PERSONAL SCROLL CONTROLS FOR CENTER FEED REMOVED */}
       </main>
 
       {/* =====================================================================
@@ -8062,61 +8044,102 @@ export default function App() {
           </button>
         </div>
 
-        {/* CARD 1.5: AI PEOPLE & COMMUNITY DISCOVERY */}
+        {/* CARD 1.5: AI PEOPLE DISCOVERY / SUGGESTIONS */}
         <div className="ai-discovery-container">
-          <div className="ai-discovery-header">
-            <span className="ai-discovery-title">✨ AI People Discovery</span>
-            <button
-              type="button"
-              onClick={fetchAiRecommendations}
-              disabled={isAiRecsLoading}
-              style={{ background: "none", border: "none", color: "#10b981", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
-            >
-              {isAiRecsLoading ? "..." : "Refresh"}
-            </button>
-          </div>
-          {aiRecs && aiRecs.people && aiRecs.people.length > 0 ? (
-            <div className="ai-recs-scroll">
-              {aiRecs.people.map((rec, idx) => (
-                <div key={rec.user.id || idx} className="ai-user-card">
-                  <div style={{ position: "relative" }}>
-                    <div className="search-avatar-mini" style={{ width: "40px", height: "40px", fontSize: "16px" }}>
-                      {rec.user.avatar_url ? (
-                        <img src={rec.user.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%" }} />
-                      ) : (
-                        (rec.user.username || "U").charAt(0).toUpperCase()
-                      )}
-                    </div>
-                  </div>
-                  <span style={{ fontSize: "12.5px", fontWeight: 700, color: "var(--text-h)" }} className="truncate">
-                    {rec.user.name || rec.user.username}
-                  </span>
-                  <span className="ai-match-badge">{rec.match_score}% Match</span>
-                  <p style={{ fontSize: "10.5px", color: "var(--text-muted)", margin: "2px 0 6px 0", lineHeight: 1.3 }}>
-                    {rec.match_reason}
-                  </p>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    style={{ fontSize: "11px", padding: "4px 10px", width: "100%", borderRadius: "14px" }}
-                    onClick={() => startChatWithUser(rec.user)}
-                  >
-                    💬 Chat
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{ textAlign: "center", padding: "6px 0" }}>
+          {!showAiSuggestions ? (
+            <div style={{ padding: "10px 12px" }}>
               <button
                 type="button"
                 className="ai-summary-btn"
-                onClick={fetchAiRecommendations}
-                style={{ fontSize: "12px", margin: "0 auto" }}
+                onClick={() => {
+                  setShowAiSuggestions(true);
+                  if (!aiRecs || !aiRecs.people || aiRecs.people.length === 0) {
+                    fetchAiRecommendations();
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "8px",
+                  padding: "10px 14px",
+                  fontSize: "12.5px",
+                  fontWeight: 600,
+                  margin: "0 auto",
+                  borderRadius: "12px",
+                  cursor: "pointer",
+                }}
               >
-                ✨ Discover People Like You
+                <span>✨</span>
+                <span>See Suggestions</span>
               </button>
             </div>
+          ) : (
+            <>
+              <div className="ai-discovery-header">
+                <span className="ai-discovery-title">✨ Suggested Accounts</span>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <button
+                    type="button"
+                    onClick={fetchAiRecommendations}
+                    disabled={isAiRecsLoading}
+                    style={{ background: "none", border: "none", color: "#10b981", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                    title="Refresh suggestions"
+                  >
+                    {isAiRecsLoading ? "..." : "Refresh"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAiSuggestions(false)}
+                    style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                    title="Hide suggestions"
+                  >
+                    Hide
+                  </button>
+                </div>
+              </div>
+              {isAiRecsLoading ? (
+                <div style={{ textAlign: "center", padding: "16px 0", color: "var(--text-muted)", fontSize: "12px" }}>
+                  Finding suggestions for you...
+                </div>
+              ) : aiRecs && aiRecs.people && aiRecs.people.length > 0 ? (
+                <div className="ai-recs-scroll">
+                  {aiRecs.people.map((rec, idx) => (
+                    <div key={rec.user.id || idx} className="ai-user-card">
+                      <div style={{ position: "relative" }}>
+                        <div className="search-avatar-mini" style={{ width: "40px", height: "40px", fontSize: "16px" }}>
+                          {rec.user.avatar_url ? (
+                            <img src={rec.user.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%" }} />
+                          ) : (
+                            (rec.user.username || "U").charAt(0).toUpperCase()
+                          )}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: "12.5px", fontWeight: 700, color: "var(--text-h)" }} className="truncate">
+                        {rec.user.name || rec.user.username}
+                      </span>
+                      <span className="ai-match-badge">{rec.match_score}% Match</span>
+                      <p style={{ fontSize: "10.5px", color: "var(--text-muted)", margin: "2px 0 6px 0", lineHeight: 1.3 }}>
+                        {rec.match_reason}
+                      </p>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        style={{ fontSize: "11px", padding: "4px 10px", width: "100%", borderRadius: "14px" }}
+                        onClick={() => startChatWithUser(rec.user)}
+                      >
+                        💬 Chat
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ textAlign: "center", padding: "12px 0", color: "var(--text-muted)", fontSize: "12px" }}>
+                  No suggested accounts right now.
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -8149,23 +8172,6 @@ export default function App() {
           </div>
         )}
 
-        {/* PERSONAL SCROLL CONTROLS FOR RIGHT SIDEBAR */}
-        <div className="sidebar-scroll-bar-ctrl">
-          <button
-            className="scroll-ctrl-btn"
-            onClick={() => sidebarRightRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
-            title="Scroll to top"
-          >
-            ▲ Top
-          </button>
-          <button
-            className="scroll-ctrl-btn"
-            onClick={() => sidebarRightRef.current?.scrollBy({ top: 400, behavior: "smooth" })}
-            title="Scroll down"
-          >
-            ▼ More
-          </button>
-        </div>
       </aside>
     </>
   )}
