@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Nesty</string>
+    <string name="title_activity_main">Nesty</string>
+    <string name="package_name">com.devnest.app</string>
+    <string name="custom_url_scheme">com.devnest.app</string>
+</resources>

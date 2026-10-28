@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"piscine-devnest/internal/ai"
 	"piscine-devnest/internal/live"
 	"piscine-devnest/internal/middleware"
 	"piscine-devnest/internal/model"
@@ -34,6 +35,7 @@ type Handler struct {
 	Hub         *ws.Hub
 	Push        *push.PushService
 	LiveManager *live.LiveManager
+	AI          *ai.Service
 	callTimers  sync.Map
 }
 
@@ -45,6 +47,7 @@ func NewHandler(db *gorm.DB, hub *ws.Hub, pushSvc *push.PushService) *Handler {
 		Hub:         hub,
 		Push:        pushSvc,
 		LiveManager: lm,
+		AI:          ai.NewService(),
 	}
 	hub.OnLiveMessage = h.HandleLiveWSMessage
 	hub.OnUserDisconnect = lm.HandleHostDisconnect
@@ -148,6 +151,23 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		protected.GET("/messages/:partner_id", h.GetChatHistory)
 		protected.GET("/conversations", h.GetConversations)
 		protected.POST("/messages", h.SendMessage)
+		protected.PATCH("/messages/:id", h.EditMessage)
+		protected.DELETE("/messages/:id", h.DeleteMessage)
+		protected.POST("/messages/:id/reaction", h.ReactToMessage)
+		protected.POST("/conversations/:partner_id/mute", h.MuteConversation)
+		protected.DELETE("/conversations/:partner_id/mute", h.UnmuteConversation)
+		protected.GET("/conversations/:partner_id/muted", h.IsConversationMuted)
+
+		// USER BLOCKING & PRIVACY
+		protected.POST("/users/:id/block", h.BlockUser)
+		protected.DELETE("/users/:id/block", h.UnblockUser)
+		protected.GET("/users/blocked", h.GetBlockedUsers)
+		protected.PUT("/users/privacy", h.UpdatePrivacySettings)
+		protected.POST("/account/delete", h.DeleteAccount)
+
+		// AI DISCOVERY & SUMMARIZATION
+		protected.GET("/ai/recommendations", h.GetAIRecommendations)
+		protected.POST("/ai/summarize", h.SummarizeDiscussion)
 
 		// CALL & WEBRTC SIGNALING
 		protected.GET("/call/online/:id", h.CheckUserOnline)
@@ -568,6 +588,16 @@ func (h *Handler) DeletePost(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{
 			"error": "post not found",
 		})
+		return
+	}
+
+	userID := c.GetUint("user_id")
+	var currentUser model.User
+	_ = h.DB.Select("role").First(&currentUser, userID)
+	isAdmin := currentUser.Role == "admin" || currentUser.Role == "super_admin" || currentUser.Role == "moderator"
+
+	if post.UserID != userID && !isAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized to delete this post"})
 		return
 	}
 
@@ -1094,9 +1124,26 @@ func (h *Handler) CreateUser(c *gin.Context) {
 }
 
 func (h *Handler) UpdateUser(c *gin.Context) {
+	targetIDStr := c.Param("id")
+	targetID, err := strconv.ParseUint(targetIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+		return
+	}
+
+	currentUserID := c.GetUint("user_id")
+	var currentUser model.User
+	_ = h.DB.Select("role").First(&currentUser, currentUserID)
+	isAdmin := currentUser.Role == "admin" || currentUser.Role == "super_admin"
+
+	if currentUserID != uint(targetID) && !isAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized to update this profile"})
+		return
+	}
+
 	var user model.User
 
-	if err := h.DB.First(&user, c.Param("id")).Error; err != nil {
+	if err := h.DB.First(&user, targetID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
@@ -1161,7 +1208,24 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 }
 
 func (h *Handler) DeleteUser(c *gin.Context) {
-	h.DB.Delete(&model.User{}, c.Param("id"))
+	targetIDStr := c.Param("id")
+	targetID, err := strconv.ParseUint(targetIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+		return
+	}
+
+	currentUserID := c.GetUint("user_id")
+	var currentUser model.User
+	_ = h.DB.Select("role").First(&currentUser, currentUserID)
+	isAdmin := currentUser.Role == "admin" || currentUser.Role == "super_admin"
+
+	if currentUserID != uint(targetID) && !isAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized to delete this user"})
+		return
+	}
+
+	h.DB.Delete(&model.User{}, targetID)
 	c.Status(http.StatusNoContent)
 }
 
@@ -1495,12 +1559,105 @@ func (h *Handler) ForgotPassword(c *gin.Context) {
 	})
 }
 
-// ---------------------- RESOURCE (EMPTY FOR NOW) ----------------------
-func (h *Handler) GetResources(c *gin.Context)   {}
-func (h *Handler) GetResource(c *gin.Context)    {}
-func (h *Handler) CreateResource(c *gin.Context) {}
-func (h *Handler) UpdateResource(c *gin.Context) {}
-func (h *Handler) DeleteResource(c *gin.Context) {}
+// ---------------------- RESOURCE ----------------------
+func (h *Handler) GetResources(c *gin.Context) {
+	var resources []model.Resource
+	if err := h.DB.Order("id desc").Limit(50).Find(&resources).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch resources"})
+		return
+	}
+	c.JSON(http.StatusOK, resources)
+}
+
+func (h *Handler) GetResource(c *gin.Context) {
+	var res model.Resource
+	if err := h.DB.First(&res, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "resource not found"})
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+func (h *Handler) CreateResource(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var input struct {
+		Title       string `json:"title" binding:"required"`
+		Body        string `json:"body"`
+		Link        string `json:"link"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	res := model.Resource{
+		UserID:      userID,
+		OwnerID:     userID,
+		Name:        input.Title,
+		Title:       input.Title,
+		Body:        input.Body,
+		Link:        input.Link,
+		Description: input.Description,
+	}
+	if err := h.DB.Create(&res).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create resource"})
+		return
+	}
+	c.JSON(http.StatusCreated, res)
+}
+
+func (h *Handler) UpdateResource(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var res model.Resource
+	if err := h.DB.First(&res, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "resource not found"})
+		return
+	}
+	if res.UserID != userID && res.OwnerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized to update this resource"})
+		return
+	}
+	var input struct {
+		Title       string `json:"title"`
+		Body        string `json:"body"`
+		Link        string `json:"link"`
+		Description string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if input.Title != "" {
+		res.Title = input.Title
+		res.Name = input.Title
+	}
+	if input.Body != "" {
+		res.Body = input.Body
+	}
+	if input.Link != "" {
+		res.Link = input.Link
+	}
+	if input.Description != "" {
+		res.Description = input.Description
+	}
+	h.DB.Save(&res)
+	c.JSON(http.StatusOK, res)
+}
+
+func (h *Handler) DeleteResource(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var res model.Resource
+	if err := h.DB.First(&res, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "resource not found"})
+		return
+	}
+	if res.UserID != userID && res.OwnerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized to delete this resource"})
+		return
+	}
+	h.DB.Delete(&res)
+	c.JSON(http.StatusOK, gin.H{"message": "resource deleted"})
+}
 
 // ---------------------- VALIDATION ----------------------
 func (h *Handler) validateEmail(email string) bool { // 👈 Attached to *Handler struct
@@ -1586,11 +1743,53 @@ func (h *Handler) GetChatHistory(c *gin.Context) {
 	}
 
 	userID := c.GetUint("user_id")
+
+	// Limit and cursor pagination
+	limitStr := c.DefaultQuery("limit", "50")
+	limit, _ := strconv.Atoi(limitStr)
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	beforeIDStr := c.Query("before_id")
+
+	query := h.DB.Preload("Reactions").Where(
+		"((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))",
+		userID, uint(partnerID), uint(partnerID), userID,
+	)
+
+	if beforeIDStr != "" {
+		if beforeID, err := strconv.ParseUint(beforeIDStr, 10, 32); err == nil && beforeID > 0 {
+			query = query.Where("id < ?", uint(beforeID))
+		}
+	}
+
 	messages := make([]model.Message, 0)
-	h.DB.Where("(sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?)",
-		userID, uint(partnerID), uint(partnerID), userID).
-		Order("created_at ASC").
-		Find(&messages)
+	query.Order("id DESC").Limit(limit).Find(&messages)
+
+	// Reverse messages so they are chronologically ascending
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	// Mark all unread incoming messages from this partner as read
+	now := time.Now()
+	res := h.DB.Model(&model.Message{}).
+		Where("sender_id = ? AND recipient_id = ? AND is_read = false", uint(partnerID), userID).
+		Updates(map[string]interface{}{
+			"is_read": true,
+			"read_at": now,
+		})
+
+	if res.RowsAffected > 0 {
+		readEvt, _ := json.Marshal(gin.H{
+			"event":      "message_read",
+			"reader_id":  userID,
+			"partner_id": uint(partnerID),
+			"read_at":    now,
+		})
+		h.Hub.SendToUser(uint(partnerID), readEvt)
+	}
 
 	// Populate quoted messages
 	replyIDs := make([]uint, 0)
@@ -1661,6 +1860,30 @@ func (h *Handler) GetChatHistory(c *gin.Context) {
 func (h *Handler) GetConversations(c *gin.Context) {
 	userID := c.GetUint("user_id")
 
+	// Get muted partner IDs
+	var mutes []model.ConversationMute
+	h.DB.Where("user_id = ?", userID).Find(&mutes)
+	muteMap := make(map[uint]bool)
+	for _, m := range mutes {
+		muteMap[m.PartnerID] = true
+	}
+
+	// Compute unread counts grouped by sender
+	type unreadCountRow struct {
+		SenderID uint  `gorm:"column:sender_id"`
+		Count    int64 `gorm:"column:count"`
+	}
+	var unreadRows []unreadCountRow
+	h.DB.Model(&model.Message{}).
+		Select("sender_id, count(*) as count").
+		Where("recipient_id = ? AND is_read = false", userID).
+		Group("sender_id").
+		Scan(&unreadRows)
+	unreadMap := make(map[uint]int64)
+	for _, row := range unreadRows {
+		unreadMap[row.SenderID] = row.Count
+	}
+
 	var messages []model.Message
 	h.DB.Where("sender_id = ? OR recipient_id = ?", userID, userID).
 		Order("id DESC").
@@ -1672,10 +1895,17 @@ func (h *Handler) GetConversations(c *gin.Context) {
 		LastTime    time.Time  `json:"last_time"`
 		MediaType   string     `json:"media_type"`
 		IsSender    bool       `json:"is_sender"`
+		UnreadCount int64      `json:"unread_count"`
+		IsMuted     bool       `json:"is_muted"`
 	}
 
 	seen := make(map[uint]bool)
-	conversations := make([]ConversationItem, 0)
+	partnerIDs := make([]uint, 0)
+	type latestMsgInfo struct {
+		msg      model.Message
+		isSender bool
+	}
+	latestMap := make(map[uint]latestMsgInfo)
 
 	for _, msg := range messages {
 		partnerID := msg.RecipientID
@@ -1686,16 +1916,35 @@ func (h *Handler) GetConversations(c *gin.Context) {
 			continue
 		}
 		seen[partnerID] = true
+		partnerIDs = append(partnerIDs, partnerID)
+		latestMap[partnerID] = latestMsgInfo{
+			msg:      msg,
+			isSender: msg.SenderID == userID,
+		}
+	}
 
-		var partner model.User
-		if err := h.DB.First(&partner, partnerID).Error; err == nil {
-			conversations = append(conversations, ConversationItem{
-				Partner:     partner,
-				LastMessage: msg.Content,
-				LastTime:    msg.CreatedAt,
-				MediaType:   msg.MediaType,
-				IsSender:    msg.SenderID == userID,
-			})
+	conversations := make([]ConversationItem, 0)
+	if len(partnerIDs) > 0 {
+		var partners []model.User
+		h.DB.Where("id IN ?", partnerIDs).Find(&partners)
+		partnerUserMap := make(map[uint]model.User)
+		for _, p := range partners {
+			partnerUserMap[p.ID] = p
+		}
+
+		for _, pid := range partnerIDs {
+			if p, ok := partnerUserMap[pid]; ok {
+				info := latestMap[pid]
+				conversations = append(conversations, ConversationItem{
+					Partner:     p,
+					LastMessage: info.msg.Content,
+					LastTime:    info.msg.CreatedAt,
+					MediaType:   info.msg.MediaType,
+					IsSender:    info.isSender,
+					UnreadCount: unreadMap[pid],
+					IsMuted:     muteMap[pid],
+				})
+			}
 		}
 	}
 
@@ -1725,6 +1974,19 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	}
 
 	userID := c.GetUint("user_id")
+
+	// Block checking: ensure neither party has blocked the other
+	var blockCount int64
+	h.DB.Model(&model.Block{}).
+		Where("(blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)",
+			userID, input.RecipientID, input.RecipientID, userID).
+		Count(&blockCount)
+
+	if blockCount > 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "cannot send messages to this user"})
+		return
+	}
+
 	msg := model.Message{
 		SenderID:         userID,
 		RecipientID:      input.RecipientID,
@@ -1734,6 +1996,7 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		FileName:         input.FileName,
 		FileSize:         input.FileSize,
 		ReplyToMessageID: input.ReplyToMessageID,
+		IsRead:           false,
 	}
 
 	if err := h.DB.Create(&msg).Error; err != nil {
@@ -1787,7 +2050,13 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	})
 	h.Hub.SendToUser(input.RecipientID, msgJSON)
 
-	if userID != input.RecipientID {
+	// Check if conversation is muted by recipient
+	var muteCount int64
+	h.DB.Model(&model.ConversationMute{}).
+		Where("user_id = ? AND partner_id = ?", input.RecipientID, userID).
+		Count(&muteCount)
+
+	if muteCount == 0 && userID != input.RecipientID {
 		notif := model.Notification{
 			UserID:  input.RecipientID,
 			ActorID: userID,
@@ -1798,6 +2067,337 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, msg)
+}
+
+// EditMessage allows sender to edit content within 24 hours
+func (h *Handler) EditMessage(c *gin.Context) {
+	msgID := c.Param("id")
+	userID := c.GetUint("user_id")
+
+	var msg model.Message
+	if err := h.DB.First(&msg, msgID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
+		return
+	}
+
+	if msg.SenderID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the sender can edit this message"})
+		return
+	}
+
+	if time.Since(msg.CreatedAt) > 24*time.Hour {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "messages can only be edited within 24 hours"})
+		return
+	}
+
+	var input struct {
+		Content string `json:"content" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	cleanContent := strings.TrimSpace(input.Content)
+	if cleanContent == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content cannot be empty"})
+		return
+	}
+
+	now := time.Now()
+	msg.Content = cleanContent
+	msg.EditedAt = &now
+	if err := h.DB.Save(&msg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to edit message"})
+		return
+	}
+
+	editJSON, _ := json.Marshal(gin.H{
+		"event":        "message_edited",
+		"message_id":   msg.ID,
+		"content":      msg.Content,
+		"edited_at":    now,
+		"sender_id":    msg.SenderID,
+		"recipient_id": msg.RecipientID,
+	})
+	h.Hub.SendToUser(msg.RecipientID, editJSON)
+
+	c.JSON(http.StatusOK, msg)
+}
+
+// DeleteMessage allows sender or admin to soft delete a message
+func (h *Handler) DeleteMessage(c *gin.Context) {
+	msgID := c.Param("id")
+	userID := c.GetUint("user_id")
+
+	var msg model.Message
+	if err := h.DB.First(&msg, msgID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
+		return
+	}
+
+	var currentUser model.User
+	_ = h.DB.Select("role").First(&currentUser, userID)
+	isAdmin := currentUser.Role == "admin" || currentUser.Role == "super_admin"
+
+	if msg.SenderID != userID && !isAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized to delete this message"})
+		return
+	}
+
+	if err := h.DB.Delete(&msg).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete message"})
+		return
+	}
+
+	deleteJSON, _ := json.Marshal(gin.H{
+		"event":        "message_deleted",
+		"message_id":   msg.ID,
+		"sender_id":    msg.SenderID,
+		"recipient_id": msg.RecipientID,
+	})
+	h.Hub.SendToUser(msg.RecipientID, deleteJSON)
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// ReactToMessage adds or toggles an emoji reaction on a message
+func (h *Handler) ReactToMessage(c *gin.Context) {
+	msgIDStr := c.Param("id")
+	msgID, err := strconv.ParseUint(msgIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid message ID"})
+		return
+	}
+
+	userID := c.GetUint("user_id")
+
+	var msg model.Message
+	if err := h.DB.First(&msg, msgID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
+		return
+	}
+
+	if msg.SenderID != userID && msg.RecipientID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized to react to this message"})
+		return
+	}
+
+	var input struct {
+		Emoji string `json:"emoji" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	emoji := strings.TrimSpace(input.Emoji)
+	if emoji == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "emoji cannot be empty"})
+		return
+	}
+
+	var existing model.MessageReaction
+	if err := h.DB.Where("message_id = ? AND user_id = ?", uint(msgID), userID).First(&existing).Error; err == nil {
+		if existing.Emoji == emoji {
+			h.DB.Delete(&existing)
+			h.broadcastReaction(msg, userID, emoji, true)
+			c.JSON(http.StatusOK, gin.H{"removed": true, "emoji": emoji})
+			return
+		}
+		existing.Emoji = emoji
+		h.DB.Save(&existing)
+		h.broadcastReaction(msg, userID, emoji, false)
+		c.JSON(http.StatusOK, existing)
+		return
+	}
+
+	reaction := model.MessageReaction{
+		MessageID: uint(msgID),
+		UserID:    userID,
+		Emoji:     emoji,
+		CreatedAt: time.Now(),
+	}
+	if err := h.DB.Create(&reaction).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add reaction"})
+		return
+	}
+
+	h.broadcastReaction(msg, userID, emoji, false)
+	c.JSON(http.StatusCreated, reaction)
+}
+
+func (h *Handler) broadcastReaction(msg model.Message, userID uint, emoji string, removed bool) {
+	partnerID := msg.RecipientID
+	if partnerID == userID {
+		partnerID = msg.SenderID
+	}
+	reactionEvt, _ := json.Marshal(gin.H{
+		"event":      "message_reaction",
+		"message_id": msg.ID,
+		"user_id":    userID,
+		"emoji":      emoji,
+		"removed":    removed,
+	})
+	h.Hub.SendToUser(partnerID, reactionEvt)
+}
+
+// BlockUser blocks another user from sending messages or calling
+func (h *Handler) BlockUser(c *gin.Context) {
+	targetParam := c.Param("id")
+	targetID, err := strconv.ParseUint(targetParam, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+		return
+	}
+	userID := c.GetUint("user_id")
+	if userID == uint(targetID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot block yourself"})
+		return
+	}
+
+	block := model.Block{
+		BlockerID: userID,
+		BlockedID: uint(targetID),
+		CreatedAt: time.Now(),
+	}
+	_ = h.DB.Where("blocker_id = ? AND blocked_id = ?", userID, uint(targetID)).FirstOrCreate(&block)
+	c.JSON(http.StatusOK, gin.H{"blocked": true, "user_id": targetID})
+}
+
+// UnblockUser removes a block
+func (h *Handler) UnblockUser(c *gin.Context) {
+	targetParam := c.Param("id")
+	targetID, err := strconv.ParseUint(targetParam, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+		return
+	}
+	userID := c.GetUint("user_id")
+	h.DB.Where("blocker_id = ? AND blocked_id = ?", userID, uint(targetID)).Delete(&model.Block{})
+	c.JSON(http.StatusOK, gin.H{"unblocked": true, "user_id": targetID})
+}
+
+// GetBlockedUsers lists blocked users for current user
+func (h *Handler) GetBlockedUsers(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var blocks []model.Block
+	h.DB.Preload("Blocked").Where("blocker_id = ?", userID).Find(&blocks)
+	c.JSON(http.StatusOK, blocks)
+}
+
+// MuteConversation mutes notifications for a specific conversation partner
+func (h *Handler) MuteConversation(c *gin.Context) {
+	partnerParam := c.Param("partner_id")
+	partnerID, err := strconv.ParseUint(partnerParam, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid partner ID"})
+		return
+	}
+	userID := c.GetUint("user_id")
+	mute := model.ConversationMute{
+		UserID:    userID,
+		PartnerID: uint(partnerID),
+		CreatedAt: time.Now(),
+	}
+	_ = h.DB.Where("user_id = ? AND partner_id = ?", userID, uint(partnerID)).FirstOrCreate(&mute)
+	c.JSON(http.StatusOK, gin.H{"muted": true, "partner_id": partnerID})
+}
+
+// UnmuteConversation unmutes a conversation
+func (h *Handler) UnmuteConversation(c *gin.Context) {
+	partnerParam := c.Param("partner_id")
+	partnerID, err := strconv.ParseUint(partnerParam, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid partner ID"})
+		return
+	}
+	userID := c.GetUint("user_id")
+	h.DB.Where("user_id = ? AND partner_id = ?", userID, uint(partnerID)).Delete(&model.ConversationMute{})
+	c.JSON(http.StatusOK, gin.H{"unmuted": true, "partner_id": partnerID})
+}
+
+// IsConversationMuted returns mute state
+func (h *Handler) IsConversationMuted(c *gin.Context) {
+	partnerParam := c.Param("partner_id")
+	partnerID, _ := strconv.ParseUint(partnerParam, 10, 32)
+	userID := c.GetUint("user_id")
+	var count int64
+	h.DB.Model(&model.ConversationMute{}).Where("user_id = ? AND partner_id = ?", userID, uint(partnerID)).Count(&count)
+	c.JSON(http.StatusOK, gin.H{"is_muted": count > 0})
+}
+
+// UpdatePrivacySettings manages online presence and last seen visibility
+func (h *Handler) UpdatePrivacySettings(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	var input struct {
+		HideLastSeen *bool `json:"hide_last_seen"`
+		HidePresence *bool `json:"hide_presence"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := make(map[string]interface{})
+	if input.HideLastSeen != nil {
+		updates["hide_last_seen"] = *input.HideLastSeen
+	}
+	if input.HidePresence != nil {
+		updates["hide_presence"] = *input.HidePresence
+	}
+
+	if len(updates) > 0 {
+		if err := h.DB.Model(&model.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update privacy settings"})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "updates": updates})
+}
+
+// DeleteAccount handles account deletion with cascade cleanup
+func (h *Handler) DeleteAccount(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	h.DB.Delete(&model.User{}, userID)
+	h.DB.Where("user_id = ?", userID).Delete(&model.Device{})
+	h.DB.Where("user_id = ?", userID).Delete(&model.CommunityMember{})
+	c.JSON(http.StatusOK, gin.H{"message": "account successfully deleted"})
+}
+
+// GetAIRecommendations returns AI-driven person and community recommendations
+func (h *Handler) GetAIRecommendations(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	if h.AI == nil {
+		h.AI = ai.NewService()
+	}
+	recs, err := h.AI.GetRecommendations(h.DB, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, recs)
+}
+
+// SummarizeDiscussion summarizes long chat discussions into key takeaways
+func (h *Handler) SummarizeDiscussion(c *gin.Context) {
+	var input struct {
+		Topic    string   `json:"topic"`
+		Messages []string `json:"messages" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if h.AI == nil {
+		h.AI = ai.NewService()
+	}
+	summary, err := h.AI.SummarizeDiscussion(input.Messages, input.Topic)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, summary)
 }
 
 // ---------------------- CALL & WEBRTC SIGNALING ----------------------

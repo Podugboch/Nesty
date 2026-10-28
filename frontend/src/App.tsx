@@ -432,6 +432,13 @@ type QuotedMsg = {
   is_deleted?: boolean;
 };
 
+type MessageReactionItem = {
+  id: number;
+  message_id: number;
+  user_id: number;
+  emoji: string;
+};
+
 type ChatMessage = {
   id?: number;
   sender_id: number;
@@ -442,8 +449,12 @@ type ChatMessage = {
   file_name?: string;
   file_size?: number;
   created_at?: string;
+  is_read?: boolean;
+  read_at?: string;
+  edited_at?: string;
   reply_to_message_id?: number | null;
   reply_to_message?: QuotedMsg | null;
+  reactions?: MessageReactionItem[];
 };
 
 type CallState = {
@@ -728,6 +739,9 @@ export default function App() {
 
   useEffect(() => {
     fetchCommunities();
+    if (token) {
+      fetchAiRecommendations();
+    }
   }, [token]);
 
   const [createCommModalOpen, setCreateCommModalOpen] = useState(false);
@@ -1299,7 +1313,21 @@ export default function App() {
     last_time: string;
     media_type?: string;
     is_sender?: boolean;
+    unread_count?: number;
+    is_muted?: boolean;
   }>>([]);
+  const [isPartnerTyping, setIsPartnerTyping] = useState(false);
+  const typingTimeoutRef = useRef<any>(null);
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState("");
+  const [activeReactionMsgId, setActiveReactionMsgId] = useState<number | null>(null);
+  const [chatHeaderMenuOpen, setChatHeaderMenuOpen] = useState(false);
+  const [isPartnerMuted, setIsPartnerMuted] = useState(false);
+  const [isPartnerBlocked, setIsPartnerBlocked] = useState(false);
+  const [aiRecs, setAiRecs] = useState<{ people: any[]; communities: any[] } | null>(null);
+  const [isAiRecsLoading, setIsAiRecsLoading] = useState(false);
+  const [aiSummaryModal, setAiSummaryModal] = useState<{ open: boolean; topic: string; summary: string; keyPoints: string[] } | null>(null);
+  const [isAiSummarizing, setIsAiSummarizing] = useState(false);
   const [allUsersList, setAllUsersList] = useState<User[]>([]);
   const [messagesSearchQuery, setMessagesSearchQuery] = useState("");
   const [isMessagesInboxLoading, setIsMessagesInboxLoading] = useState(false);
@@ -1772,6 +1800,164 @@ export default function App() {
     setTimeout(() => {
       chatInputRef.current?.focus();
     }, 50);
+  };
+
+  const emitTyping = (isTyping: boolean) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !activeChatPartner) return;
+    try {
+      wsRef.current.send(JSON.stringify({
+        event: "typing",
+        type: "typing",
+        to_user_id: activeChatPartner.id,
+        is_typing: isTyping,
+      }));
+    } catch {}
+  };
+
+  const handleReactToMessage = async (msgId: number, emoji: string) => {
+    if (!token) return;
+    setActiveReactionMsgId(null);
+    try {
+      const res = await fetch(`${API_URL}/api/messages/${msgId}/reaction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ emoji }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setChatMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== msgId) return m;
+            let reactions = m.reactions || [];
+            if (data.removed) {
+              reactions = reactions.filter((r) => !(r.user_id === user?.id && r.emoji === emoji));
+            } else {
+              reactions = [...reactions.filter((r) => r.user_id !== user?.id), { id: data.id || Date.now(), message_id: msgId, user_id: user?.id || 0, emoji }];
+            }
+            return { ...m, reactions };
+          })
+        );
+      }
+    } catch (err) {
+      console.error("Failed to react:", err);
+    }
+  };
+
+  const handleEditMessage = async (msgId: number, newContent: string) => {
+    if (!token || !newContent.trim()) return;
+    try {
+      const res = await fetch(`${API_URL}/api/messages/${msgId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ content: newContent.trim() }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setChatMessages((prev) => prev.map((m) => (m.id === msgId ? updated : m)));
+        setEditingMessageId(null);
+        setEditingMessageText("");
+      }
+    } catch (err) {
+      console.error("Failed to edit message:", err);
+    }
+  };
+
+  const handleDeleteMessage = async (msgId: number) => {
+    if (!token) return;
+    if (!window.confirm("Delete this message?")) return;
+    try {
+      const res = await fetch(`${API_URL}/api/messages/${msgId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setChatMessages((prev) => prev.filter((m) => m.id !== msgId));
+      }
+    } catch (err) {
+      console.error("Failed to delete message:", err);
+    }
+  };
+
+  const handleToggleMuteConversation = async (partnerId: number) => {
+    if (!token) return;
+    try {
+      const method = isPartnerMuted ? "DELETE" : "POST";
+      const res = await fetch(`${API_URL}/api/conversations/${partnerId}/mute`, {
+        method,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setIsPartnerMuted(!isPartnerMuted);
+        setChatHeaderMenuOpen(false);
+      }
+    } catch (err) {
+      console.error("Failed to toggle mute:", err);
+    }
+  };
+
+  const handleToggleBlockUser = async (targetId: number) => {
+    if (!token) return;
+    const action = isPartnerBlocked ? "unblock" : "block";
+    if (!window.confirm(`Are you sure you want to ${action} this user?`)) return;
+    try {
+      const method = isPartnerBlocked ? "DELETE" : "POST";
+      const res = await fetch(`${API_URL}/api/users/${targetId}/block`, {
+        method,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setIsPartnerBlocked(!isPartnerBlocked);
+        setChatHeaderMenuOpen(false);
+        if (!isPartnerBlocked) {
+          setActiveChatPartner(null);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to toggle block:", err);
+    }
+  };
+
+  const fetchAiRecommendations = async () => {
+    if (!token) return;
+    setIsAiRecsLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/ai/recommendations`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAiRecs(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch AI recs:", err);
+    } finally {
+      setIsAiRecsLoading(false);
+    }
+  };
+
+  const handleSummarizeCommunity = async (topic: string, msgs: string[]) => {
+    if (!token || msgs.length === 0) return;
+    setIsAiSummarizing(true);
+    try {
+      const res = await fetch(`${API_URL}/api/ai/summarize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ topic, messages: msgs }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAiSummaryModal({
+          open: true,
+          topic: data.topic || topic,
+          summary: data.summary,
+          keyPoints: data.key_points || [],
+        });
+      }
+    } catch (err) {
+      console.error("Failed to summarize:", err);
+    } finally {
+      setIsAiSummarizing(false);
+    }
   };
 
   useEffect(() => {
@@ -3474,6 +3660,47 @@ export default function App() {
             }
             if (data.event === "group_call_signal") {
               handleGroupCallSignal(data);
+              return;
+            }
+            if (data.event === "message_read") {
+              setChatMessages((prev) =>
+                prev.map((m) =>
+                  m.recipient_id === data.reader_id ? { ...m, is_read: true, read_at: data.read_at } : m
+                )
+              );
+              return;
+            }
+            if (data.event === "typing" || data.type === "typing") {
+              if (activeChatPartnerRef.current && activeChatPartnerRef.current.id === data.from_user_id) {
+                setIsPartnerTyping(!!data.is_typing);
+              }
+              return;
+            }
+            if (data.event === "message_edited") {
+              setChatMessages((prev) =>
+                prev.map((m) =>
+                  m.id === data.message_id ? { ...m, content: data.content, edited_at: data.edited_at } : m
+                )
+              );
+              return;
+            }
+            if (data.event === "message_deleted") {
+              setChatMessages((prev) => prev.filter((m) => m.id !== data.message_id));
+              return;
+            }
+            if (data.event === "message_reaction") {
+              setChatMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== data.message_id) return m;
+                  let reactions = m.reactions || [];
+                  if (data.removed) {
+                    reactions = reactions.filter((r) => !(r.user_id === data.user_id && r.emoji === data.emoji));
+                  } else {
+                    reactions = [...reactions.filter((r) => r.user_id !== data.user_id), { id: Date.now(), message_id: data.message_id, user_id: data.user_id, emoji: data.emoji }];
+                  }
+                  return { ...m, reactions };
+                })
+              );
               return;
             }
             if (data.event === "message" && data.message) {
@@ -6678,6 +6905,20 @@ export default function App() {
                   >
                     📹
                   </button>
+                  <button
+                    type="button"
+                    className="ai-summary-btn"
+                    style={{ marginLeft: "4px" }}
+                    onClick={() => {
+                      const commName = activeChannel?.name || "Community";
+                      const postTexts = posts.map((p) => p.content).filter(Boolean);
+                      handleSummarizeCommunity(commName, postTexts);
+                    }}
+                    disabled={isAiSummarizing}
+                    title="Summarize discussions in this community"
+                  >
+                    {isAiSummarizing ? "Summarizing..." : "✨ AI Summary"}
+                  </button>
                 </div>
               </div>
             )}
@@ -7792,6 +8033,64 @@ export default function App() {
           </button>
         </div>
 
+        {/* CARD 1.5: AI PEOPLE & COMMUNITY DISCOVERY */}
+        <div className="ai-discovery-container">
+          <div className="ai-discovery-header">
+            <span className="ai-discovery-title">✨ AI People Discovery</span>
+            <button
+              type="button"
+              onClick={fetchAiRecommendations}
+              disabled={isAiRecsLoading}
+              style={{ background: "none", border: "none", color: "#10b981", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+            >
+              {isAiRecsLoading ? "..." : "Refresh"}
+            </button>
+          </div>
+          {aiRecs && aiRecs.people && aiRecs.people.length > 0 ? (
+            <div className="ai-recs-scroll">
+              {aiRecs.people.map((rec, idx) => (
+                <div key={rec.user.id || idx} className="ai-user-card">
+                  <div style={{ position: "relative" }}>
+                    <div className="search-avatar-mini" style={{ width: "40px", height: "40px", fontSize: "16px" }}>
+                      {rec.user.avatar_url ? (
+                        <img src={rec.user.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%" }} />
+                      ) : (
+                        (rec.user.username || "U").charAt(0).toUpperCase()
+                      )}
+                    </div>
+                  </div>
+                  <span style={{ fontSize: "12.5px", fontWeight: 700, color: "var(--text-h)" }} className="truncate">
+                    {rec.user.name || rec.user.username}
+                  </span>
+                  <span className="ai-match-badge">{rec.match_score}% Match</span>
+                  <p style={{ fontSize: "10.5px", color: "var(--text-muted)", margin: "2px 0 6px 0", lineHeight: 1.3 }}>
+                    {rec.match_reason}
+                  </p>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ fontSize: "11px", padding: "4px 10px", width: "100%", borderRadius: "14px" }}
+                    onClick={() => startChatWithUser(rec.user)}
+                  >
+                    💬 Chat
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: "6px 0" }}>
+              <button
+                type="button"
+                className="ai-summary-btn"
+                onClick={fetchAiRecommendations}
+                style={{ fontSize: "12px", margin: "0 auto" }}
+              >
+                ✨ Discover People Like You
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* CARD 2: COMMUNITIES */}
         {dashboardCommunities.length > 0 && (
           <div className="featured-widget">
@@ -8444,10 +8743,16 @@ export default function App() {
               </div>
               <div className="chat-partner-details">
                 <span className="chat-partner-name">{activeChatPartner.name || activeChatPartner.username}</span>
-                <span className="chat-partner-status">Active now</span>
+                <span className="chat-partner-status">
+                  {isPartnerTyping ? (
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>Typing...</span>
+                  ) : (
+                    "Active now"
+                  )}
+                </span>
               </div>
             </div>
-            <div className="chat-header-actions">
+            <div className="chat-header-actions" style={{ position: "relative" }}>
               <button
                 className="chat-header-icon-btn"
                 title="Voice Call"
@@ -8462,6 +8767,33 @@ export default function App() {
               >
                 📹
               </button>
+              <button
+                className="chat-header-icon-btn"
+                title="More Options"
+                onClick={() => setChatHeaderMenuOpen(!chatHeaderMenuOpen)}
+              >
+                ⋮
+              </button>
+              {chatHeaderMenuOpen && (
+                <div className="chat-header-menu-dropdown">
+                  <button
+                    type="button"
+                    className="chat-header-menu-item"
+                    onClick={() => handleToggleMuteConversation(activeChatPartner.id)}
+                  >
+                    <span>{isPartnerMuted ? "🔔" : "🔕"}</span>
+                    <span>{isPartnerMuted ? "Unmute" : "Mute"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-header-menu-item danger"
+                    onClick={() => handleToggleBlockUser(activeChatPartner.id)}
+                  >
+                    <span>🚫</span>
+                    <span>{isPartnerBlocked ? "Unblock" : "Block User"}</span>
+                  </button>
+                </div>
+              )}
               <button
                 className="chat-header-icon-btn"
                 title="Close chat"
@@ -8588,24 +8920,163 @@ export default function App() {
                           )}
                         </>
                       )}
-                      {msg.content && <div>{msg.content}</div>}
-                      {timestamp && (
-                        <span className="chat-msg-time">{timeAgo(timestamp)}</span>
+                      {editingMessageId === msg.id ? (
+                        <div style={{ marginTop: "4px" }}>
+                          <input
+                            type="text"
+                            value={editingMessageText}
+                            onChange={(e) => setEditingMessageText(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                handleEditMessage(msg.id!, editingMessageText);
+                              } else if (e.key === "Escape") {
+                                setEditingMessageId(null);
+                              }
+                            }}
+                            autoFocus
+                            style={{
+                              width: "100%",
+                              padding: "6px 8px",
+                              borderRadius: "6px",
+                              border: "1px solid var(--border)",
+                              background: "var(--surface)",
+                              color: "var(--text)",
+                              fontSize: "13px",
+                            }}
+                          />
+                          <div style={{ display: "flex", gap: "6px", marginTop: "4px", justifyContent: "flex-end" }}>
+                            <button
+                              type="button"
+                              onClick={() => setEditingMessageId(null)}
+                              style={{ fontSize: "11px", padding: "2px 8px", background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer" }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleEditMessage(msg.id!, editingMessageText)}
+                              style={{ fontSize: "11px", padding: "2px 8px", background: "#10b981", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer" }}
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        msg.content && <div>{msg.content}</div>
                       )}
+
+                      {/* Reactions display */}
+                      {msg.reactions && msg.reactions.length > 0 && (
+                        <div className="chat-reactions-list">
+                          {(() => {
+                            const counts: Record<string, { count: number; reactedByMe: boolean }> = {};
+                            msg.reactions.forEach((r) => {
+                              if (!counts[r.emoji]) counts[r.emoji] = { count: 0, reactedByMe: false };
+                              counts[r.emoji].count += 1;
+                              if (r.user_id === user?.id) counts[r.emoji].reactedByMe = true;
+                            });
+                            return Object.entries(counts).map(([emoji, data]) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                className={`chat-reaction-pill ${data.reactedByMe ? "active" : ""}`}
+                                onClick={() => handleReactToMessage(msg.id!, emoji)}
+                                title={data.reactedByMe ? "Remove reaction" : "React"}
+                              >
+                                <span>{emoji}</span>
+                                {data.count > 1 && <span>{data.count}</span>}
+                              </button>
+                            ));
+                          })()}
+                        </div>
+                      )}
+
+                      {/* Message Footer: time + edited tag + read receipt */}
+                      <div className="chat-msg-footer">
+                        {msg.edited_at && <span className="chat-msg-edited-tag">(edited)</span>}
+                        {timestamp && <span className="chat-msg-time">{timeAgo(timestamp)}</span>}
+                        {isMine && (
+                          <span
+                            className={`chat-msg-read-status ${msg.is_read ? "read" : "sent"}`}
+                            title={msg.is_read ? `Read ${msg.read_at ? timeAgo(msg.read_at) : ""}` : "Sent"}
+                          >
+                            {msg.is_read ? "✓✓" : "✓"}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    {isMine && (
+
+                    {/* Actions bar on hover */}
+                    <div className="chat-msg-actions-bar" style={{ position: "relative" }}>
                       <button
                         type="button"
-                        className="chat-msg-reply-action-btn"
+                        className="chat-msg-action-btn"
+                        onClick={() => setActiveReactionMsgId(activeReactionMsgId === msg.id ? null : (msg.id || null))}
+                        title="Add reaction"
+                      >
+                        😊
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-msg-action-btn"
                         onClick={() => handleQuoteMessage(msg)}
-                        title="Quote / Reply to message"
+                        title="Quote / Reply"
                       >
                         ↩
                       </button>
-                    )}
+                      {isMine && (
+                        <>
+                          <button
+                            type="button"
+                            className="chat-msg-action-btn"
+                            onClick={() => {
+                              setEditingMessageId(msg.id || null);
+                              setEditingMessageText(msg.content);
+                            }}
+                            title="Edit message"
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            type="button"
+                            className="chat-msg-action-btn"
+                            onClick={() => handleDeleteMessage(msg.id!)}
+                            title="Delete message"
+                          >
+                            🗑️
+                          </button>
+                        </>
+                      )}
+
+                      {/* Reaction picker popover */}
+                      {activeReactionMsgId === msg.id && (
+                        <div className="chat-reaction-picker-popover">
+                          {["❤️", "👍", "🔥", "😂", "😮", "😢"].map((emoji) => (
+                            <button
+                              key={emoji}
+                              type="button"
+                              className="chat-reaction-picker-emoji"
+                              onClick={() => handleReactToMessage(msg.id!, emoji)}
+                            >
+                              {emoji}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               })
+            )}
+            {isPartnerTyping && (
+              <div className="chat-typing-indicator">
+                <span>{activeChatPartner.name || activeChatPartner.username} is typing</span>
+                <div className="chat-typing-dots">
+                  <div className="chat-typing-dot" />
+                  <div className="chat-typing-dot" />
+                  <div className="chat-typing-dot" />
+                </div>
+              </div>
             )}
             <div ref={chatBottomRef} />
           </div>
@@ -8703,7 +9174,14 @@ export default function App() {
                     : `Message @${activeChatPartner.username}...`
                 }
                 value={chatInputText}
-                onChange={(e) => setChatInputText(e.target.value)}
+                onChange={(e) => {
+                  setChatInputText(e.target.value);
+                  emitTyping(true);
+                  if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                  typingTimeoutRef.current = setTimeout(() => {
+                    emitTyping(false);
+                  }, 1500);
+                }}
                 autoFocus
                 disabled={isChatUploading}
               />
@@ -9099,6 +9577,36 @@ export default function App() {
         </div>
       )}
 
+      {/* AI CHANNEL DISCUSSION SUMMARY MODAL */}
+      {aiSummaryModal && aiSummaryModal.open && (
+        <div className="modal-overlay-nesty" onClick={() => setAiSummaryModal(null)}>
+          <div className="ai-summary-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "20px" }}>✨</span>
+                <h3 style={{ margin: 0, fontSize: "17px", color: "var(--text-h)" }}>{aiSummaryModal.topic} Summary</h3>
+              </div>
+              <button className="edit-profile-pill-btn" onClick={() => setAiSummaryModal(null)}>✕</button>
+            </div>
+            <p style={{ fontSize: "14px", lineHeight: 1.6, color: "var(--text)", marginBottom: "16px" }}>
+              {aiSummaryModal.summary}
+            </p>
+            {aiSummaryModal.keyPoints && aiSummaryModal.keyPoints.length > 0 && (
+              <div>
+                <h4 style={{ fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--text-muted)", marginBottom: "8px" }}>
+                  Key Takeaways
+                </h4>
+                <ul style={{ paddingLeft: "20px", margin: 0, display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {aiSummaryModal.keyPoints.map((pt, idx) => (
+                    <li key={idx} style={{ fontSize: "13px", color: "var(--text)" }}>{pt}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* GET APK & QR CODE MODAL */}
       {apkModalOpen && (
         <div className="modal-overlay-nesty" onClick={() => setApkModalOpen(false)}>
@@ -9286,14 +9794,21 @@ export default function App() {
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                                     <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-h)" }} className="truncate">
-                                      {p.name || p.username}
+                                      {p.name || p.username} {conv.is_muted && <span title="Muted" style={{ fontSize: "12px", opacity: 0.7 }}>🔕</span>}
                                     </span>
                                     <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                                       {conv.last_time ? timeAgo(conv.last_time) : ""}
                                     </span>
                                   </div>
-                                  <div style={{ fontSize: "12.5px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                    {conv.is_sender ? "You: " : ""}{conv.last_message || (conv.media_type ? `[${conv.media_type}]` : "Active chat")}
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
+                                    <div style={{ fontSize: "12.5px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                                      {conv.is_sender ? "You: " : ""}{conv.last_message || (conv.media_type ? `[${conv.media_type}]` : "Active chat")}
+                                    </div>
+                                    {conv.unread_count && conv.unread_count > 0 ? (
+                                      <span className="unread-count-badge">
+                                        {conv.unread_count}
+                                      </span>
+                                    ) : null}
                                   </div>
                                 </div>
                               </div>

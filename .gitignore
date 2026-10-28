@@ -5,3 +5,9 @@
 .env]
 .env].save
 server
+
+# Node dependencies & builds
+node_modules/
+dist/
+*.bak
+.DS_Store

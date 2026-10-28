@@ -12515,3 +12515,311 @@
 
 
 
+
+/* ==========================================================================
+   ENHANCED REAL-TIME MESSAGING & AI STYLING
+   ========================================================================== */
+
+.chat-msg-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.chat-msg-time {
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.chat-msg-edited-tag {
+  font-size: 10px;
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.chat-msg-read-status {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -1px;
+}
+
+.chat-msg-read-status.read {
+  color: #10b981;
+}
+
+.chat-msg-read-status.sent {
+  opacity: 0.6;
+}
+
+.chat-msg-actions-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+  padding: 0 4px;
+}
+
+.chat-msg-row:hover .chat-msg-actions-bar {
+  opacity: 1;
+}
+
+.chat-msg-action-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.chat-msg-action-btn:hover {
+  background: var(--surface-subtle);
+  color: var(--text-h);
+  border-color: #10b981;
+  transform: scale(1.08);
+}
+
+.chat-reaction-picker-popover {
+  position: absolute;
+  bottom: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 4px 8px;
+  display: flex;
+  gap: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  z-index: 100;
+  animation: popIn 0.15s ease-out;
+}
+
+.chat-reaction-picker-emoji {
+  background: none;
+  border: none;
+  font-size: 17px;
+  cursor: pointer;
+  transition: transform 0.12s ease;
+  padding: 2px 4px;
+  border-radius: 8px;
+}
+
+.chat-reaction-picker-emoji:hover {
+  transform: scale(1.3);
+  background: var(--surface-subtle);
+}
+
+.chat-reactions-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.chat-reaction-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.chat-reaction-pill.active {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: #10b981;
+  color: #10b981;
+}
+
+.chat-typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #10b981;
+}
+
+.chat-typing-dots {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.chat-typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: #10b981;
+  animation: typingPulse 1.4s infinite ease-in-out;
+}
+
+.chat-typing-dot:nth-child(1) { animation-delay: 0s; }
+.chat-typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.chat-typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typingPulse {
+  0%, 80%, 100% {
+    transform: scale(0.7);
+    opacity: 0.3;
+  }
+  40% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+}
+
+.unread-count-badge {
+  background: #10b981;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.chat-header-menu-dropdown {
+  position: absolute;
+  top: 48px;
+  right: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 100;
+  min-width: 160px;
+}
+
+.chat-header-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.chat-header-menu-item:hover {
+  background: var(--surface-subtle);
+  color: #10b981;
+}
+
+.chat-header-menu-item.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+/* AI Discovery Section */
+.ai-discovery-container {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(6, 78, 59, 0.05) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 16px;
+}
+
+.ai-discovery-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.ai-discovery-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #10b981;
+}
+
+.ai-recs-scroll {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.ai-user-card {
+  flex: 0 0 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+}
+
+.ai-match-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.ai-summary-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ai-summary-btn:hover {
+  background: #10b981;
+  color: #ffffff;
+}
+
+.ai-summary-modal-card {
+  max-width: 520px;
+  width: 90%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+}

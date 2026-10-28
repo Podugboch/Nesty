@@ -24,8 +24,10 @@ type User struct {
 	AvatarURL      string     `json:"avatar_url"`
 	BannerURL      string     `json:"banner_url"`
 	LastSeenAt     *time.Time `gorm:"index" json:"last_seen_at,omitempty"`
-	Role           string     `gorm:"default:'user';index" json:"role"`                     // 'user', 'moderator', 'admin', 'super_admin'
-	Status         string     `gorm:"default:'active';index" json:"status"`                 // 'active', 'suspended', 'banned'
+	HideLastSeen   bool       `gorm:"default:false" json:"hide_last_seen"`
+	HidePresence   bool       `gorm:"default:false" json:"hide_presence"`
+	Role           string     `gorm:"default:'user';index" json:"role"` // 'user', 'moderator', 'admin', 'super_admin'
+	Status         string     `gorm:"default:'active';index" json:"status"` // 'active', 'suspended', 'banned'
 	SuspendedUntil *time.Time `gorm:"index" json:"suspended_until,omitempty"`
 	StatusReason   string     `json:"status_reason,omitempty"`
 }

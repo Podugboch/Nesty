@@ -288,7 +288,7 @@ func (h *Hub) HandleConnections(w http.ResponseWriter, r *http.Request, userID u
 					delivered := h.SendToUser(targetID, outMsg)
 
 					// Trigger callback for push notification / background wake-up
-					if h.OnCallSignal != nil {
+					if h.OnCallSignal != nil && raw["event"] != "typing" && raw["type"] != "typing" {
 						go h.OnCallSignal(userID, targetID, raw)
 					}
 

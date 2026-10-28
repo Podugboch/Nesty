@@ -70,6 +70,9 @@ func Run() error {
 		&model.Like{}, 
 		&model.Notification{},
 		&model.Message{},
+		&model.MessageReaction{},
+		&model.Block{},
+		&model.ConversationMute{},
 		&model.Device{},
 		&model.Community{},
 		&model.CommunityMember{},
@@ -233,7 +236,9 @@ func Run() error {
 	}
 
 	r.GET("/Nesty.apk", func(c *gin.Context) { serveAPK(c, "Nesty.apk") })
+	r.HEAD("/Nesty.apk", func(c *gin.Context) { serveAPK(c, "Nesty.apk") })
 	r.GET("/DevNest.apk", func(c *gin.Context) { serveAPK(c, "Nesty.apk") })
+	r.HEAD("/DevNest.apk", func(c *gin.Context) { serveAPK(c, "Nesty.apk") })
 
 	r.GET("/devnest-apk-qr.png", func(c *gin.Context) {
 		candidates := []string{"./frontend/dist/devnest-apk-qr.png", "./frontend/public/devnest-apk-qr.png", "./devnest-apk-qr.png"}
