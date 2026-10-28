@@ -4031,13 +4031,13 @@ func (h *Handler) UpdateCommunitySettings(c *gin.Context) {
 		return
 	}
 
-	// Verify caller is admin or co-admin
+	// Verify caller membership status
 	var callerMember model.CommunityMember
-	err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active' AND (role = 'admin' OR role = 'co_admin')", comm.ID, callerID).First(&callerMember).Error
-	if err != nil && comm.CreatedByID != callerID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only admins or co-admins can update settings"})
-		return
+	isMember := false
+	if err := h.DB.Where("community_id = ? AND user_id = ? AND status = 'active'", comm.ID, callerID).First(&callerMember).Error; err == nil {
+		isMember = true
 	}
+	isAdmin := comm.CreatedByID == callerID || (isMember && (callerMember.Role == "admin" || callerMember.Role == "co_admin"))
 
 	var input struct {
 		RequiresApproval *bool   `json:"requires_approval"`
@@ -4050,17 +4050,30 @@ func (h *Handler) UpdateCommunitySettings(c *gin.Context) {
 		return
 	}
 
-	if input.RequiresApproval != nil {
-		comm.RequiresApproval = *input.RequiresApproval
-	}
-	if input.Description != nil {
-		comm.Description = strings.TrimSpace(*input.Description)
-	}
+	// Banner photo can be updated by any active member or creator/admin
 	if input.BannerURL != nil {
+		if !isMember && !isAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you must be a member of this community to update the banner photo"})
+			return
+		}
 		comm.BannerURL = strings.TrimSpace(*input.BannerURL)
 	}
-	if input.Name != nil && strings.TrimSpace(*input.Name) != "" {
-		comm.Name = strings.TrimSpace(*input.Name)
+
+	// Administrative settings require admin or co-admin
+	if input.RequiresApproval != nil || input.Description != nil || input.Name != nil {
+		if !isAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only admins or co-admins can update group settings"})
+			return
+		}
+		if input.RequiresApproval != nil {
+			comm.RequiresApproval = *input.RequiresApproval
+		}
+		if input.Description != nil {
+			comm.Description = strings.TrimSpace(*input.Description)
+		}
+		if input.Name != nil && strings.TrimSpace(*input.Name) != "" {
+			comm.Name = strings.TrimSpace(*input.Name)
+		}
 	}
 
 	if err := h.DB.Save(&comm).Error; err != nil {

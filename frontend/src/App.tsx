@@ -962,29 +962,34 @@ export default function App() {
     if (!file) return;
     setUploadingCommBanner(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const authToken = token || localStorage.getItem("token");
-      const uploadRes = await fetch(`${API_URL}/api/upload`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${authToken}` },
-        body: formData,
-      });
-      if (uploadRes.ok) {
-        const data = await uploadRes.json();
-        const newBannerUrl = data.url;
+      const url = await uploadImageFile(file);
+      if (url) {
+        // Optimistically update frontend state so photo appears immediately!
+        setCommunities((prev) =>
+          prev.map((c) =>
+            c.id === commSlugOrId || c.id === activeChannel?.id
+              ? { ...c, bannerUrl: url }
+              : c
+          )
+        );
+
+        const authToken = token || localStorage.getItem("token");
         const res = await fetch(`${API_URL}/api/communities/${encodeURIComponent(commSlugOrId)}/settings`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${authToken}`,
           },
-          body: JSON.stringify({ banner_url: newBannerUrl }),
+          body: JSON.stringify({ banner_url: url }),
         });
         if (res.ok) {
+          const data = await res.json();
+          const savedUrl = data.community?.banner_url || url;
           setCommunities((prev) =>
             prev.map((c) =>
-              c.id === commSlugOrId ? { ...c, bannerUrl: newBannerUrl } : c
+              c.id === commSlugOrId || c.id === activeChannel?.id
+                ? { ...c, bannerUrl: savedUrl }
+                : c
             )
           );
         }
@@ -6882,20 +6887,19 @@ export default function App() {
                         }
                   }
                 >
-                  {activeChannel &&
-                    (activeChannel.currentUserRole === "admin" || activeChannel.currentUserRole === "co_admin") && (
-                      <label className="edit-community-banner-btn" title="Change Community Banner">
-                        <span>📷</span>
-                        <span>{uploadingCommBanner ? "Uploading..." : "Change Banner"}</span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          style={{ display: "none" }}
-                          disabled={uploadingCommBanner}
-                          onChange={(e) => handleCommunityBannerChange(e, activeChannel.id)}
-                        />
-                      </label>
-                    )}
+                  <label className="community-banner-clickable-overlay" title="Click anywhere to change banner photo">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      disabled={uploadingCommBanner}
+                      onChange={(e) => handleCommunityBannerChange(e, activeChannel?.id || selectedCommunity)}
+                    />
+                    <div className="edit-community-banner-btn">
+                      <span>📷</span>
+                      <span>{uploadingCommBanner ? "Uploading Photo..." : (activeChannel?.bannerUrl ? "Change Banner Photo" : "Add Banner Photo")}</span>
+                    </div>
+                  </label>
                 </div>
 
                 <div className="community-group-header-card">

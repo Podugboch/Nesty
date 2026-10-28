@@ -4375,6 +4375,21 @@
   padding: 12px;
 }
 
+.community-banner-clickable-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.community-banner-clickable-overlay:hover {
+  background: rgba(0, 0, 0, 0.22);
+}
+
 @media (max-width: 640px) {
   .community-group-banner {
     height: 120px;
