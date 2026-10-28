@@ -4414,6 +4414,30 @@
   user-select: none;
 }
 
+.edit-community-banner-btn.pencil-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #ffffff;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.edit-community-banner-btn.pencil-btn:hover {
+  background: rgba(0, 0, 0, 0.85);
+  transform: scale(1.08);
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
 .edit-community-banner-btn:hover {
   background: rgba(0, 0, 0, 0.85);
   transform: translateY(-1px);
@@ -4430,15 +4454,25 @@
 
 .community-group-header-card {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12px;
   padding: 16px 20px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 16px;
   margin-bottom: 16px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05);
+}
+
+.community-group-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
 }
 
 :root[data-theme="dark"] .community-group-header-card {

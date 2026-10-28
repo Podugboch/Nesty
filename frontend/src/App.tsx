@@ -6895,18 +6895,21 @@ export default function App() {
                       disabled={uploadingCommBanner}
                       onChange={(e) => handleCommunityBannerChange(e, activeChannel?.id || selectedCommunity)}
                     />
-                    <div className="edit-community-banner-btn">
-                      <span>📷</span>
-                      <span>{uploadingCommBanner ? "Uploading Photo..." : (activeChannel?.bannerUrl ? "Change Banner Photo" : "Add Banner Photo")}</span>
+                    <div className="edit-community-banner-btn pencil-btn" title="Change banner photo" aria-label="Change banner photo">
+                      {uploadingCommBanner ? (
+                        <span style={{ display: "inline-block", width: "16px", height: "16px", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                      ) : (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                        </svg>
+                      )}
                     </div>
                   </label>
                 </div>
 
                 <div className="community-group-header-card">
                   <div className="group-header-left">
-                    <div className={`group-header-badge ${activeChannel?.badgeClass || "coding"}`}>
-                      #
-                    </div>
                     <div className="group-header-details">
                       <div className="group-header-title-line">
                         <h1 className="group-header-name">{activeChannel?.name || "Community Channel"}</h1>
@@ -6959,7 +6962,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="chat-header-actions" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <div className="community-group-controls">
                   {activeChannel && (activeChannel.currentUserRole === "admin" || activeChannel.currentUserRole === "co_admin") ? (
                     <>
                       <button
