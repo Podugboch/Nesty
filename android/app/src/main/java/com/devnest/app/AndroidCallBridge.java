@@ -149,9 +149,10 @@ public class AndroidCallBridge {
                 final String jsCallId = callId;
                 final String jsCallerId = callerId;
                 final String jsCallType = callType;
+                final String jsCallerName = callerName.replace("'", "\\'");
                 sWebView.post(() -> {
                     String script = "if (window.handleNativeCallAction) { window.handleNativeCallAction('" +
-                            jsAction + "', '" + jsCallId + "', '" + jsCallerId + "', '" + jsCallType + "'); }";
+                            jsAction + "', '" + jsCallId + "', '" + jsCallerId + "', '" + jsCallType + "', '" + jsCallerName + "'); }";
                     sWebView.evaluateJavascript(script, null);
                 });
             }

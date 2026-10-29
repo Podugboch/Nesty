@@ -74,7 +74,7 @@ public class IncomingCallReceiver extends BroadcastReceiver {
             Log.d(TAG, "[CallLog] Answer tapped: launching MainActivity for callId=" + callId);
             // Launch / bring MainActivity to front directly into the call screen
             Intent answerIntent = new Intent();
-            answerIntent.setClassName(context, "io.github.webviewtemplate.MainActivity");
+            answerIntent.setClassName(context, "com.devnest.app.MainActivity");
             answerIntent.setAction(Intent.ACTION_VIEW);
             answerIntent.setData(Uri.parse("devnest://call?action=answer&callId=" + callId + "&callerId=" + callerId));
             answerIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);

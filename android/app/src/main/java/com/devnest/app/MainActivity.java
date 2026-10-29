@@ -44,7 +44,24 @@ public class MainActivity extends BridgeActivity {
         // 2. Register native Android bridge for calling & system permissions
         initBridgeInterface();
 
-        // 3. Prompt runtime permissions on startup
+        // 3. Handle lock screen takeover & cold-start incoming call intent
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        }
+        getWindow().addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED |
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON |
+                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON |
+                android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+        );
+
+        Intent startIntent = getIntent();
+        if (startIntent != null) {
+            AndroidCallBridge.handleNewIntent(this, startIntent);
+        }
+
+        // 4. Prompt runtime permissions on startup
         requestAppPermissions();
     }
 
@@ -90,6 +107,10 @@ public class MainActivity extends BridgeActivity {
         super.onResume();
         if (bridge != null && bridge.getWebView() != null) {
             AndroidCallBridge.setWebView(bridge.getWebView());
+        }
+        Intent currentIntent = getIntent();
+        if (currentIntent != null && currentIntent.getData() != null) {
+            AndroidCallBridge.handleNewIntent(this, currentIntent);
         }
         boolean isNight = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         applyStatusBarTheme(isNight);

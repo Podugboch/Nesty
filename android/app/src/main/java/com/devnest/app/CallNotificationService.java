@@ -264,6 +264,18 @@ public class CallNotificationService extends Service {
         acquireScreenWakeLock();
         startRingtoneAndVibration();
 
+        // Attempt to launch MainActivity directly over lock screen
+        try {
+            Intent directIntent = new Intent(this, MainActivity.class);
+            directIntent.setAction(Intent.ACTION_VIEW);
+            directIntent.setData(Uri.parse("devnest://call?action=incoming&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType + "&callerName=" + Uri.encode(callerName)));
+            directIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            startActivity(directIntent);
+            Log.d(TAG, "[CallLog] Direct startActivity dispatched for incoming call over lock screen");
+        } catch (Exception e) {
+            Log.d(TAG, "[CallLog] Direct startActivity deferred to fullScreenIntent: " + e.getMessage());
+        }
+
         Notification notification = buildIncomingCallNotification(callId, callerId, callerName, callType, callerAvatarUrl);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL);
@@ -446,8 +458,7 @@ public class CallNotificationService extends Service {
         String callTypeText = isVideo ? "Incoming Video Call" : "Incoming Audio Call";
 
         // Full-screen takeover intent when screen is locked or app is backgrounded
-        Intent fullScreenIntent = new Intent();
-        fullScreenIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
+        Intent fullScreenIntent = new Intent(this, MainActivity.class);
         fullScreenIntent.setAction(Intent.ACTION_VIEW);
         fullScreenIntent.setData(Uri.parse("devnest://call?action=incoming&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType + "&callerName=" + Uri.encode(callerName)));
         fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -456,8 +467,7 @@ public class CallNotificationService extends Service {
         );
 
         // Answer Action
-        Intent answerIntent = new Intent();
-        answerIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
+        Intent answerIntent = new Intent(this, MainActivity.class);
         answerIntent.setAction(Intent.ACTION_VIEW);
         answerIntent.setData(Uri.parse("devnest://call?action=answer&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType + "&callerName=" + Uri.encode(callerName)));
         answerIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -477,6 +487,7 @@ public class CallNotificationService extends Service {
         Person person = new Person.Builder()
                 .setName(callerName)
                 .setKey(callerId)
+                .setImportant(true)
                 .build();
 
         Uri ringUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
@@ -497,6 +508,22 @@ public class CallNotificationService extends Service {
                 .setFullScreenIntent(fullScreenPendingIntent, true)
                 .setContentIntent(fullScreenPendingIntent);
 
+        // Explicit action buttons ensuring visibility across all Android versions & OEM lockscreens
+        NotificationCompat.Action declineAction = new NotificationCompat.Action.Builder(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Decline",
+                declinePendingIntent
+        ).build();
+
+        NotificationCompat.Action answerAction = new NotificationCompat.Action.Builder(
+                android.R.drawable.sym_call_outgoing,
+                "Answer",
+                answerPendingIntent
+        ).build();
+
+        builder.addAction(declineAction);
+        builder.addAction(answerAction);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // Android 12+ CallStyle notification
             NotificationCompat.CallStyle callStyle = NotificationCompat.CallStyle.forIncomingCall(
@@ -505,12 +532,7 @@ public class CallNotificationService extends Service {
                     answerPendingIntent
             ).setIsVideo(isVideo);
             builder.setStyle(callStyle);
-            Log.d(TAG, "[CallLog] Styled notification using NotificationCompat.CallStyle (Android 12+)");
-        } else {
-            // Heads-up actions for older Android versions
-            builder.addAction(android.R.drawable.sym_call_outgoing, "Answer", answerPendingIntent);
-            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declinePendingIntent);
-            Log.d(TAG, "[CallLog] Styled notification using heads-up action buttons");
+            Log.d(TAG, "[CallLog] Styled notification using NotificationCompat.CallStyle (Android 12+) with explicit action fallbacks");
         }
 
         Notification notif = builder.build();
@@ -519,8 +541,7 @@ public class CallNotificationService extends Service {
     }
 
     private Notification buildListenerNotification() {
-        Intent launchIntent = new Intent();
-        launchIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
+        Intent launchIntent = new Intent(this, MainActivity.class);
         launchIntent.setAction(Intent.ACTION_MAIN);
         launchIntent.addCategory(Intent.CATEGORY_LAUNCHER);
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);

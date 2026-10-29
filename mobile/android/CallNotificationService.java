@@ -447,7 +447,7 @@ public class CallNotificationService extends Service {
 
         // Full-screen takeover intent when screen is locked or app is backgrounded
         Intent fullScreenIntent = new Intent();
-        fullScreenIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
+        fullScreenIntent.setClassName(this, "com.devnest.app.MainActivity");
         fullScreenIntent.setAction(Intent.ACTION_VIEW);
         fullScreenIntent.setData(Uri.parse("devnest://call?action=incoming&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType + "&callerName=" + Uri.encode(callerName)));
         fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -457,7 +457,7 @@ public class CallNotificationService extends Service {
 
         // Answer Action
         Intent answerIntent = new Intent();
-        answerIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
+        answerIntent.setClassName(this, "com.devnest.app.MainActivity");
         answerIntent.setAction(Intent.ACTION_VIEW);
         answerIntent.setData(Uri.parse("devnest://call?action=answer&callId=" + callId + "&callerId=" + callerId + "&callType=" + callType + "&callerName=" + Uri.encode(callerName)));
         answerIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -520,7 +520,7 @@ public class CallNotificationService extends Service {
 
     private Notification buildListenerNotification() {
         Intent launchIntent = new Intent();
-        launchIntent.setClassName(this, "io.github.webviewtemplate.MainActivity");
+        launchIntent.setClassName(this, "com.devnest.app.MainActivity");
         launchIntent.setAction(Intent.ACTION_MAIN);
         launchIntent.addCategory(Intent.CATEGORY_LAUNCHER);
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);

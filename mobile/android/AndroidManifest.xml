@@ -50,7 +50,7 @@
 
         <!-- Main WebRTC / Call Activity with lock screen takeover -->
         <activity
-            android:name="io.github.webviewtemplate.MainActivity"
+            android:name="com.devnest.app.MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:showWhenLocked="true"
