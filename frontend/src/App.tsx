@@ -1434,6 +1434,9 @@ export default function App() {
     channelValid: boolean;
     canUseFullScreenIntent: boolean;
     isIgnoringBatteryOptimizations: boolean;
+    micGranted?: boolean;
+    cameraGranted?: boolean;
+    micCameraGranted?: boolean;
     brand: string;
   } | null>(null);
   const [batteryTipDismissed, setBatteryTipDismissed] = useState<boolean>(() => {
@@ -3610,6 +3613,29 @@ export default function App() {
     }
     return null;
   };
+
+  useEffect(() => {
+    (window as any).refreshCallPermissions = () => {
+      checkCallPermissions();
+    };
+    const onFocusOrVisible = () => {
+      checkCallPermissions();
+    };
+    window.addEventListener("focus", onFocusOrVisible);
+    document.addEventListener("visibilitychange", onFocusOrVisible);
+    checkCallPermissions();
+    return () => {
+      window.removeEventListener("focus", onFocusOrVisible);
+      document.removeEventListener("visibilitychange", onFocusOrVisible);
+      delete (window as any).refreshCallPermissions;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (permissionsModalOpen || callDiagModalOpen) {
+      checkCallPermissions();
+    }
+  }, [permissionsModalOpen, callDiagModalOpen]);
 
   useEffect(() => {
     (window as any).__triggerTestIncomingCall = (callType: "audio" | "video" = "video", delaySeconds: number = 5) => {
@@ -10538,13 +10564,16 @@ export default function App() {
                 </div>
                 <button
                   className="edit-profile-pill-btn"
-                  style={{ fontSize: "11px", padding: "5px 12px", background: "#2563eb", color: "#fff", border: "none", fontWeight: 600 }}
+                  style={{ fontSize: "11px", padding: "5px 12px", background: callPermissionsStatus?.notificationsEnabled ? "rgba(255,255,255,0.1)" : "#2563eb", color: "#fff", border: "none", fontWeight: 600 }}
                   onClick={() => {
-                    if ((window as any).AndroidCallBridge?.openNotificationSettings) {
+                    if ((window as any).AndroidCallBridge?.requestNotificationPermission) {
+                      (window as any).AndroidCallBridge.requestNotificationPermission();
+                    } else if ((window as any).AndroidCallBridge?.openNotificationSettings) {
                       (window as any).AndroidCallBridge.openNotificationSettings();
                     } else if (typeof window !== "undefined" && "Notification" in window) {
                       Notification.requestPermission();
                     }
+                    setTimeout(() => checkCallPermissions(), 600);
                   }}
                 >
                   {callPermissionsStatus?.notificationsEnabled ? "Settings" : "Allow"}
@@ -10556,39 +10585,42 @@ export default function App() {
                 <div>
                   <div style={{ fontSize: "13px", fontWeight: 600 }}>Microphone & Camera</div>
                   <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                    Required for talking and appearing on video calls
+                    {callPermissionsStatus?.micCameraGranted ? "✅ Allowed" : "Required for talking and appearing on video calls"}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: "6px" }}>
                   <button
                     className="edit-profile-pill-btn"
-                    style={{ fontSize: "11px", padding: "5px 12px", background: "#059669", color: "#fff", border: "none", fontWeight: 600 }}
+                    style={{ fontSize: "11px", padding: "5px 12px", background: callPermissionsStatus?.micCameraGranted ? "rgba(255,255,255,0.1)" : "#059669", color: "#fff", border: "none", fontWeight: 600 }}
                     onClick={async () => {
-                      if ((window as any).AndroidCallBridge?.requestAllPermissions) {
+                      if ((window as any).AndroidCallBridge?.requestCameraAndMicPermissions) {
+                        (window as any).AndroidCallBridge.requestCameraAndMicPermissions();
+                      } else if ((window as any).AndroidCallBridge?.requestAllPermissions) {
                         (window as any).AndroidCallBridge.requestAllPermissions();
-                        return;
+                      } else {
+                        try {
+                          const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                          stream.getTracks().forEach((t) => t.stop());
+                        } catch (e: any) {}
                       }
-                      try {
-                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-                        stream.getTracks().forEach((t) => t.stop());
-                        alert("Microphone and Camera permissions granted!");
-                      } catch (e: any) {
-                        alert("Please grant Microphone & Camera permissions in device settings.");
-                      }
+                      setTimeout(() => checkCallPermissions(), 600);
                     }}
                   >
-                    Allow
+                    {callPermissionsStatus?.micCameraGranted ? "Allowed ✅" : "Allow"}
                   </button>
-                  {(window as any).AndroidCallBridge?.openAppSettings && (
-                    <button
-                      className="edit-profile-pill-btn"
-                      style={{ fontSize: "11px", padding: "5px 10px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid var(--border)", fontWeight: 600 }}
-                      onClick={() => (window as any).AndroidCallBridge.openAppSettings()}
-                      title="Open App Permissions in Android Settings"
-                    >
-                      ⚙️ Settings
-                    </button>
-                  )}
+                  <button
+                    className="edit-profile-pill-btn"
+                    style={{ fontSize: "11px", padding: "5px 10px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid var(--border)", fontWeight: 600 }}
+                    onClick={() => {
+                      if ((window as any).AndroidCallBridge?.openAppSettings) {
+                        (window as any).AndroidCallBridge.openAppSettings();
+                      }
+                      setTimeout(() => checkCallPermissions(), 600);
+                    }}
+                    title="Open App Permissions in Android Settings"
+                  >
+                    ⚙️ Settings
+                  </button>
                 </div>
               </div>
 
@@ -10602,11 +10634,12 @@ export default function App() {
                 </div>
                 <button
                   className="edit-profile-pill-btn"
-                  style={{ fontSize: "11px", padding: "5px 12px" }}
+                  style={{ fontSize: "11px", padding: "5px 12px", background: callPermissionsStatus?.channelValid ? "rgba(255,255,255,0.1)" : "#2563eb", color: "#fff", border: "none" }}
                   onClick={() => {
                     if ((window as any).AndroidCallBridge?.openChannelSettings) {
                       (window as any).AndroidCallBridge.openChannelSettings("incoming_calls_v3");
                     }
+                    setTimeout(() => checkCallPermissions(), 600);
                   }}
                 >
                   Configure
@@ -10623,11 +10656,12 @@ export default function App() {
                 </div>
                 <button
                   className="edit-profile-pill-btn"
-                  style={{ fontSize: "11px", padding: "5px 12px", background: "#7c3aed", color: "#fff", border: "none", fontWeight: 600 }}
+                  style={{ fontSize: "11px", padding: "5px 12px", background: callPermissionsStatus?.canUseFullScreenIntent ? "rgba(255,255,255,0.1)" : "#7c3aed", color: "#fff", border: "none", fontWeight: 600 }}
                   onClick={() => {
                     if ((window as any).AndroidCallBridge?.openFullScreenIntentSettings) {
                       (window as any).AndroidCallBridge.openFullScreenIntentSettings();
                     }
+                    setTimeout(() => checkCallPermissions(), 600);
                   }}
                 >
                   Configure
@@ -10644,11 +10678,12 @@ export default function App() {
                 </div>
                 <button
                   className="edit-profile-pill-btn"
-                  style={{ fontSize: "11px", padding: "5px 12px", background: "#f59e0b", color: "#000", border: "none", fontWeight: 700 }}
+                  style={{ fontSize: "11px", padding: "5px 12px", background: callPermissionsStatus?.isIgnoringBatteryOptimizations ? "rgba(255,255,255,0.1)" : "#f59e0b", color: callPermissionsStatus?.isIgnoringBatteryOptimizations ? "#fff" : "#000", border: "none", fontWeight: 700 }}
                   onClick={() => {
                     if ((window as any).AndroidCallBridge?.openBatteryOptimizationSettings) {
                       (window as any).AndroidCallBridge.openBatteryOptimizationSettings();
                     }
+                    setTimeout(() => checkCallPermissions(), 600);
                   }}
                 >
                   Battery Settings

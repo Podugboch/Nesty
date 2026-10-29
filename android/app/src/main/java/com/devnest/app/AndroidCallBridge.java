@@ -1,5 +1,6 @@
 package com.devnest.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.Application;
 import android.app.KeyguardManager;
@@ -8,6 +9,7 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -19,7 +21,9 @@ import android.util.Log;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
+import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
 
 public class AndroidCallBridge {
     private static final String TAG = "DevNestCall";
@@ -282,11 +286,17 @@ public class AndroidCallBridge {
             }
         }
 
+        boolean micGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        boolean cameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        boolean micCameraGranted = micGranted && cameraGranted;
+
         String brand = Build.MANUFACTURER != null ? Build.MANUFACTURER.toLowerCase() : "";
         Log.d(TAG, "[CallLog] Permission check: notifs=" + notificationsEnabled +
                 ", channelValid=" + channelValid +
                 ", fullScreen=" + canUseFullScreen +
                 ", batteryIgnored=" + isIgnoringBattery +
+                ", micGranted=" + micGranted +
+                ", cameraGranted=" + cameraGranted +
                 ", brand=" + brand);
 
         return "{" +
@@ -295,8 +305,37 @@ public class AndroidCallBridge {
                 "\"channelValid\":" + channelValid + "," +
                 "\"canUseFullScreenIntent\":" + canUseFullScreen + "," +
                 "\"isIgnoringBatteryOptimizations\":" + isIgnoringBattery + "," +
+                "\"micGranted\":" + micGranted + "," +
+                "\"cameraGranted\":" + cameraGranted + "," +
+                "\"micCameraGranted\":" + micCameraGranted + "," +
                 "\"brand\":\"" + brand + "\"" +
                 "}";
+    }
+
+    @JavascriptInterface
+    public void requestNotificationPermission() {
+        if (sActivity != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(sActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                sActivity.runOnUiThread(() -> {
+                    ActivityCompat.requestPermissions(sActivity, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1002);
+                });
+                return;
+            }
+        }
+        openNotificationSettings();
+    }
+
+    @JavascriptInterface
+    public void requestCameraAndMicPermissions() {
+        if (sActivity != null) {
+            sActivity.runOnUiThread(() -> {
+                ActivityCompat.requestPermissions(sActivity, new String[]{
+                    Manifest.permission.RECORD_AUDIO,
+                    Manifest.permission.CAMERA,
+                    Manifest.permission.MODIFY_AUDIO_SETTINGS
+                }, 1003);
+            });
+        }
     }
 
     @JavascriptInterface
@@ -315,12 +354,14 @@ public class AndroidCallBridge {
             Log.d(TAG, "[CallLog] Opened app notification settings");
         } catch (Exception e) {
             Log.e(TAG, "[CallLog] Error opening notification settings: " + e.getMessage());
+            openAppSettings();
         }
     }
 
     @JavascriptInterface
     public void openChannelSettings(String channelId) {
         try {
+            CallNotificationService.createNotificationChannels(context);
             String chId = (channelId != null && !channelId.isEmpty()) ? channelId : CallNotificationService.CHANNEL_INCOMING_CALLS_V3;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Intent intent = new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS);
@@ -362,19 +403,27 @@ public class AndroidCallBridge {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
                 if (pm != null && !pm.isIgnoringBatteryOptimizations(context.getPackageName())) {
-                    Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                    intent.setData(Uri.parse("package:" + context.getPackageName()));
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    context.startActivity(intent);
-                } else {
-                    Intent intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    context.startActivity(intent);
+                    try {
+                        Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                        intent.setData(Uri.parse("package:" + context.getPackageName()));
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        context.startActivity(intent);
+                        Log.d(TAG, "[CallLog] Opened ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS dialog");
+                        return;
+                    } catch (Exception e2) {
+                        Log.w(TAG, "[CallLog] Request ignore battery dialog unavailable, falling back: " + e2.getMessage());
+                    }
                 }
+                Intent intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
                 Log.d(TAG, "[CallLog] Opened battery optimization settings");
+            } else {
+                openAppSettings();
             }
         } catch (Exception e) {
             Log.e(TAG, "[CallLog] Error opening battery optimization settings: " + e.getMessage());
+            openAppSettings();
         }
     }
 
@@ -555,6 +604,13 @@ public class AndroidCallBridge {
         if (sActivity instanceof MainActivity) {
             sActivity.runOnUiThread(() -> {
                 ((MainActivity) sActivity).requestAppPermissions();
+            });
+        } else if (sActivity != null) {
+            sActivity.runOnUiThread(() -> {
+                ActivityCompat.requestPermissions(sActivity, new String[]{
+                    Manifest.permission.RECORD_AUDIO,
+                    Manifest.permission.CAMERA
+                }, 1001);
             });
         }
     }

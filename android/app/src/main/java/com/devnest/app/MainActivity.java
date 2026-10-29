@@ -20,6 +20,7 @@ import java.util.List;
 
 public class MainActivity extends BridgeActivity {
     private static final int PERMISSION_REQUEST_CODE = 1001;
+    private AndroidCallBridge callBridge;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -38,8 +39,55 @@ public class MainActivity extends BridgeActivity {
             return insets;
         });
 
-        // 2. Prompt runtime permissions on startup
+        // 2. Register native Android bridge for calling & system permissions
+        initBridgeInterface();
+
+        // 3. Prompt runtime permissions on startup
         requestAppPermissions();
+    }
+
+    private void initBridgeInterface() {
+        if (callBridge == null) {
+            callBridge = new AndroidCallBridge(this);
+        }
+        if (bridge != null && bridge.getWebView() != null) {
+            AndroidCallBridge.setWebView(bridge.getWebView());
+            bridge.getWebView().addJavascriptInterface(callBridge, "AndroidCallBridge");
+            bridge.getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        AndroidCallBridge.handleNewIntent(this, intent);
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (bridge != null && bridge.getWebView() != null) {
+            AndroidCallBridge.setWebView(bridge.getWebView());
+        }
+        notifyPermissionsChanged();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        notifyPermissionsChanged();
+    }
+
+    public void notifyPermissionsChanged() {
+        if (bridge != null && bridge.getWebView() != null) {
+            bridge.getWebView().post(() -> {
+                bridge.getWebView().evaluateJavascript(
+                    "if (window.refreshCallPermissions) { window.refreshCallPermissions(); }",
+                    null
+                );
+            });
+        }
     }
 
     public void requestAppPermissions() {
@@ -85,10 +133,14 @@ public class MainActivity extends BridgeActivity {
     }
 
     public void openAppSettings() {
-        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-        Uri uri = Uri.fromParts("package", getPackageName(), null);
-        intent.setData(uri);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(intent);
+        try {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            Uri uri = Uri.fromParts("package", getPackageName(), null);
+            intent.setData(uri);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            // ignore
+        }
     }
 }
