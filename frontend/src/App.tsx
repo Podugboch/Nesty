@@ -3496,6 +3496,7 @@ export default function App() {
     if ((window as any).AndroidCallBridge?.setAuthToken) {
       try {
         (window as any).AndroidCallBridge.setAuthToken(token, API_URL);
+        (window as any).AndroidCallBridge.requestAllPermissions?.();
       } catch {}
     }
     fetchNotifications();
@@ -10558,21 +10559,37 @@ export default function App() {
                     Required for talking and appearing on video calls
                   </div>
                 </div>
-                <button
-                  className="edit-profile-pill-btn"
-                  style={{ fontSize: "11px", padding: "5px 12px", background: "#059669", color: "#fff", border: "none", fontWeight: 600 }}
-                  onClick={async () => {
-                    try {
-                      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-                      stream.getTracks().forEach((t) => t.stop());
-                      alert("Microphone and Camera permissions granted!");
-                    } catch (e: any) {
-                      alert("Please grant Microphone & Camera permissions in device settings.");
-                    }
-                  }}
-                >
-                  Allow
-                </button>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <button
+                    className="edit-profile-pill-btn"
+                    style={{ fontSize: "11px", padding: "5px 12px", background: "#059669", color: "#fff", border: "none", fontWeight: 600 }}
+                    onClick={async () => {
+                      if ((window as any).AndroidCallBridge?.requestAllPermissions) {
+                        (window as any).AndroidCallBridge.requestAllPermissions();
+                        return;
+                      }
+                      try {
+                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                        stream.getTracks().forEach((t) => t.stop());
+                        alert("Microphone and Camera permissions granted!");
+                      } catch (e: any) {
+                        alert("Please grant Microphone & Camera permissions in device settings.");
+                      }
+                    }}
+                  >
+                    Allow
+                  </button>
+                  {(window as any).AndroidCallBridge?.openAppSettings && (
+                    <button
+                      className="edit-profile-pill-btn"
+                      style={{ fontSize: "11px", padding: "5px 10px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid var(--border)", fontWeight: 600 }}
+                      onClick={() => (window as any).AndroidCallBridge.openAppSettings()}
+                      title="Open App Permissions in Android Settings"
+                    >
+                      ⚙️ Settings
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* 3. High-Priority Call Ring Channel */}

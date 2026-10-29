@@ -549,4 +549,26 @@ public class AndroidCallBridge {
             }
         });
     }
+
+    @JavascriptInterface
+    public void requestAllPermissions() {
+        if (sActivity instanceof MainActivity) {
+            sActivity.runOnUiThread(() -> {
+                ((MainActivity) sActivity).requestAppPermissions();
+            });
+        }
+    }
+
+    @JavascriptInterface
+    public void openAppSettings() {
+        if (sActivity instanceof MainActivity) {
+            ((MainActivity) sActivity).openAppSettings();
+        } else {
+            Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            android.net.Uri uri = android.net.Uri.fromParts("package", context.getPackageName(), null);
+            intent.setData(uri);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+        }
+    }
 }
