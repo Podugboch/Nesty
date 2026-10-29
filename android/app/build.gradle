@@ -76,9 +76,16 @@ try {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
 }
 
+tasks.register('cleanOldApkOutputs') {
+    doLast {
+        delete "${project.buildDir}/outputs/apk"
+    }
+}
+
 tasks.register('cleanPublicApkFromAssets') {
     doLast {
         delete "${project.projectDir}/src/main/assets/public/Nesty.apk"
     }
 }
+cleanPublicApkFromAssets.dependsOn cleanOldApkOutputs
 preBuild.dependsOn cleanPublicApkFromAssets

@@ -3,17 +3,20 @@ package com.devnest.app;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.view.Window;
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.BridgeActivity;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,10 +29,9 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 1. Position app content directly below camera notch and status bar
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            getWindow().setStatusBarColor(Color.parseColor("#000000"));
-        }
+        // 1. Position app content directly below camera notch and status bar, dynamically matching system light/dark theme
+        boolean isNight = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        applyStatusBarTheme(isNight);
 
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content), (view, insets) -> {
             Insets statusBarInsets = insets.getInsets(
@@ -44,6 +46,25 @@ public class MainActivity extends BridgeActivity {
 
         // 3. Prompt runtime permissions on startup
         requestAppPermissions();
+    }
+
+    public void applyStatusBarTheme(boolean isDark) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            Window window = getWindow();
+            int color = isDark ? Color.parseColor("#000000") : Color.parseColor("#edf2ef");
+            window.setStatusBarColor(color);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(window, window.getDecorView());
+                controller.setAppearanceLightStatusBars(!isDark);
+            }
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        boolean isNight = (newConfig.uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        applyStatusBarTheme(isNight);
     }
 
     private void initBridgeInterface() {
@@ -70,6 +91,8 @@ public class MainActivity extends BridgeActivity {
         if (bridge != null && bridge.getWebView() != null) {
             AndroidCallBridge.setWebView(bridge.getWebView());
         }
+        boolean isNight = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        applyStatusBarTheme(isNight);
         notifyPermissionsChanged();
     }
 

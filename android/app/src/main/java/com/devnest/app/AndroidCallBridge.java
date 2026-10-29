@@ -600,6 +600,16 @@ public class AndroidCallBridge {
     }
 
     @JavascriptInterface
+    public void setStatusBarTheme(String theme) {
+        if (sActivity instanceof MainActivity) {
+            final boolean isDark = "dark".equalsIgnoreCase(theme);
+            sActivity.runOnUiThread(() -> {
+                ((MainActivity) sActivity).applyStatusBarTheme(isDark);
+            });
+        }
+    }
+
+    @JavascriptInterface
     public void requestAllPermissions() {
         if (sActivity instanceof MainActivity) {
             sActivity.runOnUiThread(() -> {

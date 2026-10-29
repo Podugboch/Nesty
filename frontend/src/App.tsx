@@ -607,29 +607,64 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
 
   // -----------------------------
-  // THEME (LIGHT / DARK)
+  // -----------------------------
+  // THEME (SYSTEM SETTINGS DECIDE BY DEFAULT)
   // -----------------------------
   const getSystemTheme = (): "dark" | "light" =>
-    window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+    typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
       ? "dark"
       : "light";
 
+  const [themeMode, setThemeMode] = useState<"system" | "dark" | "light">(() => {
+    try {
+      const saved = localStorage.getItem("theme_mode");
+      if (saved === "system" || saved === "dark" || saved === "light") {
+        return saved;
+      }
+    } catch {}
+    // Default to device system settings deciding light or dark mode
+    return "system";
+  });
+
   const [theme, setTheme] = useState<"dark" | "light">(() => {
-    const saved = localStorage.getItem("theme");
-    return saved === "dark" || saved === "light" ? saved : getSystemTheme();
+    return getSystemTheme();
   });
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
+    const updateTheme = () => {
+      const sys = getSystemTheme();
+      const resolved = themeMode === "system" ? sys : themeMode;
+      setTheme(resolved);
+      document.documentElement.setAttribute("data-theme", resolved);
+      if ((window as any).AndroidCallBridge?.setStatusBarTheme) {
+        (window as any).AndroidCallBridge.setStatusBarTheme(resolved);
+      }
+    };
 
-  const toggleTheme = () => {
-    setTheme((prev) => {
-      const next = prev === "dark" ? "light" : "dark";
-      localStorage.setItem("theme", next);
-      return next;
-    });
-  };
+    updateTheme();
+
+    // Dynamically listen to OS / device system theme changes
+    if (typeof window !== "undefined" && window.matchMedia) {
+      const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      const handler = () => {
+        if (themeMode === "system") {
+          updateTheme();
+        }
+      };
+      if (mediaQuery.addEventListener) {
+        mediaQuery.addEventListener("change", handler);
+      } else if ((mediaQuery as any).addListener) {
+        (mediaQuery as any).addListener(handler);
+      }
+      return () => {
+        if (mediaQuery.removeEventListener) {
+          mediaQuery.removeEventListener("change", handler);
+        } else if ((mediaQuery as any).removeListener) {
+          (mediaQuery as any).removeListener(handler);
+        }
+      };
+    }
+  }, [themeMode]);
 
   // -----------------------------
   // NAVIGATION & COMMUNITIES
@@ -6546,14 +6581,45 @@ export default function App() {
         {/* FOOTER: DARK MODE SWITCH & USER CARD */}
         <div className="sidebar-footer-wrap">
           <div className="dark-mode-toggle-row">
-            <span className="dark-mode-label">🌙 Dark mode</span>
-            <button
-              className={`theme-switch-btn ${theme === "dark" ? "on" : ""}`}
-              onClick={toggleTheme}
-              aria-label="Toggle Dark Mode"
-            >
-              <div className="theme-switch-thumb" />
-            </button>
+            <span className="dark-mode-label" style={{ fontSize: "12px" }}>
+              {themeMode === "system"
+                ? `⚙️ System (${theme === "dark" ? "Dark" : "Light"})`
+                : themeMode === "dark"
+                ? "🌙 Dark mode"
+                : "☀️ Light mode"}
+            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <button
+                className={`theme-pill-btn ${themeMode === "system" ? "active" : ""}`}
+                onClick={() => {
+                  setThemeMode("system");
+                  try { localStorage.setItem("theme_mode", "system"); } catch {}
+                }}
+                title="Follow device system settings"
+              >
+                Auto
+              </button>
+              <button
+                className={`theme-pill-btn ${themeMode === "dark" ? "active" : ""}`}
+                onClick={() => {
+                  setThemeMode("dark");
+                  try { localStorage.setItem("theme_mode", "dark"); } catch {}
+                }}
+                title="Force Dark mode"
+              >
+                Dark
+              </button>
+              <button
+                className={`theme-pill-btn ${themeMode === "light" ? "active" : ""}`}
+                onClick={() => {
+                  setThemeMode("light");
+                  try { localStorage.setItem("theme_mode", "light"); } catch {}
+                }}
+                title="Force Light mode"
+              >
+                Light
+              </button>
+            </div>
           </div>
 
           <div
