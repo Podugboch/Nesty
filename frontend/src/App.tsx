@@ -9299,44 +9299,55 @@ export default function App() {
             onClick={(e) => {
               const target = e.target as HTMLElement;
               if (
-                target.closest("button") ||
+                target.closest(".chat-action-btn") ||
                 target.closest(".chat-header-menu-dropdown") ||
-                target.closest(".chat-partner-avatar")
+                target.closest(".chat-back-btn")
               ) {
                 return;
               }
+              // Clicking the top header bar collapses the chat down to the bottom or expands it back up
               setIsChatMinimized(!isChatMinimized);
             }}
-            style={{ cursor: "pointer" }}
-            title={isChatMinimized ? "Click to bring chat back up" : "Click top space to minimize"}
+            style={{ cursor: "pointer", userSelect: "none" }}
+            title={isChatMinimized ? "Click to bring chat back up" : "Click top header to collapse to bottom of screen"}
           >
-            <button
-              className="chat-header-icon-btn"
-              title="All Messages"
-              style={{ marginRight: "6px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveChatPartner(null);
-                setIsChatMinimized(false);
-                openMessagesInbox();
-              }}
-            >
-              ←
-            </button>
+            {!isChatMinimized && (
+              <button
+                className="chat-header-icon-btn chat-back-btn"
+                title="All Messages"
+                style={{ marginRight: "6px", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveChatPartner(null);
+                  setIsChatMinimized(false);
+                  openMessagesInbox();
+                }}
+              >
+                ←
+              </button>
+            )}
             <div
               className="chat-partner-info"
-              style={{ cursor: "pointer" }}
-              title={`View @${activeChatPartner.username}'s profile`}
+              style={{ cursor: "pointer", flex: 1, minWidth: 0 }}
+              title={isChatMinimized ? "Click to expand chat" : `View @${activeChatPartner.username}'s profile`}
               onClick={(e) => {
-                e.stopPropagation();
-                if (activeChatPartner.id) {
-                  openProfile(activeChatPartner.id);
-                  setActiveChatPartner(null);
+                if (isChatMinimized) {
+                  e.stopPropagation();
                   setIsChatMinimized(false);
                 }
               }}
             >
-              <div className="chat-partner-avatar">
+              <div
+                className="chat-partner-avatar"
+                onClick={(e) => {
+                  if (!isChatMinimized && activeChatPartner.id) {
+                    e.stopPropagation();
+                    openProfile(activeChatPartner.id);
+                    setActiveChatPartner(null);
+                    setIsChatMinimized(false);
+                  }
+                }}
+              >
                 {activeChatPartner.avatar_url ? (
                   <img src={activeChatPartner.avatar_url} alt="" style={{ width: "100%", height: "100%", borderRadius: "50%" }} />
                 ) : (
@@ -9347,7 +9358,9 @@ export default function App() {
                 <span className="chat-partner-name">{activeChatPartner.name || activeChatPartner.username}</span>
                 <span className="chat-partner-status">
                   {isChatMinimized ? (
-                    <span style={{ color: "var(--text-muted)", fontSize: "11px" }}>Minimized — Click to expand</span>
+                    <span style={{ color: "var(--accent-green, #10b981)", fontSize: "11px", fontWeight: 600 }}>
+                      Minimized • Tap to expand ▲
+                    </span>
                   ) : isPartnerTyping ? (
                     <span style={{ color: "#10b981", fontWeight: 600 }}>Typing...</span>
                   ) : (
@@ -9356,34 +9369,54 @@ export default function App() {
                 </span>
               </div>
             </div>
-            <div className="chat-header-actions" style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+            <div className="chat-header-actions" style={{ position: "relative", display: "flex", alignItems: "center", gap: "4px" }}>
               {!isChatMinimized && (
                 <>
                   <button
-                    className="chat-header-icon-btn"
+                    className="chat-header-icon-btn chat-action-btn"
                     title="Voice Call"
-                    onClick={() => startCallWithUser(activeChatPartner, false)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      startCallWithUser(activeChatPartner, false);
+                    }}
                   >
                     📞
                   </button>
                   <button
-                    className="chat-header-icon-btn"
+                    className="chat-header-icon-btn chat-action-btn"
                     title="Video Call"
-                    onClick={() => startCallWithUser(activeChatPartner, true)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      startCallWithUser(activeChatPartner, true);
+                    }}
                   >
                     📹
                   </button>
                   <button
-                    className="chat-header-icon-btn"
+                    className="chat-header-icon-btn chat-action-btn"
                     title="More Options"
-                    onClick={() => setChatHeaderMenuOpen(!chatHeaderMenuOpen)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setChatHeaderMenuOpen(!chatHeaderMenuOpen);
+                    }}
                   >
                     ⋮
+                  </button>
+                  <button
+                    className="chat-header-icon-btn chat-action-btn"
+                    title="Collapse to bottom"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsChatMinimized(true);
+                    }}
+                    style={{ fontSize: "16px", fontWeight: "bold", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  >
+                    ⌄
                   </button>
                 </>
               )}
               {chatHeaderMenuOpen && !isChatMinimized && (
-                <div className="chat-header-menu-dropdown">
+                <div className="chat-header-menu-dropdown" onClick={(e) => e.stopPropagation()}>
                   <button
                     type="button"
                     className="chat-header-menu-item"
@@ -9408,17 +9441,25 @@ export default function App() {
                   </button>
                 </div>
               )}
+              {isChatMinimized && (
+                <button
+                  className="chat-header-icon-btn chat-action-btn"
+                  title="Expand chat"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsChatMinimized(false);
+                  }}
+                  style={{ fontSize: "13px", color: "var(--accent-green, #10b981)", fontWeight: 700 }}
+                >
+                  ▲
+                </button>
+              )}
+              {/* Minus button removed per user request */}
               <button
-                className="chat-header-icon-btn"
-                title={isChatMinimized ? "Restore chat" : "Minimize chat"}
-                onClick={() => setIsChatMinimized(!isChatMinimized)}
-              >
-                {isChatMinimized ? "▲" : "–"}
-              </button>
-              <button
-                className="chat-header-icon-btn"
+                className="chat-header-icon-btn chat-action-btn"
                 title="Close chat"
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   setActiveChatPartner(null);
                   setIsChatMinimized(false);
                 }}
