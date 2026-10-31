@@ -9469,8 +9469,10 @@ export default function App() {
             </div>
           </div>
 
-          <div
-            className="chat-messages-container"
+          {!isChatMinimized && (
+            <>
+              <div
+                className="chat-messages-container"
             onClick={() => {
               if (activeMsgMenuId !== null) setActiveMsgMenuId(null);
             }}
@@ -9891,8 +9893,10 @@ export default function App() {
               </button>
             </div>
           </form>
-        </div>
+        </>
       )}
+    </div>
+  )}
 
       {/* =====================================================================
           INCOMING CALL MODAL
