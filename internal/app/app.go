@@ -166,6 +166,11 @@ func Run() error {
 
 	_ = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_report_per_user_target ON reports(reporter_id, target_type, target_id) WHERE status = 'open'").Error
 
+	// Supabase security guarantees: ensure Row Level Security is active on public tables
+	_ = db.Exec("ALTER TABLE IF EXISTS blocks ENABLE ROW LEVEL SECURITY").Error
+	_ = db.Exec("ALTER TABLE IF EXISTS conversation_mutes ENABLE ROW LEVEL SECURITY").Error
+	_ = db.Exec("ALTER TABLE IF EXISTS message_reactions ENABLE ROW LEVEL SECURITY").Error
+
 	// Optional initial super_admin provisioning via environment variable
 	if initialAdmin := strings.TrimSpace(os.Getenv("INITIAL_SUPER_ADMIN")); initialAdmin != "" {
 		res := db.Model(&model.User{}).
